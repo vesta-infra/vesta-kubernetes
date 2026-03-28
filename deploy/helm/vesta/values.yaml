@@ -37,6 +37,14 @@ api:
     tls: true
     clusterIssuer: letsencrypt-prod
     annotations: {}
+  # -- Database configuration
+  database:
+    # -- PostgreSQL connection string
+    url: "postgres://vesta:vesta@localhost:5432/vesta?sslmode=disable"
+    # -- Use an existing secret instead of creating one (set to secret name)
+    existingSecret: ""
+    # -- Key in the existing secret that contains the DATABASE_URL
+    secretKey: "DATABASE_URL"
 
 # -- UI configuration
 ui:

@@ -130,3 +130,16 @@ helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system --version 0.1.2 \
   --set api.databaseUrl="postgres://vesta:password@postgres-host:5432/vesta?sslmode=disable"
+
+
+# Create/update the secret directly
+kubectl create secret generic my-db-secret \
+  -n vesta-system \
+  --from-literal=DATABASE_URL="postgres://vesta:password@postgres:5432/vesta?sslmode=disable" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+
+# Tell Helm to use it
+helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --version 0.1.4 \
+  --set api.database.existingSecret=my-db-secret
