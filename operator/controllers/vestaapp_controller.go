@@ -72,11 +72,10 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	// Add finalizer if not present
+	needsUpdate := false
 	if !controllerutil.ContainsFinalizer(&app, vestaAppFinalizer) {
 		controllerutil.AddFinalizer(&app, vestaAppFinalizer)
-		if err := r.Update(ctx, &app); err != nil {
-			return ctrl.Result{}, err
-		}
+		needsUpdate = true
 	}
 
 	logger.Info("reconciling VestaApp", "name", app.Name, "project", app.Spec.Project)
@@ -84,10 +83,15 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if app.Labels == nil {
 		app.Labels = map[string]string{}
 	}
-	app.Labels["kubernetes.getvesta.sh/project"] = app.Spec.Project
-	app.Labels["kubernetes.getvesta.sh/app"] = app.Name
-	if err := r.Update(ctx, &app); err != nil {
-		return ctrl.Result{}, err
+	if app.Labels["kubernetes.getvesta.sh/project"] != app.Spec.Project || app.Labels["kubernetes.getvesta.sh/app"] != app.Name {
+		app.Labels["kubernetes.getvesta.sh/project"] = app.Spec.Project
+		app.Labels["kubernetes.getvesta.sh/app"] = app.Name
+		needsUpdate = true
+	}
+	if needsUpdate {
+		if err := r.Update(ctx, &app); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	targetNamespaces, err := r.resolveTargetNamespaces(ctx, &app)
