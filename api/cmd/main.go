@@ -63,6 +63,7 @@ func main() {
 	// Authenticated routes
 	auth := v1.Group("")
 	auth.Use(middleware.AuthRequired(database))
+	dv := middleware.DenyRole("viewer") // deny viewer access to write endpoints
 	{
 		// User profile
 		auth.GET("/users/me", h.GetCurrentUser)
@@ -83,43 +84,43 @@ func main() {
 		auth.DELETE("/teams/:teamId/members/:userId", middleware.RequireTeamRole(database, "owner", "admin"), h.RemoveTeamMember)
 
 		// Projects
-		auth.POST("/projects", h.CreateProject)
+		auth.POST("/projects", dv, h.CreateProject)
 		auth.GET("/projects", h.ListProjects)
 		auth.GET("/projects/:projectId", h.GetProject)
-		auth.PUT("/projects/:projectId", h.UpdateProject)
-		auth.DELETE("/projects/:projectId", h.DeleteProject)
+		auth.PUT("/projects/:projectId", dv, h.UpdateProject)
+		auth.DELETE("/projects/:projectId", dv, h.DeleteProject)
 
 		// Environments
-		auth.POST("/projects/:projectId/environments", h.CreateEnvironment)
+		auth.POST("/projects/:projectId/environments", dv, h.CreateEnvironment)
 		auth.GET("/projects/:projectId/environments", h.ListEnvironments)
-		auth.DELETE("/projects/:projectId/environments/:env", h.DeleteEnvironment)
+		auth.DELETE("/projects/:projectId/environments/:env", dv, h.DeleteEnvironment)
 
 		// Apps
 		auth.GET("/pod-sizes", h.ListPodSizes)
-		auth.POST("/projects/:projectId/apps", middleware.RequireScope("write"), h.CreateApp)
+		auth.POST("/projects/:projectId/apps", dv, middleware.RequireScope("write"), h.CreateApp)
 		auth.GET("/projects/:projectId/apps", middleware.RequireScope("read"), h.ListProjectApps)
 		auth.GET("/apps", middleware.RequireScope("read"), h.ListApps)
 		auth.GET("/apps/:appId", middleware.RequireScope("read"), h.GetApp)
-		auth.PUT("/apps/:appId", middleware.RequireScope("write"), h.UpdateApp)
-		auth.DELETE("/apps/:appId", middleware.RequireScope("write"), h.DeleteApp)
+		auth.PUT("/apps/:appId", dv, middleware.RequireScope("write"), h.UpdateApp)
+		auth.DELETE("/apps/:appId", dv, middleware.RequireScope("write"), h.DeleteApp)
 
 		// Deploy
-		auth.POST("/apps/:appId/deploy", middleware.RequireScope("deploy", "write"), h.DeployApp)
-		auth.POST("/apps/:appId/rollback", middleware.RequireScope("deploy", "write"), h.RollbackApp)
+		auth.POST("/apps/:appId/deploy", dv, middleware.RequireScope("deploy", "write"), h.DeployApp)
+		auth.POST("/apps/:appId/rollback", dv, middleware.RequireScope("deploy", "write"), h.RollbackApp)
 		auth.GET("/apps/:appId/deployments", middleware.RequireScope("read"), h.ListDeployments)
-		auth.POST("/apps/:appId/restart", middleware.RequireScope("deploy", "write"), h.RestartApp)
-		auth.POST("/apps/:appId/scale", middleware.RequireScope("deploy", "write"), h.ScaleApp)
+		auth.POST("/apps/:appId/restart", dv, middleware.RequireScope("deploy", "write"), h.RestartApp)
+		auth.POST("/apps/:appId/scale", dv, middleware.RequireScope("deploy", "write"), h.ScaleApp)
 
-		// Secrets (per app per environment)
-		auth.POST("/apps/:appId/envs/:env/secrets", h.CreateAppEnvSecret)
-		auth.GET("/apps/:appId/envs/:env/secrets", h.ListAppEnvSecrets)
-		auth.DELETE("/apps/:appId/envs/:env/secrets/:key", h.DeleteAppEnvSecretKey)
-		auth.GET("/secrets", h.ListSecrets)
-		auth.PUT("/secrets/:secretId", h.UpdateSecret)
-		auth.DELETE("/secrets/:secretId", h.DeleteSecret)
-		auth.POST("/secrets/registry", h.CreateRegistrySecret)
-		auth.GET("/secrets/registry", h.ListRegistrySecrets)
-		auth.DELETE("/secrets/registry/:name", h.DeleteRegistrySecret)
+		// Secrets (per app per environment) -- viewers have no access
+		auth.POST("/apps/:appId/envs/:env/secrets", dv, h.CreateAppEnvSecret)
+		auth.GET("/apps/:appId/envs/:env/secrets", dv, h.ListAppEnvSecrets)
+		auth.DELETE("/apps/:appId/envs/:env/secrets/:key", dv, h.DeleteAppEnvSecretKey)
+		auth.GET("/secrets", dv, h.ListSecrets)
+		auth.PUT("/secrets/:secretId", dv, h.UpdateSecret)
+		auth.DELETE("/secrets/:secretId", dv, h.DeleteSecret)
+		auth.POST("/secrets/registry", dv, h.CreateRegistrySecret)
+		auth.GET("/secrets/registry", dv, h.ListRegistrySecrets)
+		auth.DELETE("/secrets/registry/:name", dv, h.DeleteRegistrySecret)
 
 		// Logs and monitoring
 		auth.GET("/apps/:appId/logs", h.StreamLogs)
@@ -127,14 +128,14 @@ func main() {
 
 		// Templates
 		auth.GET("/templates", h.ListTemplates)
-		auth.POST("/templates/:id/deploy", h.DeployTemplate)
+		auth.POST("/templates/:id/deploy", dv, h.DeployTemplate)
 
-		// Notifications
-		auth.POST("/projects/:projectId/notifications", h.CreateNotificationChannel)
+		// Notifications -- viewers can see channels and history but not manage
+		auth.POST("/projects/:projectId/notifications", dv, h.CreateNotificationChannel)
 		auth.GET("/projects/:projectId/notifications", h.ListNotificationChannels)
-		auth.PUT("/projects/:projectId/notifications/:channelId", h.UpdateNotificationChannel)
-		auth.DELETE("/projects/:projectId/notifications/:channelId", h.DeleteNotificationChannel)
-		auth.POST("/projects/:projectId/notifications/:channelId/test", h.TestNotificationChannel)
+		auth.PUT("/projects/:projectId/notifications/:channelId", dv, h.UpdateNotificationChannel)
+		auth.DELETE("/projects/:projectId/notifications/:channelId", dv, h.DeleteNotificationChannel)
+		auth.POST("/projects/:projectId/notifications/:channelId/test", dv, h.TestNotificationChannel)
 		auth.GET("/projects/:projectId/notifications/history", h.ListNotificationHistory)
 
 		// API tokens

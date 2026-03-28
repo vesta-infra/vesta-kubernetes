@@ -103,6 +103,34 @@ spec:
                             type: object
                             x-kubernetes-preserve-unknown-fields: true
                         required: [enabled, maxReplicas]
+                      resources:
+                        type: object
+                        description: Per-environment resource override.
+                        properties:
+                          size:
+                            type: string
+                          requests:
+                            type: object
+                            additionalProperties:
+                              anyOf:
+                                - type: integer
+                                - type: string
+                              x-kubernetes-int-or-string: true
+                          limits:
+                            type: object
+                            additionalProperties:
+                              anyOf:
+                                - type: integer
+                                - type: string
+                              x-kubernetes-int-or-string: true
+                      imagePullSecrets:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                          required: [name]
                 git:
                   type: object
                   description: Git source configuration.
@@ -259,6 +287,45 @@ spec:
                           - type: integer
                           - type: string
                         x-kubernetes-int-or-string: true
+                healthCheck:
+                  type: object
+                  description: Health check configuration for liveness and readiness probes.
+                  properties:
+                    type:
+                      type: string
+                      enum: [http, tcp, exec]
+                      description: Type of health check probe.
+                    path:
+                      type: string
+                      description: HTTP path for http probes.
+                    port:
+                      type: integer
+                      format: int32
+                      description: Port for http/tcp probes. Defaults to runtime port.
+                    command:
+                      type: string
+                      description: Command for exec probes.
+                    initialDelaySeconds:
+                      type: integer
+                      format: int32
+                      minimum: 0
+                    periodSeconds:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                    timeoutSeconds:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                    failureThreshold:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                    successThreshold:
+                      type: integer
+                      format: int32
+                      minimum: 1
+                  required: [type]
                 ingress:
                   type: object
                   properties:

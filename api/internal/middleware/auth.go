@@ -188,6 +188,27 @@ func RequireScope(scopes ...string) gin.HandlerFunc {
 	}
 }
 
+// DenyRole blocks users with any of the specified roles.
+// Use to prevent viewers from accessing write endpoints.
+func DenyRole(roles ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userRole, _ := c.Get("role")
+		roleStr, _ := userRole.(string)
+
+		for _, r := range roles {
+			if roleStr == r {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+					"code":    403,
+					"message": "your role does not have access to this resource",
+				})
+				return
+			}
+		}
+
+		c.Next()
+	}
+}
+
 // RequireTeamRole checks that the user has the specified role within the team.
 // Admins (global role) always pass. teamId is read from the route param.
 func RequireTeamRole(database *db.DB, roles ...string) gin.HandlerFunc {
