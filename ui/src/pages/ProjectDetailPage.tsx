@@ -215,6 +215,8 @@ export default function ProjectDetailPage() {
               </div>
             )}
           </section>
+
+          <ImagePullSecretsSection projectId={projectId!} project={project} />
         </div>
       </div>
     </div>
@@ -691,6 +693,101 @@ function StatusBadge({ phase }: { phase?: string }) {
       {p === 'Running' && <span className="inline-block w-1.5 h-1.5 rounded-full bg-current mr-1.5 animate-glow-pulse" />}
       {p}
     </span>
+  )
+}
+
+function ImagePullSecretsSection({ projectId, project }: { projectId: string; project: any }) {
+  const queryClient = useQueryClient()
+  const { data: registrySecrets } = useQuery({
+    queryKey: ['registrySecrets'],
+    queryFn: () => api.listRegistrySecrets(),
+  })
+
+  const currentPullSecrets: string[] = (project.spec?.imagePullSecrets || []).map((s: any) => s.name)
+  const [selectedSecret, setSelectedSecret] = useState('')
+
+  const addMutation = useMutation({
+    mutationFn: (secretName: string) => {
+      const updated = [...currentPullSecrets.map(n => ({ name: n })), { name: secretName }]
+      return api.updateProject(projectId, { imagePullSecrets: updated })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] })
+      setSelectedSecret('')
+    },
+  })
+
+  const removeMutation = useMutation({
+    mutationFn: (secretName: string) => {
+      const updated = currentPullSecrets.filter(n => n !== secretName).map(n => ({ name: n }))
+      return api.updateProject(projectId, { imagePullSecrets: updated.length > 0 ? updated : null })
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['project', projectId] }),
+  })
+
+  const availableSecrets = (registrySecrets?.items || []).filter(
+    (s: any) => !currentPullSecrets.includes(s.name)
+  )
+
+  return (
+    <section className="card p-5">
+      <h3 className="section-title mb-3">Image Pull Secrets</h3>
+      <p className="text-xs text-text-tertiary mb-3">
+        Registry credentials used to pull private images for all apps in this project.
+      </p>
+
+      {currentPullSecrets.length === 0 && (
+        <p className="text-xs text-text-tertiary mb-3">No registry credentials attached</p>
+      )}
+
+      {currentPullSecrets.map(name => {
+        const detail = registrySecrets?.items?.find((s: any) => s.name === name)
+        return (
+          <div key={name} className="flex items-center justify-between py-2 border-b border-border-subtle last:border-0">
+            <div>
+              <p className="text-sm font-mono text-text-primary">{name}</p>
+              {detail?.registry && (
+                <span className="text-[11px] text-text-tertiary">{detail.registry}</span>
+              )}
+            </div>
+            <button
+              onClick={() => removeMutation.mutate(name)}
+              className="text-xs text-text-tertiary hover:text-status-failed transition-colors"
+            >
+              Remove
+            </button>
+          </div>
+        )
+      })}
+
+      {availableSecrets.length > 0 && (
+        <div className="flex gap-2 mt-3">
+          <select
+            value={selectedSecret}
+            onChange={(e) => setSelectedSecret(e.target.value)}
+            className="input-field text-xs flex-1"
+          >
+            <option value="">Add registry credential...</option>
+            {availableSecrets.map((s: any) => (
+              <option key={s.name} value={s.name}>{s.name} ({s.registry})</option>
+            ))}
+          </select>
+          <button
+            onClick={() => selectedSecret && addMutation.mutate(selectedSecret)}
+            disabled={!selectedSecret || addMutation.isPending}
+            className="btn-primary text-xs"
+          >
+            Add
+          </button>
+        </div>
+      )}
+
+      {availableSecrets.length === 0 && currentPullSecrets.length === 0 && (
+        <p className="text-[11px] text-text-tertiary mt-1">
+          Create registry credentials in Secrets &rarr; Registry Credentials first.
+        </p>
+      )}
+    </section>
   )
 }
 

@@ -47,9 +47,10 @@ type VestaAppSpec struct {
 
 // AppEnvironmentConfig holds per-environment deployment configuration
 type AppEnvironmentConfig struct {
-	Name      string           `json:"name"`
-	Replicas  *int32           `json:"replicas,omitempty"`
-	Autoscale *AutoscaleConfig `json:"autoscale,omitempty"`
+	Name             string                        `json:"name"`
+	Replicas         *int32                        `json:"replicas,omitempty"`
+	Autoscale        *AutoscaleConfig              `json:"autoscale,omitempty"`
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
 
 type GitSource struct {

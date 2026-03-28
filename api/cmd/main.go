@@ -111,6 +111,8 @@ func main() {
 		auth.PUT("/secrets/:secretId", h.UpdateSecret)
 		auth.DELETE("/secrets/:secretId", h.DeleteSecret)
 		auth.POST("/secrets/registry", h.CreateRegistrySecret)
+		auth.GET("/secrets/registry", h.ListRegistrySecrets)
+		auth.DELETE("/secrets/registry/:name", h.DeleteRegistrySecret)
 
 		// Logs and monitoring
 		auth.GET("/apps/:appId/logs", h.StreamLogs)

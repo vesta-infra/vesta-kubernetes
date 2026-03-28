@@ -286,24 +286,18 @@ func (h *Handler) DeleteSecret(c *gin.Context) {
 
 func (h *Handler) CreateRegistrySecret(c *gin.Context) {
 	var req struct {
-		Name        string `json:"name" binding:"required"`
-		Project     string `json:"project" binding:"required"`
-		Environment string `json:"environment" binding:"required"`
-		Registry    string `json:"registry" binding:"required"`
-		Username    string `json:"username" binding:"required"`
-		Password    string `json:"password" binding:"required"`
+		Name     string `json:"name" binding:"required"`
+		Registry string `json:"registry" binding:"required"`
+		Username string `json:"username" binding:"required"`
+		Password string `json:"password" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
 		return
 	}
 
-	namespace := fmt.Sprintf("%s-%s", req.Project, req.Environment)
-
 	spec := map[string]interface{}{
-		"type":        "kubernetes.io/dockerconfigjson",
-		"project":     req.Project,
-		"environment": req.Environment,
+		"type": "kubernetes.io/dockerconfigjson",
 		"dockerConfig": map[string]interface{}{
 			"registry": req.Registry,
 			"username": req.Username,
@@ -316,16 +310,15 @@ func (h *Handler) CreateRegistrySecret(c *gin.Context) {
 		"kind":       "VestaSecret",
 		"metadata": map[string]interface{}{
 			"name":      req.Name,
-			"namespace": namespace,
+			"namespace": vestaSystemNS,
 			"labels": map[string]interface{}{
-				"kubernetes.getvesta.sh/project":     req.Project,
-				"kubernetes.getvesta.sh/environment": req.Environment,
+				"kubernetes.getvesta.sh/type": "registry",
 			},
 		},
 		"spec": spec,
 	}
 
-	result, err := h.K8s.CreateResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, obj)
+	result, err := h.K8s.CreateResource(c.Request.Context(), k8s.VestaSecretGVR, vestaSystemNS, obj)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
@@ -334,10 +327,44 @@ func (h *Handler) CreateRegistrySecret(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{
 		"id":        result.GetName(),
 		"name":      result.GetName(),
-		"namespace": namespace,
+		"registry":  req.Registry,
+		"username":  req.Username,
 		"type":      "kubernetes.io/dockerconfigjson",
 		"createdAt": result.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
 	})
+}
+
+func (h *Handler) ListRegistrySecrets(c *gin.Context) {
+	list, err := h.K8s.ListResources(c.Request.Context(), k8s.VestaSecretGVR, vestaSystemNS,
+		"kubernetes.getvesta.sh/type=registry")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	items := make([]map[string]interface{}, 0, len(list.Items))
+	for _, item := range list.Items {
+		spec, _, _ := unstructuredNestedMap(item.Object, "spec")
+		dc, _, _ := unstructuredNestedMap(spec, "dockerConfig")
+		items = append(items, map[string]interface{}{
+			"id":        item.GetName(),
+			"name":      item.GetName(),
+			"registry":  getNestedString(dc, "registry"),
+			"username":  getNestedString(dc, "username"),
+			"createdAt": item.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
+		})
+	}
+
+	c.JSON(http.StatusOK, models.ListResponse{Items: items, Total: len(items)})
+}
+
+func (h *Handler) DeleteRegistrySecret(c *gin.Context) {
+	name := c.Param("name")
+	if err := h.K8s.DeleteResource(c.Request.Context(), k8s.VestaSecretGVR, vestaSystemNS, name); err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "registry secret not found"})
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func extractSecretKeys(spec map[string]interface{}) []string {

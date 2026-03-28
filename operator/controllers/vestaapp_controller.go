@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -243,6 +244,41 @@ func (r *VestaAppReconciler) ensureNamespace(ctx context.Context, name string) e
 	return nil
 }
 
+// copyPullSecrets copies referenced registry secrets from vesta-system to the target namespace.
+func (r *VestaAppReconciler) copyPullSecrets(ctx context.Context, refs []corev1.LocalObjectReference, targetNS string) error {
+	for _, ref := range refs {
+		// Get the source secret from vesta-system
+		src := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: "vesta-system", Name: ref.Name}, src); err != nil {
+			if errors.IsNotFound(err) {
+				continue // secret doesn't exist in vesta-system, may already be in target ns
+			}
+			return fmt.Errorf("get pull secret %s: %w", ref.Name, err)
+		}
+
+		// Create or update in target namespace
+		dst := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      ref.Name,
+				Namespace: targetNS,
+			},
+		}
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dst, func() error {
+			dst.Type = src.Type
+			dst.Data = src.Data
+			dst.Labels = map[string]string{
+				"app.kubernetes.io/managed-by": "vesta-operator",
+				"kubernetes.getvesta.sh/type":  "registry-copy",
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("copy pull secret %s to %s: %w", ref.Name, targetNS, err)
+		}
+	}
+	return nil
+}
+
 func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv, projectLabels, projectAnnotations map[string]string) error {
 	labels := r.labelsForApp(app)
 	replicas := int32(1)
@@ -250,8 +286,20 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 		replicas = *target.Config.Replicas
 	}
 
+	// Fetch project for imagePullSecrets
+	var project vestav1alpha1.VestaProject
+	var projectPullSecrets []corev1.LocalObjectReference
+	if err := r.Get(ctx, client.ObjectKey{Namespace: app.Namespace, Name: app.Spec.Project}, &project); err == nil {
+		projectPullSecrets = project.Spec.ImagePullSecrets
+	}
+
 	container := r.buildContainer(app)
-	podSpec := r.buildPodSpec(app, container)
+	podSpec := r.buildPodSpec(app, container, projectPullSecrets, target.Config.ImagePullSecrets)
+
+	// Copy referenced registry secrets to target namespace
+	if err := r.copyPullSecrets(ctx, podSpec.ImagePullSecrets, target.Namespace); err != nil {
+		log.FromContext(ctx).Error(err, "failed to copy pull secrets", "namespace", target.Namespace)
+	}
 
 	var op controllerutil.OperationResult
 	err := retry.OnError(retry.DefaultRetry, isRetriable, func() error {
@@ -407,19 +455,40 @@ func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp) corev1.
 		}
 	}
 
+	// Set default resource requests so HPA can calculate utilization percentages
+	if container.Resources.Requests == nil {
+		container.Resources.Requests = corev1.ResourceList{}
+	}
+	if _, ok := container.Resources.Requests[corev1.ResourceCPU]; !ok {
+		container.Resources.Requests[corev1.ResourceCPU] = resource.MustParse("100m")
+	}
+	if _, ok := container.Resources.Requests[corev1.ResourceMemory]; !ok {
+		container.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("128Mi")
+	}
+
 	return container
 }
 
-func (r *VestaAppReconciler) buildPodSpec(app *vestav1alpha1.VestaApp, container corev1.Container) corev1.PodSpec {
+func (r *VestaAppReconciler) buildPodSpec(app *vestav1alpha1.VestaApp, container corev1.Container, projectPullSecrets, envPullSecrets []corev1.LocalObjectReference) corev1.PodSpec {
 	podSpec := corev1.PodSpec{
 		Containers: []corev1.Container{container},
 	}
 
-	if app.Spec.Image != nil {
-		for _, ips := range app.Spec.Image.ImagePullSecrets {
-			podSpec.ImagePullSecrets = append(podSpec.ImagePullSecrets, corev1.LocalObjectReference{Name: ips.Name})
+	// Merge imagePullSecrets: project-level, then app-level, then env-level overrides
+	seen := map[string]bool{}
+	addPullSecret := func(refs []corev1.LocalObjectReference) {
+		for _, ref := range refs {
+			if !seen[ref.Name] {
+				podSpec.ImagePullSecrets = append(podSpec.ImagePullSecrets, corev1.LocalObjectReference{Name: ref.Name})
+				seen[ref.Name] = true
+			}
 		}
 	}
+	addPullSecret(projectPullSecrets)
+	if app.Spec.Image != nil {
+		addPullSecret(app.Spec.Image.ImagePullSecrets)
+	}
+	addPullSecret(envPullSecrets)
 
 	for _, sb := range app.Spec.Runtime.Secrets {
 		if sb.SecretMount != nil {

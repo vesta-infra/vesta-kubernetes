@@ -194,6 +194,19 @@ export const api = {
   deleteSecret: (secretId: string) =>
     request<void>(`/secrets/${secretId}`, { method: 'DELETE' }),
 
+  // Registry Secrets (image pull secrets)
+  createRegistrySecret: (data: { name: string; registry: string; username: string; password: string }) =>
+    request<any>('/secrets/registry', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  listRegistrySecrets: () =>
+    request<{ items: any[]; total: number }>('/secrets/registry'),
+
+  deleteRegistrySecret: (name: string) =>
+    request<void>(`/secrets/registry/${name}`, { method: 'DELETE' }),
+
   // Logs
   getAppLogs: (appId: string, environment: string, opts?: { tail?: number; pod?: string; container?: string; previous?: boolean }) => {
     const params = new URLSearchParams({ environment })

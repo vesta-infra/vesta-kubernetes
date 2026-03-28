@@ -156,6 +156,11 @@ func (in *AppEnvironmentConfig) DeepCopyInto(out *AppEnvironmentConfig) {
 		*out = new(AutoscaleConfig)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.ImagePullSecrets != nil {
+		in, out := &in.ImagePullSecrets, &out.ImagePullSecrets
+		*out = make([]corev1.LocalObjectReference, len(*in))
+		copy(*out, *in)
+	}
 }
 
 func (in *AppEnvironmentConfig) DeepCopy() *AppEnvironmentConfig {

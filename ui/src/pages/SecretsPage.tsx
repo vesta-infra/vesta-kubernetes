@@ -7,6 +7,7 @@ export default function SecretsPage() {
   const { data, isLoading } = useQuery({ queryKey: ['secrets'], queryFn: () => api.listSecrets() })
   const { data: apps } = useQuery({ queryKey: ['apps'], queryFn: () => api.listApps() })
   const [showCreate, setShowCreate] = useState(false)
+  const [activeTab, setActiveTab] = useState<'app' | 'registry'>('registry')
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteSecret(id),
@@ -17,6 +18,26 @@ export default function SecretsPage() {
 
   return (
     <div className="space-y-6">
+      <div className="flex border-b border-border mb-2">
+        {(['registry', 'app'] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className={`px-5 py-3 text-xs font-mono tracking-wider uppercase transition-colors ${
+              activeTab === tab
+                ? 'text-accent border-b-2 border-accent'
+                : 'text-text-tertiary hover:text-text-secondary'
+            }`}
+          >
+            {tab === 'registry' ? 'Registry Credentials' : 'App Secrets'}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'registry' && <RegistrySecretsSection />}
+
+      {activeTab === 'app' && (
+        <>
       <div className="flex items-center justify-between">
         <div>
           <p className="text-sm text-text-secondary">
@@ -126,6 +147,132 @@ export default function SecretsPage() {
           ))}
         </div>
       )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function RegistrySecretsSection() {
+  const queryClient = useQueryClient()
+  const { data, isLoading } = useQuery({ queryKey: ['registrySecrets'], queryFn: () => api.listRegistrySecrets() })
+  const [showCreate, setShowCreate] = useState(false)
+  const [name, setName] = useState('')
+  const [registry, setRegistry] = useState('https://index.docker.io/v1/')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+
+  const createMutation = useMutation({
+    mutationFn: () => api.createRegistrySecret({ name, registry, username, password }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['registrySecrets'] })
+      setShowCreate(false)
+      setName('')
+      setRegistry('https://index.docker.io/v1/')
+      setUsername('')
+      setPassword('')
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (n: string) => api.deleteRegistrySecret(n),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['registrySecrets'] }),
+  })
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm text-text-secondary">
+            Docker registry credentials for pulling private images.
+          </p>
+          <p className="text-xs text-text-tertiary mt-0.5">
+            Attach to projects or override per app environment.
+          </p>
+        </div>
+        <button onClick={() => setShowCreate(!showCreate)} className="btn-primary">
+          <span className="flex items-center gap-2">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+            Add Registry
+          </span>
+        </button>
+      </div>
+
+      {showCreate && (
+        <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate() }} className="card p-5 space-y-4 animate-slide-up">
+          <h3 className="section-title">Add Registry Credential</h3>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">Name</label>
+              <input value={name} onChange={(e) => setName(e.target.value)} className="input-field" placeholder="ghcr-creds" required />
+            </div>
+            <div>
+              <label className="label">Registry URL</label>
+              <input value={registry} onChange={(e) => setRegistry(e.target.value)} className="input-field font-mono text-xs" placeholder="https://index.docker.io/v1/" required />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">Username</label>
+              <input value={username} onChange={(e) => setUsername(e.target.value)} className="input-field" placeholder="username" required />
+            </div>
+            <div>
+              <label className="label">Password / Token</label>
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="input-field" placeholder="••••••••" required />
+            </div>
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button type="submit" disabled={createMutation.isPending} className="btn-primary">
+              {createMutation.isPending ? 'Creating...' : 'Create'}
+            </button>
+            <button type="button" onClick={() => setShowCreate(false)} className="btn-ghost">Cancel</button>
+          </div>
+          {createMutation.isError && (
+            <p className="text-status-failed text-xs">{(createMutation.error as Error).message}</p>
+          )}
+        </form>
+      )}
+
+      {isLoading && <Spinner />}
+
+      {!isLoading && (!data?.items || data.items.length === 0) && (
+        <div className="card px-6 py-12 text-center">
+          <div className="w-10 h-10 rounded-xl bg-surface-3 flex items-center justify-center mx-auto mb-3">
+            <svg className="w-5 h-5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+          </div>
+          <p className="text-sm text-text-secondary">No registry credentials yet</p>
+          <p className="text-xs text-text-tertiary mt-1">Add Docker login credentials to pull private images</p>
+        </div>
+      )}
+
+      {data?.items?.map((s: any) => (
+        <div key={s.id} className="card-hover flex items-center justify-between px-5 py-4 group">
+          <div className="flex items-center gap-4">
+            <div className="w-9 h-9 rounded-lg bg-surface-3 flex items-center justify-center">
+              <svg className="w-4 h-4 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 12h14M12 5l7 7-7 7" />
+              </svg>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-text-primary">{s.name}</p>
+              <div className="flex items-center gap-3 mt-0.5">
+                <span className="text-xs text-text-tertiary font-mono">{s.registry}</span>
+                <span className="text-[11px] text-text-tertiary">user: {s.username}</span>
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={() => { if (confirm(`Delete registry credential "${s.name}"?`)) deleteMutation.mutate(s.name) }}
+            className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
+          >
+            Delete
+          </button>
+        </div>
+      ))}
     </div>
   )
 }
