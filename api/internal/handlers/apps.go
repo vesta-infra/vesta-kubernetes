@@ -17,13 +17,14 @@ func (h *Handler) CreateApp(c *gin.Context) {
 	}
 
 	// Validate the project has at least one environment
-	envList, err := h.K8s.ListResources(c.Request.Context(), k8s.VestaEnvironmentGVR, vestaSystemNS,
-		"kubernetes.getvesta.sh/project="+projectID)
+	project, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaProjectGVR, vestaSystemNS, projectID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "project not found"})
 		return
 	}
-	if len(envList.Items) == 0 {
+	projectSpec, _, _ := unstructuredNestedMap(project.Object, "spec")
+	projectEnvs, _ := projectSpec["environments"].([]interface{})
+	if len(projectEnvs) == 0 {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Code:    400,
 			Message: "project has no environments; create at least one environment before adding apps",
