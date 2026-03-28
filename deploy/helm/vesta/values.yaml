@@ -3,7 +3,7 @@
 # -- Operator configuration
 operator:
   image:
-    repository: ghcr.io/getvesta/kubernetes-operator
+    repository: ghcr.io/vesta-infra/kubernetes-operator
     tag: latest
     pullPolicy: IfNotPresent
   replicas: 1
@@ -19,7 +19,7 @@ operator:
 # -- API server configuration
 api:
   image:
-    repository: ghcr.io/getvesta/kubernetes-api
+    repository: ghcr.io/vesta-infra/kubernetes-api
     tag: latest
     pullPolicy: IfNotPresent
   replicas: 1
@@ -42,7 +42,7 @@ api:
 ui:
   enabled: true
   image:
-    repository: ghcr.io/getvesta/kubernetes-ui
+    repository: ghcr.io/vesta-infra/kubernetes-ui
     tag: latest
     pullPolicy: IfNotPresent
   replicas: 1
