@@ -92,6 +92,8 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		if err := r.Update(ctx, &app); err != nil {
 			return ctrl.Result{}, err
 		}
+		// Return early — the update triggers a re-queue with fresh resourceVersion
+		return ctrl.Result{}, nil
 	}
 
 	targetNamespaces, err := r.resolveTargetNamespaces(ctx, &app)
