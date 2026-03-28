@@ -150,11 +150,11 @@ kubectl rollout restart deployment vesta-api -n vesta-system
 
 
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system --version 0.1.13 \
+  -n vesta-system --version 0.1.15 \
   --set api.database.existingSecret=vesta-db-secret \
-  --set operator.image.tag=0.1.13 \
-  --set api.image.tag=0.1.13 \
-  --set ui.image.tag=0.1.13
+  --set operator.image.tag=0.1.15 \
+  --set api.image.tag=0.1.15 \
+  --set ui.image.tag=0.1.15
 
 
 
