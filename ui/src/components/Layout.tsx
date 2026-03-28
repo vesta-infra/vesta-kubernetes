@@ -1,5 +1,6 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useEffect, useState } from 'react'
+import { useUserRole } from '../lib/useRole'
 
 const mainNavItems = [
   {
@@ -59,6 +60,7 @@ export default function Layout() {
   const navigate = useNavigate()
   const location = useLocation()
   const [user, setUser] = useState<{ username?: string; email?: string } | null>(null)
+  const role = useUserRole()
 
   useEffect(() => {
     const token = localStorage.getItem('vesta-token')
@@ -98,7 +100,7 @@ export default function Layout() {
         </div>
 
         <nav className="flex-1 px-3 py-4 space-y-0.5">
-          {mainNavItems.map((item) => (
+          {mainNavItems.filter(item => !(role === 'viewer' && (item.to === '/secrets'))).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -118,7 +120,7 @@ export default function Layout() {
         </nav>
 
         <div className="px-3 pb-2 space-y-0.5">
-          {bottomNavItems.map((item) => (
+          {bottomNavItems.filter(item => !(role === 'viewer' && item.to === '/settings')).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

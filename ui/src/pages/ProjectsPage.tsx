@@ -2,11 +2,13 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
+import { useUserRole } from '../lib/useRole'
 
 export default function ProjectsPage() {
   const queryClient = useQueryClient()
   const { data, isLoading } = useQuery({ queryKey: ['projects'], queryFn: () => api.listProjects() })
   const [showCreate, setShowCreate] = useState(false)
+  const role = useUserRole()
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteProject(id),
@@ -19,6 +21,7 @@ export default function ProjectsPage() {
         <p className="text-sm text-text-secondary">
           {data?.total ?? 0} project{(data?.total ?? 0) !== 1 ? 's' : ''}
         </p>
+        {role !== 'viewer' && (
         <button onClick={() => setShowCreate(!showCreate)} className="btn-primary">
           <span className="flex items-center gap-2">
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -27,6 +30,7 @@ export default function ProjectsPage() {
             New Project
           </span>
         </button>
+        )}
       </div>
 
       {showCreate && <CreateProjectForm onClose={() => setShowCreate(false)} />}
@@ -79,6 +83,7 @@ export default function ProjectsPage() {
               <span className="text-xs font-mono text-text-tertiary">
                 {p.appCount ?? 0} app{(p.appCount ?? 0) !== 1 ? 's' : ''}
               </span>
+              {role !== 'viewer' && (
               <button
                 onClick={(e) => {
                   e.preventDefault()
@@ -90,6 +95,7 @@ export default function ProjectsPage() {
               >
                 Delete
               </button>
+              )}
             </div>
           </Link>
         ))}

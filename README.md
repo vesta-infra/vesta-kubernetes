@@ -9,156 +9,147 @@ Vesta consists of four components:
 | Component | Language | Description |
 |-----------|----------|-------------|
 | **Operator** | Go (Kubebuilder) | Watches CRDs and reconciles Deployments, Services, Ingress, HPA, Secrets |
-| **API Server** | Go (Gin) | REST API for pipelines, apps, deployments, secrets, auth |
+| **API Server** | Go (Gin) | REST API for projects, apps, deployments, secrets, auth, notifications |
 | **Web UI** | React + TypeScript + Tailwind | Dashboard for managing the platform |
 | **CLI** | Go (Cobra) | Command-line tool for all operations |
+
+## Key Features
+
+- **Zero-manifest deploys** -- deploy from a pre-built image, git push, or API call
+- **Projects & environments** -- organize apps into projects with per-environment config (staging, production, etc.)
+- **Per-environment pod sizes** -- choose resource presets (small/medium/large/xlarge) per app per environment
+- **Health checks** -- configurable HTTP, TCP, or exec liveness & readiness probes
+- **Autoscaling** -- CPU, memory, and custom metric-based HPA with configurable behavior
+- **Secrets management** -- Opaque, Docker registry, and TLS secrets with per-app bindings
+- **Private registries** -- ImagePullSecrets at project, app, and environment levels
+- **Notifications** -- Slack, Discord, Google Chat, webhooks (HMAC-SHA256), and email (SMTP)
+- **Forgot password** -- email-based password reset (when an email channel is configured)
+- **Ingress** -- automatic ingress with optional TLS via cert-manager
+
+## Installation
+
+### Prerequisites
+
+- Kubernetes cluster (v1.27+)
+- Helm 3
+- PostgreSQL database (for the API server)
+- (Optional) cert-manager for TLS
+- (Optional) metrics-server for autoscaling
+
+### 1. Install CRDs
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/main/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaapps.yaml
+kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/main/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaprojects.yaml
+kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/main/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaconfigs.yaml
+kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/main/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaenvironments.yaml
+kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/main/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestasecrets.yaml
+```
+
+### 2. Create the database secret
+
+```bash
+kubectl create namespace vesta-system
+
+kubectl create secret generic vesta-db-secret \
+  -n vesta-system \
+  --from-literal=DATABASE_URL="postgres://user:password@db-host:5432/vesta?sslmode=disable"
+```
+
+### 3. Install with Helm
+
+```bash
+helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --create-namespace \
+  --set api.database.existingSecret=vesta-db-secret
+```
+
+### 4. Upgrade
+
+```bash
+helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system \
+  --set api.database.existingSecret=vesta-db-secret
+```
+
+To pin specific image versions:
+
+```bash
+helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system \
+  --set api.database.existingSecret=vesta-db-secret \
+  --set operator.image.tag=0.1.17 \
+  --set api.image.tag=0.1.17 \
+  --set ui.image.tag=0.1.17
+```
+
+### Optional: Metrics Server (for autoscaling)
+
+```bash
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+```
+
+## Helm Configuration
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `operator.image.tag` | Operator image tag | Chart appVersion |
+| `api.image.tag` | API server image tag | Chart appVersion |
+| `ui.image.tag` | UI image tag | Chart appVersion |
+| `api.database.existingSecret` | Name of secret containing `DATABASE_URL` | `""` |
+| `api.database.url` | Inline database URL (if not using a secret) | `""` |
+| `api.ingress.enabled` | Enable API ingress | `false` |
+| `api.ingress.host` | API ingress hostname | `kubernetes.getvesta.sh` |
+| `config.domain` | Default domain for app ingresses | `apps.getvesta.sh` |
+| `config.clusterIssuer` | cert-manager ClusterIssuer for TLS | `letsencrypt-prod` |
+| `ui.enabled` | Deploy the web UI | `true` |
+
+## Usage
+
+### Deploy an app via API
+
+```bash
+curl -X POST https://<api-host>/api/v1/apps/my-app/deploy \
+  -H "Authorization: Bearer <token>" \
+  -d '{"tag": "v1.2.3", "environment": "production"}'
+```
+
+### Deploy via CLI
+
+```bash
+vesta deploy my-app --tag v1.2.3 --env production
+```
 
 ## Project Structure
 
 ```
 vesta-kubernetes/
-├── SPECIFICATIONS.md              # Full product & technical spec
-├── operator/                      # Kubernetes operator
-│   ├── api/v1alpha1/              # CRD Go types (VestaApp, VestaPipeline, VestaConfig, VestaSecret)
-│   ├── controllers/               # Reconciliation controllers
-│   ├── config/
-│   │   ├── crd/bases/             # CRD YAML schemas
-│   │   ├── rbac/                  # RBAC roles and bindings
-│   │   ├── manager/               # Operator deployment manifest
-│   │   └── samples/               # Example CRD instances
-│   ├── main.go                    # Operator entrypoint
-│   └── Dockerfile
-├── api/                           # REST API server
-│   ├── cmd/main.go                # API entrypoint
-│   ├── internal/
-│   │   ├── handlers/              # Route handlers (apps, deploy, secrets, etc.)
-│   │   └── middleware/            # Auth middleware
-│   ├── openapi.yaml               # OpenAPI 3.0 specification
-│   └── Dockerfile
-├── ui/                            # Web UI (React)
-│   ├── package.json
-│   └── index.html
-├── cli/                           # CLI tool
-│   ├── cmd/                       # Cobra commands (deploy, apps, pipelines, secrets)
-│   └── main.go
-└── deploy/
-    └── helm/vesta/                # Helm chart
-        ├── Chart.yaml
-        ├── values.yaml
-        ├── crds/                  # CRD installation
-        └── templates/             # K8s manifests
-```
-
-## Custom Resource Definitions
-
-- **VestaApp** -- Deployed application (image, runtime, secrets, scaling, ingress, custom K8s config)
-- **VestaPipeline** -- Groups apps across stages (review, staging, production)
-- **VestaConfig** -- Cluster-wide configuration (registry, pod sizes, auth, autoscale defaults)
-- **VestaSecret** -- Managed secrets (Opaque, Docker registry, TLS)
-
-## Key Features
-
-- **Secrets-first**: Sensitive config via Kubernetes Secrets, not plain env vars
-- **ImagePullSecrets**: Full private registry support at global, pipeline, and app levels
-- **Custom K8s config**: Per-app nodeSelector, tolerations, affinity, probes, initContainers, extra resources
-- **API-driven deploy**: `POST /api/v1/apps/:id/deploy` with just a tag -- repository and imagePullSecrets come from app config
-- **Autoscaling**: CPU, memory, and custom metric-based HPA with configurable behavior
-- **Git integration**: Push-to-deploy, PR review apps, branch-per-stage
-
-## Quick Start
-
-```bash
-# Install via Helm
-helm install vesta ./deploy/helm/vesta -n vesta-system --create-namespace
-
-# Deploy an app via API
-curl -X POST https://kubernetes.getvesta.sh/api/v1/apps/my-app/deploy \
-  -H "Authorization: Bearer <token>" \
-  -d '{"tag": "v1.2.3"}'
-
-# Deploy via CLI
-vesta deploy my-app --tag v1.2.3 --token <token>
+├── operator/          # Kubernetes operator (Go/Kubebuilder)
+├── api/               # REST API server (Go/Gin)
+├── ui/                # Web dashboard (React/TypeScript/Tailwind)
+├── cli/               # CLI tool (Go/Cobra)
+└── deploy/helm/vesta/ # Helm chart
 ```
 
 ## Development
 
 ```bash
+# Start PostgreSQL
+docker compose up postgres
+
 # Operator
 cd operator && go run .
 
 # API server
-cd api && go run ./cmd/main.go
-
-# CLI
-cd cli && go build -o vesta . && ./vesta --help
+DATABASE_URL="postgres://vesta:vesta-dev@localhost:5433/vesta?sslmode=disable" make run-api
 
 # UI
 cd ui && npm install && npm run dev
+
+# CLI
+cd cli && go build -o vesta . && ./vesta --help
 ```
 
 ## License
 
 GPL-3.0
-
-
-DATABASE_URL="postgres://vesta:vesta-dev@localhost:5433/vesta?sslmode=disable" make run-api
-
-
-# Install CRDs
-kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/main/deploy/helm/vesta/crds/
-
-# Install the chart from GHCR
-helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system --create-namespace \
-  --set config.domain=your-domain.com
-
-To upgrade later:
-helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta -n vesta-system
-
-
-git tag v0.1.0
-git push origin v0.1.0
-
-helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system --create-namespace \
-  --set api.database.existingSecret=vesta-db-secret \
-  --version 0.1.11
-
-
-helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system --version 0.1.1
-
-
-helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system --version 0.1.2 \
-  --set api.databaseUrl="postgres://vesta:password@postgres-host:5432/vesta?sslmode=disable"
-
-
-# Create/update the secret directly
-kubectl create secret generic vesta-db-secret \
-  -n vesta-system \
-  --from-literal=DATABASE_URL="postgres://vesta:vesta-dev@host.docker.internal:5433/vesta?sslmode=disable" \
-  --dry-run=client -o yaml | kubectl apply -f -
-
-
-# Tell Helm to use it
-helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system --version 0.1.11 \
-  --set api.database.existingSecret=vesta-db-secret
-
-kubectl rollout restart deployment vesta-api -n vesta-system
-
-
-helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system --version 0.1.16 \
-  --set api.database.existingSecret=vesta-db-secret \
-  --set operator.image.tag=0.1.16 \
-  --set api.image.tag=0.1.16 \
-  --set ui.image.tag=0.1.16
-
-
-
-###
-for autoscalling, we need metrics server and hpa
-
-kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml

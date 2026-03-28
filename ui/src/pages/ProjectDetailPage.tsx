@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
+import { useUserRole } from '../lib/useRole'
 
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -28,6 +29,7 @@ export default function ProjectDetailPage() {
   const [showCreateApp, setShowCreateApp] = useState(false)
 
   const [showEditProject, setShowEditProject] = useState(false)
+  const role = useUserRole()
 
   if (isLoading) return <Spinner />
 
@@ -68,6 +70,7 @@ export default function ProjectDetailPage() {
           <section>
             <div className="flex items-center justify-between mb-3">
               <h3 className="section-title">Environments</h3>
+              {role !== 'viewer' && (
               <button onClick={() => setShowCreateEnv(!showCreateEnv)} className="btn-ghost text-xs">
                 <span className="flex items-center gap-1.5">
                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -76,6 +79,7 @@ export default function ProjectDetailPage() {
                   Add Environment
                 </span>
               </button>
+              )}
             </div>
 
             {showCreateEnv && (
@@ -105,7 +109,7 @@ export default function ProjectDetailPage() {
           <section>
             <div className="flex items-center justify-between mb-3">
               <h3 className="section-title">Apps</h3>
-              {environments?.items && environments.items.length > 0 ? (
+              {environments?.items && environments.items.length > 0 && role !== 'viewer' ? (
                 <button onClick={() => setShowCreateApp(!showCreateApp)} className="btn-ghost text-xs">
                   <span className="flex items-center gap-1.5">
                     <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -176,9 +180,11 @@ export default function ProjectDetailPage() {
           <section className="card p-5">
             <div className="flex items-center justify-between mb-4">
               <h3 className="section-title">Project Info</h3>
+              {role !== 'viewer' && (
               <button onClick={() => setShowEditProject(!showEditProject)} className="text-xs text-accent hover:text-accent-glow transition-colors">
                 {showEditProject ? 'Cancel' : 'Edit'}
               </button>
+              )}
             </div>
             {showEditProject ? (
               <EditProjectForm project={project} projectId={projectId!} onClose={() => setShowEditProject(false)} />
@@ -217,9 +223,10 @@ export default function ProjectDetailPage() {
           </section>
 
           <ImagePullSecretsSection projectId={projectId!} project={project} />
-          <NotificationsSection projectId={projectId!} />
         </div>
       </div>
+
+      <NotificationsSection projectId={projectId!} />
     </div>
   )
 }
@@ -312,6 +319,7 @@ function EditProjectForm({ project, projectId, onClose }: { project: any; projec
 
 function EnvironmentRow({ env, projectId }: { env: any; projectId: string }) {
   const queryClient = useQueryClient()
+  const role = useUserRole()
 
   const deleteMutation = useMutation({
     mutationFn: () => api.deleteEnvironment(projectId, env.name),
@@ -341,6 +349,7 @@ function EnvironmentRow({ env, projectId }: { env: any; projectId: string }) {
           </div>
         </div>
       </div>
+      {role !== 'viewer' && (
       <button
         onClick={() => {
           if (confirm(`Delete environment "${env.name}"?`))
@@ -350,6 +359,7 @@ function EnvironmentRow({ env, projectId }: { env: any; projectId: string }) {
       >
         Delete
       </button>
+      )}
     </div>
   )
 }
@@ -454,6 +464,7 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
   const [envConfigs, setEnvConfigs] = useState<Record<string, EnvConfig>>({})
   const [imageRepo, setImageRepo] = useState('')
   const [imageTag, setImageTag] = useState('')
+  const [pullPolicy, setPullPolicy] = useState('IfNotPresent')
   const [port, setPort] = useState('3000')
   const [hcEnabled, setHcEnabled] = useState(false)
   const [hcType, setHcType] = useState('http')
@@ -535,6 +546,7 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
       image: {
         repository: imageRepo || undefined,
         tag: imageTag || undefined,
+        pullPolicy,
       },
       runtime: {
         port: parseInt(port) || 3000,
@@ -691,6 +703,15 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
             placeholder="latest"
           />
         </div>
+      </div>
+
+      <div>
+        <label className="label">Pull Policy</label>
+        <select value={pullPolicy} onChange={(e) => setPullPolicy(e.target.value)} className="input-field w-40">
+          <option value="IfNotPresent">IfNotPresent</option>
+          <option value="Always">Always</option>
+          <option value="Never">Never</option>
+        </select>
       </div>
 
       <div>

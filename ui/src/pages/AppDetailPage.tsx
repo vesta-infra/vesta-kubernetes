@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
+import { useUserRole } from '../lib/useRole'
 
 export default function AppDetailPage() {
   const { appId } = useParams<{ appId: string }>()
@@ -26,6 +27,7 @@ export default function AppDetailPage() {
   const [secretEnv, setSecretEnv] = useState('')
   const [editing, setEditing] = useState(false)
   const [activeTab, setActiveTab] = useState<'overview' | 'secrets' | 'logs' | 'metrics'>('overview')
+  const role = useUserRole()
 
   const projectId = app?.project || app?.spec?.project
   const rawEnvs = app?.environments || app?.spec?.environments || []
@@ -130,6 +132,7 @@ export default function AppDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {role !== 'viewer' && (
           <button
             onClick={() => setEditing(!editing)}
             className="btn-ghost text-xs"
@@ -141,6 +144,8 @@ export default function AppDetailPage() {
               {editing ? 'Cancel Edit' : 'Edit'}
             </span>
           </button>
+          )}
+          {role !== 'viewer' && (
           <button
             onClick={() => {
               if (confirm(`Delete app "${app.name}"? This cannot be undone.`))
@@ -156,6 +161,7 @@ export default function AppDetailPage() {
               {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
             </span>
           </button>
+          )}
         </div>
       </div>
 
@@ -164,7 +170,7 @@ export default function AppDetailPage() {
       )}
 
       <div className="flex border-b border-border">
-        {(['overview', 'secrets', 'logs', 'metrics'] as const).map((tab) => (
+        {(['overview', ...(role !== 'viewer' ? ['secrets' as const] : []), 'logs', 'metrics'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -213,7 +219,7 @@ export default function AppDetailPage() {
             <section className="card p-5">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="section-title">Environments</h3>
-                {availableEnvs.length > 0 && (
+                {availableEnvs.length > 0 && role !== 'viewer' && (
                   <select
                     value=""
                     onChange={(e) => {
@@ -240,6 +246,7 @@ export default function AppDetailPage() {
                     >
                       <span className="text-sm font-mono text-text-secondary">{env}</span>
                       <div className="flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {role !== 'viewer' && (
                         <button
                           onClick={() => {
                             if (confirm(`Restart "${app.name}" in "${env}"?`))
@@ -253,7 +260,8 @@ export default function AppDetailPage() {
                           </svg>
                           Restart
                         </button>
-                        {appEnvironments.length > 1 && (
+                        )}
+                        {appEnvironments.length > 1 && role !== 'viewer' && (
                           <button
                             onClick={() => {
                               if (confirm(`Remove "${app.name}" from "${env}"?`))
@@ -298,7 +306,7 @@ export default function AppDetailPage() {
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="text-xs text-text-tertiary font-mono">{d.deployedBy}</span>
-                        {d.version && (
+                        {d.version && role !== 'viewer' && (
                           <button
                             onClick={() => {
                               if (confirm(`Rollback to version ${d.version}?`)) {
@@ -320,6 +328,7 @@ export default function AppDetailPage() {
           </div>
 
           <div className="space-y-4">
+            {role !== 'viewer' && (
             <section className="card p-5">
               <h3 className="section-title mb-4">Deploy</h3>
               <form
@@ -373,6 +382,7 @@ export default function AppDetailPage() {
                 )}
               </form>
             </section>
+            )}
 
             <section className="card p-5">
               <h3 className="section-title mb-4">Configuration</h3>
@@ -458,6 +468,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const queryClient = useQueryClient()
   const [imageRepo, setImageRepo] = useState(app.spec?.image?.repository || '')
   const [imageTag, setImageTag] = useState(app.spec?.image?.tag || '')
+  const [pullPolicy, setPullPolicy] = useState(app.spec?.image?.pullPolicy || 'IfNotPresent')
   const [port, setPort] = useState(String(app.spec?.runtime?.port || 3000))
   const [domain, setDomain] = useState(app.spec?.ingress?.domain || '')
   const [tls, setTls] = useState(app.spec?.ingress?.tls || false)
@@ -534,6 +545,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       patch.image = {
         repository: imageRepo,
         tag: imageTag || 'latest',
+        pullPolicy,
         ...(pullSecrets.length > 0 && { imagePullSecrets: pullSecrets.map(n => ({ name: n })) }),
       }
     }
@@ -609,6 +621,14 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         <div>
           <label className="label">Tag</label>
           <input value={imageTag} onChange={e => setImageTag(e.target.value)} className="input-field" placeholder="latest" />
+        </div>
+        <div>
+          <label className="label">Pull Policy</label>
+          <select value={pullPolicy} onChange={e => setPullPolicy(e.target.value)} className="input-field">
+            <option value="IfNotPresent">IfNotPresent</option>
+            <option value="Always">Always</option>
+            <option value="Never">Never</option>
+          </select>
         </div>
       </div>
 
