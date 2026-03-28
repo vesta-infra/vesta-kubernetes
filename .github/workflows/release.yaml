@@ -6,7 +6,7 @@ on:
     tags: ["v*"]
 
 env:
-  REGISTRY: ghcr.io/getvesta
+  REGISTRY: ghcr.io/vesta-infra
 
 jobs:
   build-and-push:
