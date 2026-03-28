@@ -9,6 +9,7 @@ import (
 	"kubernetes.getvesta.sh/api/internal/handlers"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/middleware"
+	"kubernetes.getvesta.sh/api/internal/services"
 )
 
 func main() {
@@ -33,7 +34,9 @@ func main() {
 		log.Fatalf("Failed to create Kubernetes client: %v", err)
 	}
 
-	h := handlers.New(kc, database)
+	notifier := services.NewNotifier(database)
+
+	h := handlers.New(kc, database, notifier)
 
 	r := gin.Default()
 
@@ -50,6 +53,9 @@ func main() {
 	// Auth (unauthenticated)
 	v1.POST("/auth/login", h.Login)
 	v1.GET("/auth/oauth/:provider", h.OAuthRedirect)
+	v1.GET("/auth/forgot-password/status", h.ForgotPasswordStatus)
+	v1.POST("/auth/forgot-password", h.ForgotPassword)
+	v1.POST("/auth/reset-password", h.ResetPassword)
 
 	// Webhooks (unauthenticated, verified by signature)
 	v1.POST("/webhooks/:provider", h.ReceiveWebhook)
@@ -89,6 +95,7 @@ func main() {
 		auth.DELETE("/projects/:projectId/environments/:env", h.DeleteEnvironment)
 
 		// Apps
+		auth.GET("/pod-sizes", h.ListPodSizes)
 		auth.POST("/projects/:projectId/apps", middleware.RequireScope("write"), h.CreateApp)
 		auth.GET("/projects/:projectId/apps", middleware.RequireScope("read"), h.ListProjectApps)
 		auth.GET("/apps", middleware.RequireScope("read"), h.ListApps)
@@ -121,6 +128,14 @@ func main() {
 		// Templates
 		auth.GET("/templates", h.ListTemplates)
 		auth.POST("/templates/:id/deploy", h.DeployTemplate)
+
+		// Notifications
+		auth.POST("/projects/:projectId/notifications", h.CreateNotificationChannel)
+		auth.GET("/projects/:projectId/notifications", h.ListNotificationChannels)
+		auth.PUT("/projects/:projectId/notifications/:channelId", h.UpdateNotificationChannel)
+		auth.DELETE("/projects/:projectId/notifications/:channelId", h.DeleteNotificationChannel)
+		auth.POST("/projects/:projectId/notifications/:channelId/test", h.TestNotificationChannel)
+		auth.GET("/projects/:projectId/notifications/history", h.ListNotificationHistory)
 
 		// API tokens
 		auth.GET("/auth/tokens", h.ListAPITokens)

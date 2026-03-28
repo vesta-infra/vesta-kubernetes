@@ -44,6 +44,21 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  forgotPasswordStatus: () =>
+    request<{ available: boolean }>('/auth/forgot-password/status'),
+
+  forgotPassword: (email: string) =>
+    request<{ message: string }>('/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  resetPassword: (token: string, newPassword: string) =>
+    request<{ message: string }>('/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token, newPassword }),
+    }),
+
   // User
   getCurrentUser: () =>
     request<{ id: string; username: string; email: string; displayName: string; role: string; teamIds: string[] }>('/user/me'),
@@ -237,4 +252,37 @@ export const api = {
   // Users (admin)
   listUsers: () =>
     request<{ items: any[]; total: number }>('/users'),
+
+  // Pod Sizes
+  listPodSizes: () =>
+    request<{ items: any[]; total: number }>('/pod-sizes'),
+
+  // Notifications
+  listNotificationChannels: (projectId: string) =>
+    request<{ items: any[]; total: number }>(`/projects/${projectId}/notifications`),
+
+  createNotificationChannel: (projectId: string, data: { name: string; type: string; config: Record<string, any>; events: string[] }) =>
+    request<any>(`/projects/${projectId}/notifications`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateNotificationChannel: (projectId: string, channelId: string, data: { name?: string; config?: Record<string, any>; events?: string[]; enabled?: boolean }) =>
+    request<any>(`/projects/${projectId}/notifications/${channelId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  deleteNotificationChannel: (projectId: string, channelId: string) =>
+    request<void>(`/projects/${projectId}/notifications/${channelId}`, { method: 'DELETE' }),
+
+  testNotificationChannel: (projectId: string, channelId: string) =>
+    request<{ status: string }>(`/projects/${projectId}/notifications/${channelId}/test`, { method: 'POST' }),
+
+  listNotificationHistory: (projectId: string, limit?: number) => {
+    const params = new URLSearchParams()
+    if (limit) params.set('limit', String(limit))
+    const qs = params.toString() ? `?${params}` : ''
+    return request<{ items: any[]; total: number }>(`/projects/${projectId}/notifications/history${qs}`)
+  },
 }

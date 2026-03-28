@@ -81,6 +81,7 @@ type AppEnvironmentConfig struct {
 	Name      string                 `json:"name" binding:"required"`
 	Replicas  *int32                 `json:"replicas,omitempty"`
 	Autoscale map[string]interface{} `json:"autoscale,omitempty"`
+	Resources map[string]interface{} `json:"resources,omitempty"`
 }
 
 type CreateAppRequest struct {
@@ -143,4 +144,19 @@ type TLSConfigReq struct {
 
 type NameRef struct {
 	Name string `json:"name"`
+}
+
+// Notifications
+type CreateNotificationChannelRequest struct {
+	Name   string                 `json:"name" binding:"required"`
+	Type   string                 `json:"type" binding:"required"`
+	Config map[string]interface{} `json:"config" binding:"required"`
+	Events []string               `json:"events" binding:"required"`
+}
+
+type UpdateNotificationChannelRequest struct {
+	Name    string                 `json:"name"`
+	Config  map[string]interface{} `json:"config,omitempty"`
+	Events  []string               `json:"events,omitempty"`
+	Enabled *bool                  `json:"enabled,omitempty"`
 }

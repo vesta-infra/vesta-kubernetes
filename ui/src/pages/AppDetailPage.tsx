@@ -473,12 +473,13 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
-  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number }>>(() => {
+  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
       const env = typeof e === 'string' ? { name: e } : e
       configs[env.name] = {
         replicas: env.replicas ?? 1,
+        podSize: env.resources?.size || '',
         autoscaleEnabled: env.autoscale?.enabled || false,
         minReplicas: env.autoscale?.minReplicas || 1,
         maxReplicas: env.autoscale?.maxReplicas || 5,
@@ -486,6 +487,11 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       }
     }
     return configs
+  })
+
+  const { data: podSizes } = useQuery({
+    queryKey: ['podSizes'],
+    queryFn: () => api.listPodSizes(),
   })
 
   // Custom labels and annotations
@@ -539,6 +545,9 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           maxReplicas: cfg.maxReplicas,
           metrics: [{ type: 'cpu', targetAverageUtilization: cfg.targetCPU }],
         }
+      }
+      if (cfg.podSize) {
+        env.resources = { size: cfg.podSize }
       }
       return env
     })
@@ -601,6 +610,19 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
               <div key={envName} className="rounded-lg border border-border bg-surface-1 p-3">
                 <span className="text-sm font-mono text-accent">{envName}</span>
                 <div className="mt-2 flex items-center gap-4 flex-wrap">
+                  <div>
+                    <label className="text-xs text-text-tertiary">Pod Size</label>
+                    <select
+                      value={cfg.podSize}
+                      onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], podSize: e.target.value } }))}
+                      className="input-field w-28 mt-1"
+                    >
+                      <option value="">Default</option>
+                      {podSizes?.items?.map((s: any) => (
+                        <option key={s.name} value={s.name}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
                   <div>
                     <label className="text-xs text-text-tertiary">Replicas</label>
                     <input

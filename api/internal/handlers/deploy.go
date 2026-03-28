@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
+	"kubernetes.getvesta.sh/api/internal/services"
 )
 
 func (h *Handler) DeployApp(c *gin.Context) {
@@ -90,6 +91,16 @@ func (h *Handler) DeployApp(c *gin.Context) {
 			return
 		}
 
+		h.Notifier.Send(c.Request.Context(), services.NotificationEvent{
+			Type:        services.EventDeployStarted,
+			ProjectID:   project,
+			AppID:       appId,
+			Environment: req.Environment,
+			Image:       targetImage,
+			TriggeredBy: triggeredBy,
+			Message:     fmt.Sprintf("Deploying %s to %s", targetImage, req.Environment),
+		})
+
 		c.JSON(http.StatusAccepted, models.DeployResponse{
 			ID:          deployId,
 			AppID:       appId,
@@ -119,6 +130,15 @@ func (h *Handler) DeployApp(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to restart deployment in %s: %v", targetNS, err)})
 			return
 		}
+
+		h.Notifier.Send(c.Request.Context(), services.NotificationEvent{
+			Type:        services.EventDeployStarted,
+			ProjectID:   project,
+			AppID:       appId,
+			Environment: req.Environment,
+			TriggeredBy: triggeredBy,
+			Message:     fmt.Sprintf("Redeploying %s in %s", appId, req.Environment),
+		})
 
 		c.JSON(http.StatusAccepted, models.DeployResponse{
 			ID:          deployId,
@@ -204,6 +224,16 @@ func (h *Handler) RollbackApp(c *gin.Context) {
 		return
 	}
 
+	h.Notifier.Send(c.Request.Context(), services.NotificationEvent{
+		Type:        services.EventDeployStarted,
+		ProjectID:   project,
+		AppID:       appId,
+		Environment: req.Environment,
+		Image:       targetImage,
+		TriggeredBy: c.GetString("userId"),
+		Message:     fmt.Sprintf("Rolling back %s to version %d (%s)", appId, req.Version, targetImage),
+	})
+
 	now := models.NowRFC3339()
 	c.JSON(http.StatusAccepted, models.DeployResponse{
 		ID:          fmt.Sprintf("rollback-%s-%s-%d", appId, req.Environment, time.Now().Unix()),
@@ -284,6 +314,15 @@ func (h *Handler) RestartApp(c *gin.Context) {
 		return
 	}
 
+	h.Notifier.Send(c.Request.Context(), services.NotificationEvent{
+		Type:        services.EventAppRestarted,
+		ProjectID:   project,
+		AppID:       appId,
+		Environment: req.Environment,
+		TriggeredBy: c.GetString("userId"),
+		Message:     fmt.Sprintf("Restarting %s in %s", appId, req.Environment),
+	})
+
 	c.JSON(http.StatusAccepted, gin.H{"status": "restarting", "environment": req.Environment})
 }
 
@@ -307,6 +346,19 @@ func (h *Handler) ScaleApp(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
+	}
+
+	// Resolve project for notification
+	if existing, e := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId); e == nil {
+		spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+		project := getNestedString(spec, "project")
+		h.Notifier.Send(c.Request.Context(), services.NotificationEvent{
+			Type:        services.EventAppScaled,
+			ProjectID:   project,
+			AppID:       appId,
+			TriggeredBy: c.GetString("userId"),
+			Message:     fmt.Sprintf("Scaled %s to %d replicas", appId, req.Replicas),
+		})
 	}
 
 	c.JSON(http.StatusOK, gin.H{"replicas": req.Replicas})

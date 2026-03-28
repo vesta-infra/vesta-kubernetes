@@ -1,12 +1,65 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
+	"kubernetes.getvesta.sh/api/internal/services"
 )
+
+// Default pod size presets used when no VestaConfig is found
+var defaultPodSizes = []map[string]interface{}{
+	{"name": "small", "cpu": "250m", "memory": "256Mi", "cpuLimit": "500m", "memoryLimit": "512Mi"},
+	{"name": "medium", "cpu": "500m", "memory": "512Mi", "cpuLimit": "1", "memoryLimit": "1Gi"},
+	{"name": "large", "cpu": "1", "memory": "1Gi", "cpuLimit": "2", "memoryLimit": "2Gi"},
+	{"name": "xlarge", "cpu": "2", "memory": "2Gi", "cpuLimit": "4", "memoryLimit": "4Gi"},
+}
+
+func (h *Handler) ListPodSizes(c *gin.Context) {
+	configs, err := h.K8s.ListResources(c.Request.Context(), k8s.VestaConfigGVR, vestaSystemNS, "")
+	if err != nil || len(configs.Items) == 0 {
+		c.JSON(http.StatusOK, models.ListResponse{Items: defaultPodSizes, Total: len(defaultPodSizes)})
+		return
+	}
+
+	spec, _, _ := unstructuredNestedMap(configs.Items[0].Object, "spec")
+	podSizeList, ok := spec["podSizeList"].([]interface{})
+	if !ok || len(podSizeList) == 0 {
+		c.JSON(http.StatusOK, models.ListResponse{Items: defaultPodSizes, Total: len(defaultPodSizes)})
+		return
+	}
+
+	sizes := make([]map[string]interface{}, 0, len(podSizeList))
+	for _, item := range podSizeList {
+		preset, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		size := map[string]interface{}{"name": preset["name"]}
+		if reqs, ok := preset["requests"].(map[string]interface{}); ok {
+			if v, ok := reqs["cpu"]; ok {
+				size["cpu"] = v
+			}
+			if v, ok := reqs["memory"]; ok {
+				size["memory"] = v
+			}
+		}
+		if lims, ok := preset["limits"].(map[string]interface{}); ok {
+			if v, ok := lims["cpu"]; ok {
+				size["cpuLimit"] = v
+			}
+			if v, ok := lims["memory"]; ok {
+				size["memoryLimit"] = v
+			}
+		}
+		sizes = append(sizes, size)
+	}
+
+	c.JSON(http.StatusOK, models.ListResponse{Items: sizes, Total: len(sizes)})
+}
 
 func (h *Handler) CreateApp(c *gin.Context) {
 	projectID := c.Param("projectId")
@@ -61,6 +114,9 @@ func (h *Handler) CreateApp(c *gin.Context) {
 					}
 				}
 				envConfig["autoscale"] = autoscale
+			}
+			if e.Resources != nil {
+				envConfig["resources"] = e.Resources
 			}
 			envs[i] = envConfig
 		}
@@ -121,6 +177,14 @@ func (h *Handler) CreateApp(c *gin.Context) {
 		"name":      result.GetName(),
 		"project":   projectID,
 		"createdAt": result.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
+	})
+
+	h.Notifier.Send(c.Request.Context(), services.NotificationEvent{
+		Type:        services.EventAppCreated,
+		ProjectID:   projectID,
+		AppID:       result.GetName(),
+		TriggeredBy: c.GetString("userId"),
+		Message:     fmt.Sprintf("App %s created in project %s", result.GetName(), projectID),
 	})
 }
 
@@ -244,10 +308,28 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 func (h *Handler) DeleteApp(c *gin.Context) {
 	appID := c.Param("appId")
 
+	// Resolve project for notification before deleting
+	var projectID string
+	if existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID); err == nil {
+		spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+		projectID = getNestedString(spec, "project")
+	}
+
 	if err := h.K8s.DeleteResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID); err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
 	}
+
+	if projectID != "" {
+		h.Notifier.Send(c.Request.Context(), services.NotificationEvent{
+			Type:        services.EventAppDeleted,
+			ProjectID:   projectID,
+			AppID:       appID,
+			TriggeredBy: c.GetString("userId"),
+			Message:     fmt.Sprintf("App %s deleted from project %s", appID, projectID),
+		})
+	}
+
 	c.Status(http.StatusNoContent)
 }
 

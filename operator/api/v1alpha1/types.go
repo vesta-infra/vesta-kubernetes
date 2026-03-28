@@ -50,6 +50,7 @@ type AppEnvironmentConfig struct {
 	Name             string                        `json:"name"`
 	Replicas         *int32                        `json:"replicas,omitempty"`
 	Autoscale        *AutoscaleConfig              `json:"autoscale,omitempty"`
+	Resources        *ResourceConfig               `json:"resources,omitempty"`
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 }
 

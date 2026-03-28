@@ -25,7 +25,8 @@ import (
 
 type VestaAppReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme         *runtime.Scheme
+	ConfigResolver *ConfigResolver
 }
 
 // targetEnv holds the resolved namespace and per-environment configuration
@@ -293,7 +294,7 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 		projectPullSecrets = project.Spec.ImagePullSecrets
 	}
 
-	container := r.buildContainer(app)
+	container := r.buildContainer(app, target.Config.Resources)
 	podSpec := r.buildPodSpec(app, container, projectPullSecrets, target.Config.ImagePullSecrets)
 
 	// Copy referenced registry secrets to target namespace
@@ -359,7 +360,7 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 	return nil
 }
 
-func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp) corev1.Container {
+func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envResources *vestav1alpha1.ResourceConfig) corev1.Container {
 	image := "placeholder:latest"
 	if app.Spec.Image != nil {
 		tag := "latest"
@@ -446,12 +447,24 @@ func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp) corev1.
 		})
 	}
 
-	if app.Spec.Resources != nil {
-		if app.Spec.Resources.Requests != nil {
-			container.Resources.Requests = app.Spec.Resources.Requests
-		}
-		if app.Spec.Resources.Limits != nil {
-			container.Resources.Limits = app.Spec.Resources.Limits
+	// Resolve resources: per-env overrides app-level, size name resolves via ConfigResolver
+	effectiveResources := app.Spec.Resources
+	if envResources != nil {
+		effectiveResources = envResources
+	}
+
+	if effectiveResources != nil {
+		if effectiveResources.Size != "" && r.ConfigResolver != nil {
+			reqs, lims := r.ConfigResolver.ResolvePodSize(effectiveResources.Size)
+			container.Resources.Requests = reqs
+			container.Resources.Limits = lims
+		} else {
+			if effectiveResources.Requests != nil {
+				container.Resources.Requests = effectiveResources.Requests
+			}
+			if effectiveResources.Limits != nil {
+				container.Resources.Limits = effectiveResources.Limits
+			}
 		}
 	}
 
