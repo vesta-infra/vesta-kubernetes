@@ -1,0 +1,27 @@
+apiVersion: kubernetes.getvesta.sh/v1alpha1
+kind: VestaEnvironment
+metadata:
+  name: staging
+  namespace: vesta-system
+spec:
+  project: demo-project
+  displayName: Staging
+  order: 1
+  autoDeploy: true
+  branch: develop
+  requireApproval: false
+  autoDeployPRs: false
+---
+apiVersion: kubernetes.getvesta.sh/v1alpha1
+kind: VestaEnvironment
+metadata:
+  name: production
+  namespace: vesta-system
+spec:
+  project: demo-project
+  displayName: Production
+  order: 2
+  autoDeploy: false
+  branch: main
+  requireApproval: true
+  autoDeployPRs: false

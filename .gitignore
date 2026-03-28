@@ -1,0 +1,27 @@
+# Binaries
+operator/bin/
+api/bin/
+cli/bin/
+
+# Node
+ui/node_modules/
+ui/dist/
+
+# Go
+*.exe
+*.test
+*.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local

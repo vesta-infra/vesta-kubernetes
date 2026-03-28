@@ -1,0 +1,60 @@
+apiVersion: kubernetes.getvesta.sh/v1alpha1
+kind: VestaConfig
+metadata:
+  name: vesta
+spec:
+  domain: apps.example.com
+  clusterIssuer: letsencrypt-prod
+
+  registry:
+    build:
+      url: registry.example.com
+      credentials:
+        secretRef: build-registry-creds
+    globalImagePullSecrets:
+      - name: global-pull-secret
+
+  podSizeList:
+    - name: small
+      requests:
+        cpu: "250m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+    - name: medium
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+    - name: large
+      requests:
+        cpu: "1000m"
+        memory: "1Gi"
+      limits:
+        cpu: "2000m"
+        memory: "2Gi"
+
+  autoscaleDefaults:
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPU: 70
+    targetMemory: 80
+
+  buildpacks:
+    - name: nodejs
+      fetchImage: node:20-alpine
+      buildCommand: npm install && npm run build
+      runCommand: npm start
+
+  auth:
+    local:
+      enabled: true
+    oauth2:
+      enabled: false
+    apiTokens:
+      enabled: true
+      maxTokensPerUser: 10
+      defaultExpiry: 90d

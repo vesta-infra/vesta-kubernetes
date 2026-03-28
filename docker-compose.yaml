@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: vesta
+      POSTGRES_USER: vesta
+      POSTGRES_PASSWORD: vesta-dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    ports:
+      - "8090:8090"
+    environment:
+      - PORT=8090
+      - KUBECONFIG=/tmp/kubeconfig
+      - DATABASE_URL=postgres://vesta:vesta-dev@postgres:5432/vesta?sslmode=disable
+      - JWT_SECRET=vesta-dev-jwt-secret-change-in-production
+    volumes:
+      - ${HOME}/.kube/config-docker:/tmp/kubeconfig:ro
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  operator:
+    build:
+      context: ./operator
+      dockerfile: Dockerfile
+    environment:
+      - KUBECONFIG=/tmp/kubeconfig
+    volumes:
+      - ${HOME}/.kube/config-docker:/tmp/kubeconfig:ro
+    restart: unless-stopped
+
+volumes:
+  pgdata:

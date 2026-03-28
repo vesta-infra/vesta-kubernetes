@@ -1,0 +1,24 @@
+apiVersion: kubernetes.getvesta.sh/v1alpha1
+kind: VestaProject
+metadata:
+  name: demo-project
+  namespace: vesta-system
+spec:
+  displayName: Demo Project
+  team: platform-engineering
+  defaultGit:
+    provider: github
+    repository: myorg/sample-app
+  defaultBuild:
+    strategy: buildpacks
+  defaultImage:
+    pullPolicy: IfNotPresent
+  imagePullSecrets:
+    - name: project-registry-secret
+  notifications:
+    slack:
+      webhookUrl: https://hooks.slack.com/services/T00/B00/xxx
+      events:
+        - deploy.success
+        - deploy.failed
+        - pr.opened

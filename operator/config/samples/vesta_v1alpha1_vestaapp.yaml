@@ -1,0 +1,55 @@
+apiVersion: kubernetes.getvesta.sh/v1alpha1
+kind: VestaApp
+metadata:
+  name: sample-app
+  namespace: demo-project-production
+spec:
+  project: demo-project
+  environments:
+    - staging
+    - production
+
+  image:
+    repository: registry.example.com/demo/sample-app
+    tag: v1.0.0
+    pullPolicy: IfNotPresent
+    imagePullSecrets:
+      - name: registry-credentials
+
+  runtime:
+    port: 3000
+    command: "node server.js"
+    env:
+      - name: NODE_ENV
+        value: production
+    secrets:
+      - secretRef:
+          name: sample-app-secrets
+        keys:
+          - secretKey: DATABASE_URL
+            envVar: DATABASE_URL
+
+  scaling:
+    replicas: 2
+    autoscale:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 10
+      metrics:
+        - type: cpu
+          targetAverageUtilization: 70
+
+  resources:
+    size: medium
+
+  ingress:
+    domain: sample-app.example.com
+    tls: true
+    clusterIssuer: letsencrypt-prod
+
+  addons:
+    - type: postgresql
+      version: "15"
+      size: small
+    - type: redis
+      version: "7"

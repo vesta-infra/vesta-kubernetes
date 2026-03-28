@@ -1,0 +1,95 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: vesta-operator-role
+rules:
+  # VestaApp CRD
+  - apiGroups: ["kubernetes.getvesta.sh"]
+    resources: ["vestaapps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["kubernetes.getvesta.sh"]
+    resources: ["vestaapps/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["kubernetes.getvesta.sh"]
+    resources: ["vestaapps/finalizers"]
+    verbs: ["update"]
+
+  # VestaProject CRD
+  - apiGroups: ["kubernetes.getvesta.sh"]
+    resources: ["vestaprojects"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["kubernetes.getvesta.sh"]
+    resources: ["vestaprojects/status"]
+    verbs: ["get", "update", "patch"]
+
+  # VestaEnvironment CRD
+  - apiGroups: ["kubernetes.getvesta.sh"]
+    resources: ["vestaenvironments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["kubernetes.getvesta.sh"]
+    resources: ["vestaenvironments/status"]
+    verbs: ["get", "update", "patch"]
+
+  # VestaConfig CRD
+  - apiGroups: ["kubernetes.getvesta.sh"]
+    resources: ["vestaconfigs"]
+    verbs: ["get", "list", "watch"]
+
+  # VestaSecret CRD
+  - apiGroups: ["kubernetes.getvesta.sh"]
+    resources: ["vestasecrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["kubernetes.getvesta.sh"]
+    resources: ["vestasecrets/status"]
+    verbs: ["get", "update", "patch"]
+
+  # Core resources
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+  # Apps
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Networking
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Autoscaling
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Batch (for cronjobs)
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Leader election
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]

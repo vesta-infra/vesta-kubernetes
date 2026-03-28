@@ -1,0 +1,12 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: vesta-operator-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: vesta-operator-role
+subjects:
+  - kind: ServiceAccount
+    name: vesta-operator
+    namespace: vesta-system

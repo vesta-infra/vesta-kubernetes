@@ -72,7 +72,7 @@ vesta-kubernetes/
 helm install vesta ./deploy/helm/vesta -n vesta-system --create-namespace
 
 # Deploy an app via API
-curl -X POST https://vesta.example.com/api/v1/apps/my-app/deploy \
+curl -X POST https://kubernetes.getvesta.sh/api/v1/apps/my-app/deploy \
   -H "Authorization: Bearer <token>" \
   -d '{"tag": "v1.2.3"}'
 
@@ -99,3 +99,6 @@ cd ui && npm install && npm run dev
 ## License
 
 GPL-3.0
+
+
+DATABASE_URL="postgres://vesta:vesta-dev@localhost:5433/vesta?sslmode=disable" make run-api
