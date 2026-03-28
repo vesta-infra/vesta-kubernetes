@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -141,7 +142,7 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	if err := r.updateStatusRunning(ctx, &app); err != nil {
+	if err := r.updateStatusRunning(ctx, req.NamespacedName); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -252,49 +253,54 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 	container := r.buildContainer(app)
 	podSpec := r.buildPodSpec(app, container)
 
-	deploy := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      app.Name,
-			Namespace: target.Namespace,
-		},
-	}
-
-	op, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
-		deploy.Labels = labels
-		// Apply project-level labels first, then app-level overrides
-		for k, v := range projectLabels {
-			deploy.Labels[k] = v
+	var op controllerutil.OperationResult
+	err := retry.OnError(retry.DefaultRetry, isRetriable, func() error {
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      app.Name,
+				Namespace: target.Namespace,
+			},
 		}
-		if app.Spec.CustomConfig != nil {
-			for k, v := range app.Spec.CustomConfig.Labels {
+
+		var createErr error
+		op, createErr = controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+			deploy.Labels = labels
+			// Apply project-level labels first, then app-level overrides
+			for k, v := range projectLabels {
 				deploy.Labels[k] = v
 			}
-		}
-		deploy.Annotations = map[string]string{}
-		// Apply project-level annotations first, then app-level overrides
-		for k, v := range projectAnnotations {
-			deploy.Annotations[k] = v
-		}
-		if app.Spec.CustomConfig != nil {
-			for k, v := range app.Spec.CustomConfig.Annotations {
+			if app.Spec.CustomConfig != nil {
+				for k, v := range app.Spec.CustomConfig.Labels {
+					deploy.Labels[k] = v
+				}
+			}
+			deploy.Annotations = map[string]string{}
+			// Apply project-level annotations first, then app-level overrides
+			for k, v := range projectAnnotations {
 				deploy.Annotations[k] = v
 			}
-		}
+			if app.Spec.CustomConfig != nil {
+				for k, v := range app.Spec.CustomConfig.Annotations {
+					deploy.Annotations[k] = v
+				}
+			}
 
-		deploy.Spec = appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: labels,
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
+			deploy.Spec = appsv1.DeploymentSpec{
+				Replicas: &replicas,
+				Selector: &metav1.LabelSelector{
+					MatchLabels: labels,
 				},
-				Spec: podSpec,
-			},
-		}
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: labels,
+					},
+					Spec: podSpec,
+				},
+			}
 
-		return nil
+			return nil
+		})
+		return createErr
 	})
 
 	if err != nil {
@@ -450,69 +456,73 @@ func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1a
 	}
 
 	labels := r.labelsForApp(app)
-	svc := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      app.Name,
-			Namespace: namespace,
-		},
-	}
 
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
-		svc.Labels = labels
-		svc.Spec = corev1.ServiceSpec{
-			Selector: labels,
-			Ports: []corev1.ServicePort{
-				{
-					Name:       "http",
-					Port:       80,
-					TargetPort: intstr.FromInt32(app.Spec.Runtime.Port),
-					Protocol:   corev1.ProtocolTCP,
-				},
+	return retry.OnError(retry.DefaultRetry, isRetriable, func() error {
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      app.Name,
+				Namespace: namespace,
 			},
 		}
-		return nil
-	})
 
-	return err
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+			svc.Labels = labels
+			svc.Spec = corev1.ServiceSpec{
+				Selector: labels,
+				Ports: []corev1.ServicePort{
+					{
+						Name:       "http",
+						Port:       80,
+						TargetPort: intstr.FromInt32(app.Spec.Runtime.Port),
+						Protocol:   corev1.ProtocolTCP,
+					},
+				},
+			}
+			return nil
+		})
+		return err
+	})
 }
 
 func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) error {
 	labels := r.labelsForApp(app)
 	pathType := networkingv1.PathTypePrefix
 
-	ing := &networkingv1.Ingress{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      app.Name,
-			Namespace: namespace,
-		},
-	}
-
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
-		ing.Labels = labels
-		ing.Annotations = map[string]string{}
-
-		if app.Spec.Ingress.ClusterIssuer != "" {
-			ing.Annotations["cert-manager.io/cluster-issuer"] = app.Spec.Ingress.ClusterIssuer
-		}
-		for k, v := range app.Spec.Ingress.Annotations {
-			ing.Annotations[k] = v
+	return retry.OnError(retry.DefaultRetry, isRetriable, func() error {
+		ing := &networkingv1.Ingress{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      app.Name,
+				Namespace: namespace,
+			},
 		}
 
-		ing.Spec = networkingv1.IngressSpec{
-			Rules: []networkingv1.IngressRule{
-				{
-					Host: app.Spec.Ingress.Domain,
-					IngressRuleValue: networkingv1.IngressRuleValue{
-						HTTP: &networkingv1.HTTPIngressRuleValue{
-							Paths: []networkingv1.HTTPIngressPath{
-								{
-									Path:     "/",
-									PathType: &pathType,
-									Backend: networkingv1.IngressBackend{
-										Service: &networkingv1.IngressServiceBackend{
-											Name: app.Name,
-											Port: networkingv1.ServiceBackendPort{
-												Number: 80,
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
+			ing.Labels = labels
+			ing.Annotations = map[string]string{}
+
+			if app.Spec.Ingress.ClusterIssuer != "" {
+				ing.Annotations["cert-manager.io/cluster-issuer"] = app.Spec.Ingress.ClusterIssuer
+			}
+			for k, v := range app.Spec.Ingress.Annotations {
+				ing.Annotations[k] = v
+			}
+
+			ing.Spec = networkingv1.IngressSpec{
+				Rules: []networkingv1.IngressRule{
+					{
+						Host: app.Spec.Ingress.Domain,
+						IngressRuleValue: networkingv1.IngressRuleValue{
+							HTTP: &networkingv1.HTTPIngressRuleValue{
+								Paths: []networkingv1.HTTPIngressPath{
+									{
+										Path:     "/",
+										PathType: &pathType,
+										Backend: networkingv1.IngressBackend{
+											Service: &networkingv1.IngressServiceBackend{
+												Name: app.Name,
+												Port: networkingv1.ServiceBackendPort{
+													Number: 80,
+												},
 											},
 										},
 									},
@@ -521,22 +531,21 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 						},
 					},
 				},
-			},
-		}
-
-		if app.Spec.Ingress.TLS {
-			ing.Spec.TLS = []networkingv1.IngressTLS{
-				{
-					Hosts:      []string{app.Spec.Ingress.Domain},
-					SecretName: fmt.Sprintf("%s-tls", app.Name),
-				},
 			}
-		}
 
-		return nil
+			if app.Spec.Ingress.TLS {
+				ing.Spec.TLS = []networkingv1.IngressTLS{
+					{
+						Hosts:      []string{app.Spec.Ingress.Domain},
+						SecretName: fmt.Sprintf("%s-tls", app.Name),
+					},
+				}
+			}
+
+			return nil
+		})
+		return err
 	})
-
-	return err
 }
 
 func (r *VestaAppReconciler) reconcileHPA(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
@@ -553,82 +562,87 @@ func (r *VestaAppReconciler) reconcileHPA(ctx context.Context, app *vestav1alpha
 		maxReplicas = minReplicas
 	}
 
-	hpa := &autoscalingv2.HorizontalPodAutoscaler{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      app.Name,
-			Namespace: target.Namespace,
-		},
-	}
-
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, hpa, func() error {
-		hpa.Labels = labels
-		hpa.Spec = autoscalingv2.HorizontalPodAutoscalerSpec{
-			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
-				APIVersion: "apps/v1",
-				Kind:       "Deployment",
-				Name:       app.Name,
+	return retry.OnError(retry.DefaultRetry, isRetriable, func() error {
+		hpa := &autoscalingv2.HorizontalPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      app.Name,
+				Namespace: target.Namespace,
 			},
-			MinReplicas: &minReplicas,
-			MaxReplicas: maxReplicas,
 		}
 
-		// Build metrics from config
-		hpa.Spec.Metrics = nil
-		for _, m := range as.Metrics {
-			switch m.Type {
-			case "cpu":
-				hpa.Spec.Metrics = append(hpa.Spec.Metrics, autoscalingv2.MetricSpec{
-					Type: autoscalingv2.ResourceMetricSourceType,
-					Resource: &autoscalingv2.ResourceMetricSource{
-						Name: corev1.ResourceCPU,
-						Target: autoscalingv2.MetricTarget{
-							Type:               autoscalingv2.UtilizationMetricType,
-							AverageUtilization: m.TargetAverageUtilization,
-						},
-					},
-				})
-			case "memory":
-				hpa.Spec.Metrics = append(hpa.Spec.Metrics, autoscalingv2.MetricSpec{
-					Type: autoscalingv2.ResourceMetricSourceType,
-					Resource: &autoscalingv2.ResourceMetricSource{
-						Name: corev1.ResourceMemory,
-						Target: autoscalingv2.MetricTarget{
-							Type:               autoscalingv2.UtilizationMetricType,
-							AverageUtilization: m.TargetAverageUtilization,
-						},
-					},
-				})
-			}
-		}
-
-		// Default to 80% CPU if no metrics specified
-		if len(hpa.Spec.Metrics) == 0 {
-			defaultCPU := int32(80)
-			hpa.Spec.Metrics = []autoscalingv2.MetricSpec{
-				{
-					Type: autoscalingv2.ResourceMetricSourceType,
-					Resource: &autoscalingv2.ResourceMetricSource{
-						Name: corev1.ResourceCPU,
-						Target: autoscalingv2.MetricTarget{
-							Type:               autoscalingv2.UtilizationMetricType,
-							AverageUtilization: &defaultCPU,
-						},
-					},
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, hpa, func() error {
+			hpa.Labels = labels
+			hpa.Spec = autoscalingv2.HorizontalPodAutoscalerSpec{
+				ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       app.Name,
 				},
+				MinReplicas: &minReplicas,
+				MaxReplicas: maxReplicas,
 			}
-		}
 
-		if as.Behavior != nil {
-			hpa.Spec.Behavior = as.Behavior
-		}
+			// Build metrics from config
+			hpa.Spec.Metrics = nil
+			for _, m := range as.Metrics {
+				switch m.Type {
+				case "cpu":
+					hpa.Spec.Metrics = append(hpa.Spec.Metrics, autoscalingv2.MetricSpec{
+						Type: autoscalingv2.ResourceMetricSourceType,
+						Resource: &autoscalingv2.ResourceMetricSource{
+							Name: corev1.ResourceCPU,
+							Target: autoscalingv2.MetricTarget{
+								Type:               autoscalingv2.UtilizationMetricType,
+								AverageUtilization: m.TargetAverageUtilization,
+							},
+						},
+					})
+				case "memory":
+					hpa.Spec.Metrics = append(hpa.Spec.Metrics, autoscalingv2.MetricSpec{
+						Type: autoscalingv2.ResourceMetricSourceType,
+						Resource: &autoscalingv2.ResourceMetricSource{
+							Name: corev1.ResourceMemory,
+							Target: autoscalingv2.MetricTarget{
+								Type:               autoscalingv2.UtilizationMetricType,
+								AverageUtilization: m.TargetAverageUtilization,
+							},
+						},
+					})
+				}
+			}
 
-		return nil
+			// Default to 80% CPU if no metrics specified
+			if len(hpa.Spec.Metrics) == 0 {
+				defaultCPU := int32(80)
+				hpa.Spec.Metrics = []autoscalingv2.MetricSpec{
+					{
+						Type: autoscalingv2.ResourceMetricSourceType,
+						Resource: &autoscalingv2.ResourceMetricSource{
+							Name: corev1.ResourceCPU,
+							Target: autoscalingv2.MetricTarget{
+								Type:               autoscalingv2.UtilizationMetricType,
+								AverageUtilization: &defaultCPU,
+							},
+						},
+					},
+				}
+			}
+
+			if as.Behavior != nil {
+				hpa.Spec.Behavior = as.Behavior
+			}
+
+			return nil
+		})
+		return err
 	})
-
-	return err
 }
 
-func (r *VestaAppReconciler) updateStatusRunning(ctx context.Context, app *vestav1alpha1.VestaApp) error {
+func (r *VestaAppReconciler) updateStatusRunning(ctx context.Context, key client.ObjectKey) error {
+	var app vestav1alpha1.VestaApp
+	if err := r.Get(ctx, key, &app); err != nil {
+		return err
+	}
 	app.Status.Phase = "Running"
 	if app.Spec.Image != nil {
 		app.Status.CurrentImage = fmt.Sprintf("%s:%s", app.Spec.Image.Repository, app.Spec.Image.Tag)
@@ -641,15 +655,26 @@ func (r *VestaAppReconciler) updateStatusRunning(ctx context.Context, app *vesta
 		app.Status.URL = fmt.Sprintf("%s://%s", scheme, app.Spec.Ingress.Domain)
 	}
 	app.Status.LastDeployedAt = time.Now().UTC().Format(time.RFC3339)
-	return r.Status().Update(ctx, app)
+	return r.Status().Update(ctx, &app)
 }
 
 func (r *VestaAppReconciler) updateStatusFailed(ctx context.Context, app *vestav1alpha1.VestaApp, reconcileErr error) (ctrl.Result, error) {
-	app.Status.Phase = "Failed"
-	if err := r.Status().Update(ctx, app); err != nil {
-		return ctrl.Result{}, err
+	// Re-fetch to get latest resourceVersion before status update
+	var latest vestav1alpha1.VestaApp
+	if err := r.Get(ctx, client.ObjectKeyFromObject(app), &latest); err != nil {
+		return ctrl.Result{}, reconcileErr
 	}
-	return ctrl.Result{RequeueAfter: 1 * time.Minute}, reconcileErr
+	latest.Status.Phase = "Failed"
+	if err := r.Status().Update(ctx, &latest); err != nil {
+		return ctrl.Result{}, reconcileErr
+	}
+	// Return only the error — controller-runtime will requeue with backoff
+	return ctrl.Result{}, reconcileErr
+}
+
+// isRetriable returns true for errors that are safe to retry (conflicts and already-exists)
+func isRetriable(err error) bool {
+	return errors.IsConflict(err) || errors.IsAlreadyExists(err)
 }
 
 func (r *VestaAppReconciler) labelsForApp(app *vestav1alpha1.VestaApp) map[string]string {
