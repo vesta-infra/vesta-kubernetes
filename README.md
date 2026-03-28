@@ -141,7 +141,7 @@ kubectl create secret generic vesta-db-secret \
 
 # Tell Helm to use it
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system --version 0.1.4 \
+  -n vesta-system --version 0.1.5 \
   --set api.database.existingSecret=vesta-db-secret
 
 kubectl rollout restart deployment vesta-api -n vesta-system
