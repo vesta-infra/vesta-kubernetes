@@ -4,7 +4,7 @@
 operator:
   image:
     repository: ghcr.io/vesta-infra/kubernetes-operator
-    tag: latest
+    tag: ""
     pullPolicy: IfNotPresent
   replicas: 1
   resources:
@@ -20,7 +20,7 @@ operator:
 api:
   image:
     repository: ghcr.io/vesta-infra/kubernetes-api
-    tag: latest
+    tag: ""
     pullPolicy: IfNotPresent
   replicas: 1
   port: 8090
@@ -37,13 +37,21 @@ api:
     tls: true
     clusterIssuer: letsencrypt-prod
     annotations: {}
+  # -- Database configuration
+  database:
+    # -- PostgreSQL connection string
+    url: "postgres://vesta:vesta@localhost:5432/vesta?sslmode=disable"
+    # -- Use an existing secret instead of creating one (set to secret name)
+    existingSecret: ""
+    # -- Key in the existing secret that contains the DATABASE_URL
+    secretKey: "DATABASE_URL"
 
 # -- UI configuration
 ui:
   enabled: true
   image:
     repository: ghcr.io/vesta-infra/kubernetes-ui
-    tag: latest
+    tag: ""
     pullPolicy: IfNotPresent
   replicas: 1
   resources:
@@ -66,27 +74,27 @@ config:
     globalImagePullSecrets: []
 
   podSizeList:
-    - name: small
-      requests:
-        cpu: "250m"
-        memory: "256Mi"
-      limits:
-        cpu: "500m"
-        memory: "512Mi"
-    - name: medium
-      requests:
-        cpu: "500m"
-        memory: "512Mi"
-      limits:
-        cpu: "1000m"
-        memory: "1Gi"
-    - name: large
-      requests:
-        cpu: "1000m"
-        memory: "1Gi"
-      limits:
-        cpu: "2000m"
-        memory: "2Gi"
+  - name: small
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  - name: medium
+    requests:
+      cpu: "500m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+  - name: large
+    requests:
+      cpu: "1000m"
+      memory: "1Gi"
+    limits:
+      cpu: "2000m"
+      memory: "2Gi"
 
   autoscaleDefaults:
     minReplicas: 1

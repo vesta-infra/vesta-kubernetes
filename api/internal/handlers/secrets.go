@@ -30,7 +30,7 @@ func (h *Handler) CreateAppEnvSecret(c *gin.Context) {
 	}
 	appSpec, _, _ := unstructuredNestedMap(app.Object, "spec")
 	project := getNestedString(appSpec, "project")
-	namespace := fmt.Sprintf("%s-%s-%s", project, appID, env)
+	namespace := fmt.Sprintf("%s-%s", project, env)
 	secretName := "app-secrets"
 
 	// Try to get existing secret and merge keys
@@ -114,7 +114,7 @@ func (h *Handler) DeleteAppEnvSecretKey(c *gin.Context) {
 	}
 	appSpec, _, _ := unstructuredNestedMap(app.Object, "spec")
 	project := getNestedString(appSpec, "project")
-	namespace := fmt.Sprintf("%s-%s-%s", project, appID, env)
+	namespace := fmt.Sprintf("%s-%s", project, env)
 
 	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, "app-secrets")
 	if err != nil {
@@ -152,7 +152,7 @@ func (h *Handler) ListAppEnvSecrets(c *gin.Context) {
 	}
 	appSpec, _, _ := unstructuredNestedMap(app.Object, "spec")
 	project := getNestedString(appSpec, "project")
-	namespace := fmt.Sprintf("%s-%s-%s", project, appID, env)
+	namespace := fmt.Sprintf("%s-%s", project, env)
 
 	// Only one secret per app/env named "app-secrets"
 	secret, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, "app-secrets")

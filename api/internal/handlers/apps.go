@@ -16,6 +16,22 @@ func (h *Handler) CreateApp(c *gin.Context) {
 		return
 	}
 
+	// Validate the project has at least one environment
+	project, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaProjectGVR, vestaSystemNS, projectID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "project not found"})
+		return
+	}
+	projectSpec, _, _ := unstructuredNestedMap(project.Object, "spec")
+	projectEnvs, _ := projectSpec["environments"].([]interface{})
+	if len(projectEnvs) == 0 {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Code:    400,
+			Message: "project has no environments; create at least one environment before adding apps",
+		})
+		return
+	}
+
 	spec := map[string]interface{}{
 		"project": projectID,
 	}
@@ -181,11 +197,13 @@ func (h *Handler) GetApp(c *gin.Context) {
 	spec, _, _ := unstructuredNestedMap(result.Object, "spec")
 	status, _, _ := unstructuredNestedMap(result.Object, "status")
 	environments, _, _ := unstructuredNestedSlice(result.Object, "spec", "environments")
+	project := getNestedString(spec, "project")
 
 	c.JSON(http.StatusOK, gin.H{
 		"id":           result.GetName(),
 		"name":         result.GetName(),
 		"namespace":    result.GetNamespace(),
+		"project":      project,
 		"environments": environments,
 		"spec":         spec,
 		"status":       status,

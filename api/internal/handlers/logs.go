@@ -27,7 +27,7 @@ func (h *Handler) StreamLogs(c *gin.Context) {
 	}
 	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
 	project := getNestedString(spec, "project")
-	targetNS := fmt.Sprintf("%s-%s-%s", project, appId, env)
+	targetNS := fmt.Sprintf("%s-%s", project, env)
 
 	tailLines := int64(200)
 	if tl := c.Query("tail"); tl != "" {
@@ -124,7 +124,7 @@ func (h *Handler) GetMetrics(c *gin.Context) {
 	}
 	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
 	project := getNestedString(spec, "project")
-	targetNS := fmt.Sprintf("%s-%s-%s", project, appId, env)
+	targetNS := fmt.Sprintf("%s-%s", project, env)
 
 	// Get pods to report pod-level status/resource info
 	labelSelector := fmt.Sprintf("app=%s", appId)

@@ -1,9 +1,11 @@
-FROM golang:1.22-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.22-alpine AS builder
+ARG TARGETARCH
 RUN apk add --no-cache git
 WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
-RUN go mod tidy && go mod download
-RUN CGO_ENABLED=0 GOOS=linux go build -a -o vesta-api ./cmd/main.go
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -a -o vesta-api ./cmd/main.go
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /

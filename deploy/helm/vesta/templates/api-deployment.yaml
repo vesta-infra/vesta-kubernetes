@@ -25,7 +25,7 @@ spec:
       {{- end }}
       containers:
         - name: api
-          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag }}"
+          image: "{{ .Values.api.image.repository }}:{{ .Values.api.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.api.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.api.port }}
@@ -34,6 +34,11 @@ spec:
           env:
             - name: PORT
               value: "{{ .Values.api.port }}"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.database.existingSecret | default (printf "%s-api-db" (include "vesta.fullname" .)) }}
+                  key: {{ .Values.api.database.secretKey | default "DATABASE_URL" }}
           livenessProbe:
             httpGet:
               path: /healthz

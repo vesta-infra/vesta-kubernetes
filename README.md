@@ -114,3 +114,45 @@ helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
 
 To upgrade later:
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta -n vesta-system
+
+
+git tag v0.1.0
+git push origin v0.1.0
+
+helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --create-namespace \
+  --set api.database.existingSecret=vesta-db-secret \
+  --version 0.1.11
+
+
+helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --version 0.1.1
+
+
+helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --version 0.1.2 \
+  --set api.databaseUrl="postgres://vesta:password@postgres-host:5432/vesta?sslmode=disable"
+
+
+# Create/update the secret directly
+kubectl create secret generic vesta-db-secret \
+  -n vesta-system \
+  --from-literal=DATABASE_URL="postgres://vesta:vesta-dev@host.docker.internal:5433/vesta?sslmode=disable" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+
+# Tell Helm to use it
+helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --version 0.1.11 \
+  --set api.database.existingSecret=vesta-db-secret
+
+kubectl rollout restart deployment vesta-api -n vesta-system
+
+
+helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --version 0.1.11 \
+  --set api.database.existingSecret=vesta-db-secret \
+  --set operator.image.tag=0.1.11 \
+  --set api.image.tag=0.1.11 \
+  --set ui.image.tag=0.1.11
+
