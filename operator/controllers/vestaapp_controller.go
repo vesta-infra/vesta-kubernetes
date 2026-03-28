@@ -639,36 +639,36 @@ func (r *VestaAppReconciler) reconcileHPA(ctx context.Context, app *vestav1alpha
 }
 
 func (r *VestaAppReconciler) updateStatusRunning(ctx context.Context, key client.ObjectKey) error {
-	var app vestav1alpha1.VestaApp
-	if err := r.Get(ctx, key, &app); err != nil {
-		return err
-	}
-	app.Status.Phase = "Running"
-	if app.Spec.Image != nil {
-		app.Status.CurrentImage = fmt.Sprintf("%s:%s", app.Spec.Image.Repository, app.Spec.Image.Tag)
-	}
-	if app.Spec.Ingress != nil {
-		scheme := "http"
-		if app.Spec.Ingress.TLS {
-			scheme = "https"
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var app vestav1alpha1.VestaApp
+		if err := r.Get(ctx, key, &app); err != nil {
+			return err
 		}
-		app.Status.URL = fmt.Sprintf("%s://%s", scheme, app.Spec.Ingress.Domain)
-	}
-	app.Status.LastDeployedAt = time.Now().UTC().Format(time.RFC3339)
-	return r.Status().Update(ctx, &app)
+		app.Status.Phase = "Running"
+		if app.Spec.Image != nil {
+			app.Status.CurrentImage = fmt.Sprintf("%s:%s", app.Spec.Image.Repository, app.Spec.Image.Tag)
+		}
+		if app.Spec.Ingress != nil {
+			scheme := "http"
+			if app.Spec.Ingress.TLS {
+				scheme = "https"
+			}
+			app.Status.URL = fmt.Sprintf("%s://%s", scheme, app.Spec.Ingress.Domain)
+		}
+		app.Status.LastDeployedAt = time.Now().UTC().Format(time.RFC3339)
+		return r.Status().Update(ctx, &app)
+	})
 }
 
 func (r *VestaAppReconciler) updateStatusFailed(ctx context.Context, app *vestav1alpha1.VestaApp, reconcileErr error) (ctrl.Result, error) {
-	// Re-fetch to get latest resourceVersion before status update
-	var latest vestav1alpha1.VestaApp
-	if err := r.Get(ctx, client.ObjectKeyFromObject(app), &latest); err != nil {
-		return ctrl.Result{}, reconcileErr
-	}
-	latest.Status.Phase = "Failed"
-	if err := r.Status().Update(ctx, &latest); err != nil {
-		return ctrl.Result{}, reconcileErr
-	}
-	// Return only the error — controller-runtime will requeue with backoff
+	_ = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var latest vestav1alpha1.VestaApp
+		if err := r.Get(ctx, client.ObjectKeyFromObject(app), &latest); err != nil {
+			return err
+		}
+		latest.Status.Phase = "Failed"
+		return r.Status().Update(ctx, &latest)
+	})
 	return ctrl.Result{}, reconcileErr
 }
 
@@ -689,9 +689,5 @@ func (r *VestaAppReconciler) labelsForApp(app *vestav1alpha1.VestaApp) map[strin
 func (r *VestaAppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&vestav1alpha1.VestaApp{}).
-		Owns(&appsv1.Deployment{}).
-		Owns(&corev1.Service{}).
-		Owns(&networkingv1.Ingress{}).
-		Owns(&autoscalingv2.HorizontalPodAutoscaler{}).
 		Complete(r)
 }

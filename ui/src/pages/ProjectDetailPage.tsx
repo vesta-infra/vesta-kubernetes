@@ -105,14 +105,18 @@ export default function ProjectDetailPage() {
           <section>
             <div className="flex items-center justify-between mb-3">
               <h3 className="section-title">Apps</h3>
-              <button onClick={() => setShowCreateApp(!showCreateApp)} className="btn-ghost text-xs">
-                <span className="flex items-center gap-1.5">
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-                  </svg>
-                  Create App
-                </span>
-              </button>
+              {environments?.items && environments.items.length > 0 ? (
+                <button onClick={() => setShowCreateApp(!showCreateApp)} className="btn-ghost text-xs">
+                  <span className="flex items-center gap-1.5">
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                    </svg>
+                    Create App
+                  </span>
+                </button>
+              ) : (
+                <span className="text-[11px] text-text-tertiary">Add an environment first</span>
+              )}
             </div>
 
             {showCreateApp && (

@@ -27,6 +27,20 @@ export default function AppDetailPage() {
   const [editing, setEditing] = useState(false)
   const [activeTab, setActiveTab] = useState<'overview' | 'secrets' | 'logs' | 'metrics'>('overview')
 
+  const projectId = app?.project || app?.spec?.project
+  const rawEnvs = app?.environments || app?.spec?.environments || []
+  const appEnvironments: string[] = rawEnvs.map((e: any) => typeof e === 'string' ? e : e.name)
+
+  const { data: projectEnvs } = useQuery({
+    queryKey: ['environments', projectId],
+    queryFn: () => api.listEnvironments(projectId),
+    enabled: !!projectId,
+  })
+
+  const availableEnvs = (projectEnvs?.items || [])
+    .map((e: any) => e.name)
+    .filter((name: string) => !appEnvironments.includes(name))
+
   const deployMutation = useMutation({
     mutationFn: () => api.deploy(appId!, { tag, environment: deployEnv, reason: reason || undefined }),
     onSuccess: () => {
@@ -58,6 +72,24 @@ export default function AppDetailPage() {
     },
   })
 
+  const addEnvMutation = useMutation({
+    mutationFn: (envName: string) => {
+      const currentEnvs = rawEnvs.map((e: any) => typeof e === 'string' ? { name: e } : e)
+      return api.updateApp(appId!, { environments: [...currentEnvs, { name: envName }] })
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['app', appId] }),
+  })
+
+  const removeEnvMutation = useMutation({
+    mutationFn: (envName: string) => {
+      const currentEnvs = rawEnvs
+        .map((e: any) => typeof e === 'string' ? { name: e } : e)
+        .filter((e: any) => e.name !== envName)
+      return api.updateApp(appId!, { environments: currentEnvs })
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['app', appId] }),
+  })
+
   if (isLoading) return <Spinner />
 
   if (!app) {
@@ -70,9 +102,6 @@ export default function AppDetailPage() {
   }
 
   const phase = app.status?.phase || 'Pending'
-  const rawEnvs = app.environments || app.spec?.environments || []
-  // Handle both string[] (old) and object[] (new) formats
-  const appEnvironments: string[] = rawEnvs.map((e: any) => typeof e === 'string' ? e : e.name)
 
   return (
     <div className="space-y-6">
@@ -181,9 +210,28 @@ export default function AppDetailPage() {
               </div>
             </section>
 
-            {appEnvironments.length > 0 && (
-              <section className="card p-5">
-                <h3 className="section-title mb-4">Environments</h3>
+            <section className="card p-5">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="section-title">Environments</h3>
+                {availableEnvs.length > 0 && (
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      if (e.target.value) addEnvMutation.mutate(e.target.value)
+                    }}
+                    className="input-field text-xs w-auto"
+                    disabled={addEnvMutation.isPending}
+                  >
+                    <option value="">+ Add environment</option>
+                    {availableEnvs.map((name: string) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              {appEnvironments.length === 0 ? (
+                <p className="text-sm text-text-tertiary">No environments assigned</p>
+              ) : (
                 <div className="space-y-2">
                   {appEnvironments.map((env: string) => (
                     <div
@@ -191,24 +239,41 @@ export default function AppDetailPage() {
                       className="flex items-center justify-between px-4 py-3 bg-surface-1 border border-border rounded-lg group"
                     >
                       <span className="text-sm font-mono text-text-secondary">{env}</span>
-                      <button
-                        onClick={() => {
-                          if (confirm(`Restart "${app.name}" in "${env}"?`))
-                            restartMutation.mutate(env)
-                        }}
-                        disabled={restartMutation.isPending}
-                        className="text-xs text-text-tertiary hover:text-accent transition-colors opacity-0 group-hover:opacity-100 flex items-center gap-1"
-                      >
-                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                        </svg>
-                        Restart
-                      </button>
+                      <div className="flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => {
+                            if (confirm(`Restart "${app.name}" in "${env}"?`))
+                              restartMutation.mutate(env)
+                          }}
+                          disabled={restartMutation.isPending}
+                          className="text-xs text-text-tertiary hover:text-accent transition-colors flex items-center gap-1"
+                        >
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                          </svg>
+                          Restart
+                        </button>
+                        {appEnvironments.length > 1 && (
+                          <button
+                            onClick={() => {
+                              if (confirm(`Remove "${app.name}" from "${env}"?`))
+                                removeEnvMutation.mutate(env)
+                            }}
+                            disabled={removeEnvMutation.isPending}
+                            className="text-xs text-text-tertiary hover:text-status-failed transition-colors flex items-center gap-1"
+                          >
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                            Remove
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
-              </section>
-            )}
+              )}
+            </section>
 
             <section className="card p-5">
               <h3 className="section-title mb-4">Deployment History</h3>
