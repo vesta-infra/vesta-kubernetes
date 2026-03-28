@@ -115,6 +115,7 @@ helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
 To upgrade later:
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta -n vesta-system
 
+
 git tag v0.1.0
 git push origin v0.1.0
 
@@ -154,3 +155,4 @@ helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   --set operator.image.tag=0.1.11 \
   --set api.image.tag=0.1.11 \
   --set ui.image.tag=0.1.11
+
