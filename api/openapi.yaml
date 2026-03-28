@@ -1,0 +1,1347 @@
+openapi: 3.0.3
+info:
+  title: Vesta Kubernetes API
+  description: |
+    REST API for the Vesta Kubernetes PaaS platform.
+    Manages pipelines, apps, deployments, secrets, and templates.
+  version: 0.1.0
+  license:
+    name: GPL-3.0
+    url: https://www.gnu.org/licenses/gpl-3.0.html
+
+servers:
+  - url: /api/v1
+    description: Vesta API v1
+
+security:
+  - BearerAuth: []
+
+tags:
+  - name: Pipelines
+    description: Pipeline CRUD operations
+  - name: Apps
+    description: Application CRUD operations
+  - name: Deployments
+    description: Deploy, rollback, scale, restart
+  - name: Secrets
+    description: Secret management (values are write-only)
+  - name: Auth
+    description: Authentication and API tokens
+  - name: Templates
+    description: App template catalog
+  - name: Webhooks
+    description: Git provider webhook receivers
+
+paths:
+  # ── Pipelines ──────────────────────────────────────────────────────────
+  /pipelines:
+    post:
+      tags: [Pipelines]
+      summary: Create a pipeline
+      operationId: createPipeline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PipelineCreate"
+      responses:
+        "201":
+          description: Pipeline created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pipeline"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    get:
+      tags: [Pipelines]
+      summary: List pipelines
+      operationId: listPipelines
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: List of pipelines
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PipelineList"
+
+  /pipelines/{pipelineId}:
+    parameters:
+      - $ref: "#/components/parameters/PipelineId"
+    get:
+      tags: [Pipelines]
+      summary: Get pipeline details
+      operationId: getPipeline
+      responses:
+        "200":
+          description: Pipeline details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pipeline"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Pipelines]
+      summary: Update pipeline
+      operationId: updatePipeline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PipelineUpdate"
+      responses:
+        "200":
+          description: Pipeline updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Pipeline"
+    delete:
+      tags: [Pipelines]
+      summary: Delete pipeline and all its apps
+      operationId: deletePipeline
+      responses:
+        "204":
+          description: Pipeline deleted
+
+  # ── Apps ───────────────────────────────────────────────────────────────
+  /pipelines/{pipelineId}/apps:
+    parameters:
+      - $ref: "#/components/parameters/PipelineId"
+    post:
+      tags: [Apps]
+      summary: Create an app in a pipeline stage
+      operationId: createApp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppCreate"
+      responses:
+        "201":
+          description: App created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/App"
+
+  /apps:
+    get:
+      tags: [Apps]
+      summary: List apps
+      operationId: listApps
+      parameters:
+        - name: pipeline
+          in: query
+          schema:
+            type: string
+        - name: stage
+          in: query
+          schema:
+            type: string
+        - name: team
+          in: query
+          schema:
+            type: string
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: List of apps
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppList"
+
+  /apps/{appId}:
+    parameters:
+      - $ref: "#/components/parameters/AppId"
+    get:
+      tags: [Apps]
+      summary: Get app details and status
+      operationId: getApp
+      responses:
+        "200":
+          description: App details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/App"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [Apps]
+      summary: Update app configuration
+      operationId: updateApp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AppUpdate"
+      responses:
+        "200":
+          description: App updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/App"
+    delete:
+      tags: [Apps]
+      summary: Delete app
+      operationId: deleteApp
+      responses:
+        "204":
+          description: App deleted
+
+  # ── Deployments ────────────────────────────────────────────────────────
+  /apps/{appId}/deploy:
+    parameters:
+      - $ref: "#/components/parameters/AppId"
+    post:
+      tags: [Deployments]
+      summary: Trigger a deployment
+      operationId: deployApp
+      description: |
+        Trigger a new deployment for the app. For image-based deploys, only the
+        new `tag` is required -- the repository and imagePullSecrets are read
+        from the app's existing configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeployRequest"
+      responses:
+        "202":
+          description: Deployment accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /apps/{appId}/rollback:
+    parameters:
+      - $ref: "#/components/parameters/AppId"
+    post:
+      tags: [Deployments]
+      summary: Rollback to a previous version
+      operationId: rollbackApp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version]
+              properties:
+                version:
+                  type: integer
+                  description: Deployment version number to rollback to.
+                reason:
+                  type: string
+      responses:
+        "202":
+          description: Rollback accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeployResponse"
+
+  /apps/{appId}/deployments:
+    parameters:
+      - $ref: "#/components/parameters/AppId"
+    get:
+      tags: [Deployments]
+      summary: List deployment history
+      operationId: listDeployments
+      parameters:
+        - $ref: "#/components/parameters/PageParam"
+        - $ref: "#/components/parameters/LimitParam"
+      responses:
+        "200":
+          description: Deployment history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/DeploymentRecord"
+                  total:
+                    type: integer
+
+  /apps/{appId}/restart:
+    parameters:
+      - $ref: "#/components/parameters/AppId"
+    post:
+      tags: [Deployments]
+      summary: Restart pods without redeploying
+      operationId: restartApp
+      responses:
+        "202":
+          description: Restart initiated
+
+  /apps/{appId}/scale:
+    parameters:
+      - $ref: "#/components/parameters/AppId"
+    post:
+      tags: [Deployments]
+      summary: Manually scale replicas
+      operationId: scaleApp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [replicas]
+              properties:
+                replicas:
+                  type: integer
+                  minimum: 0
+      responses:
+        "200":
+          description: Scaling applied
+
+  # ── Secrets ────────────────────────────────────────────────────────────
+  /secrets:
+    post:
+      tags: [Secrets]
+      summary: Create a secret
+      operationId: createSecret
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SecretCreate"
+      responses:
+        "201":
+          description: Secret created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecretMeta"
+    get:
+      tags: [Secrets]
+      summary: List secrets (metadata only, values never returned)
+      operationId: listSecrets
+      parameters:
+        - name: namespace
+          in: query
+          schema:
+            type: string
+        - name: pipeline
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of secret metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SecretMeta"
+
+  /secrets/{secretId}:
+    parameters:
+      - name: secretId
+        in: path
+        required: true
+        schema:
+          type: string
+    put:
+      tags: [Secrets]
+      summary: Update secret values
+      operationId: updateSecret
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SecretUpdate"
+      responses:
+        "200":
+          description: Secret updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecretMeta"
+    delete:
+      tags: [Secrets]
+      summary: Delete secret
+      operationId: deleteSecret
+      responses:
+        "204":
+          description: Secret deleted
+
+  /secrets/registry:
+    post:
+      tags: [Secrets]
+      summary: Create a docker registry secret (for imagePullSecrets)
+      operationId: createRegistrySecret
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegistrySecretCreate"
+      responses:
+        "201":
+          description: Registry secret created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SecretMeta"
+
+  # ── Logs & Metrics ────────────────────────────────────────────────────
+  /apps/{appId}/logs:
+    parameters:
+      - $ref: "#/components/parameters/AppId"
+    get:
+      tags: [Apps]
+      summary: Stream logs (upgrades to WebSocket)
+      operationId: streamLogs
+      parameters:
+        - name: follow
+          in: query
+          schema:
+            type: boolean
+            default: true
+        - name: tailLines
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: container
+          in: query
+          schema:
+            type: string
+      responses:
+        "101":
+          description: Switching protocols to WebSocket
+        "200":
+          description: Log output (non-streaming fallback)
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /apps/{appId}/metrics:
+    parameters:
+      - $ref: "#/components/parameters/AppId"
+    get:
+      tags: [Apps]
+      summary: Get app metrics
+      operationId: getAppMetrics
+      parameters:
+        - name: range
+          in: query
+          description: "Time range (e.g. 1h, 24h, 7d)"
+          schema:
+            type: string
+            default: "1h"
+      responses:
+        "200":
+          description: App metrics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppMetrics"
+
+  # ── Webhooks ───────────────────────────────────────────────────────────
+  /webhooks/{provider}:
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [github, gitlab, bitbucket, gitea]
+    post:
+      tags: [Webhooks]
+      summary: Git webhook receiver
+      operationId: receiveWebhook
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Webhook processed
+        "400":
+          description: Invalid payload or signature
+
+  # ── Templates ──────────────────────────────────────────────────────────
+  /templates:
+    get:
+      tags: [Templates]
+      summary: List available templates
+      operationId: listTemplates
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Template catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Template"
+
+  /templates/{templateId}/deploy:
+    parameters:
+      - name: templateId
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Templates]
+      summary: Deploy from template
+      operationId: deployTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pipeline, stage]
+              properties:
+                pipeline:
+                  type: string
+                stage:
+                  type: string
+                name:
+                  type: string
+                overrides:
+                  type: object
+                  description: Override template defaults
+      responses:
+        "201":
+          description: App created from template
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/App"
+
+  # ── Auth ───────────────────────────────────────────────────────────────
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login with local credentials
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username:
+                  type: string
+                password:
+                  type: string
+                  format: password
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthToken"
+        "401":
+          description: Invalid credentials
+
+  /auth/oauth/{provider}:
+    parameters:
+      - name: provider
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Auth]
+      summary: Initiate OAuth2 login
+      operationId: oauthRedirect
+      security: []
+      responses:
+        "302":
+          description: Redirect to OAuth provider
+
+  /auth/tokens:
+    post:
+      tags: [Auth]
+      summary: Create an API token
+      operationId: createApiToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                scopes:
+                  type: array
+                  items:
+                    type: string
+                  description: "Allowed scopes (e.g. deploy, read, admin)"
+                expiresIn:
+                  type: string
+                  description: "Duration (e.g. 90d, 1y)"
+      responses:
+        "201":
+          description: Token created (value shown only once)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiTokenCreated"
+
+  /auth/tokens/{tokenId}:
+    parameters:
+      - name: tokenId
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      tags: [Auth]
+      summary: Revoke an API token
+      operationId: revokeApiToken
+      responses:
+        "204":
+          description: Token revoked
+
+# ════════════════════════════════════════════════════════════════════════════
+# Components
+# ════════════════════════════════════════════════════════════════════════════
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    PipelineId:
+      name: pipelineId
+      in: path
+      required: true
+      schema:
+        type: string
+    AppId:
+      name: appId
+      in: path
+      required: true
+      schema:
+        type: string
+    PageParam:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+        minimum: 1
+    LimitParam:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+        maximum: 100
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Authentication required
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        details:
+          type: string
+
+    # ── Pipeline schemas ─────────────────────────────────────────────────
+    PipelineCreate:
+      type: object
+      required: [name, git, stages]
+      properties:
+        name:
+          type: string
+        git:
+          $ref: "#/components/schemas/PipelineGit"
+        stages:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/PipelineStage"
+        imagePullSecrets:
+          type: array
+          items:
+            $ref: "#/components/schemas/NameRef"
+        notifications:
+          $ref: "#/components/schemas/Notifications"
+
+    PipelineUpdate:
+      type: object
+      properties:
+        stages:
+          type: array
+          items:
+            $ref: "#/components/schemas/PipelineStage"
+        imagePullSecrets:
+          type: array
+          items:
+            $ref: "#/components/schemas/NameRef"
+        notifications:
+          $ref: "#/components/schemas/Notifications"
+
+    Pipeline:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        git:
+          $ref: "#/components/schemas/PipelineGit"
+        stages:
+          type: array
+          items:
+            $ref: "#/components/schemas/PipelineStage"
+        imagePullSecrets:
+          type: array
+          items:
+            $ref: "#/components/schemas/NameRef"
+        notifications:
+          $ref: "#/components/schemas/Notifications"
+        createdAt:
+          type: string
+          format: date-time
+
+    PipelineList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Pipeline"
+        total:
+          type: integer
+
+    PipelineGit:
+      type: object
+      required: [provider, repository]
+      properties:
+        provider:
+          type: string
+          enum: [github, gitlab, bitbucket, gitea]
+        repository:
+          type: string
+
+    PipelineStage:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        branch:
+          type: string
+        autoDeploy:
+          type: boolean
+        autoDeployPRs:
+          type: boolean
+        cleanupOnPRClose:
+          type: boolean
+        requireApproval:
+          type: boolean
+
+    # ── App schemas ──────────────────────────────────────────────────────
+    AppCreate:
+      type: object
+      required: [name, stage]
+      properties:
+        name:
+          type: string
+        stage:
+          type: string
+        git:
+          type: object
+          properties:
+            provider:
+              type: string
+            repository:
+              type: string
+            branch:
+              type: string
+            autoDeployOnPush:
+              type: boolean
+        build:
+          type: object
+          properties:
+            strategy:
+              type: string
+              enum: [runpacks, buildpacks, dockerfile, nixpacks, image]
+            dockerfile:
+              type: string
+        image:
+          $ref: "#/components/schemas/ImageConfig"
+        runtime:
+          $ref: "#/components/schemas/RuntimeConfig"
+        scaling:
+          $ref: "#/components/schemas/ScalingConfig"
+        resources:
+          $ref: "#/components/schemas/ResourceConfig"
+        ingress:
+          $ref: "#/components/schemas/IngressConfig"
+        addons:
+          type: array
+          items:
+            $ref: "#/components/schemas/AddonConfig"
+        customConfig:
+          type: object
+          description: Custom Kubernetes configuration (labels, annotations, podSpec, containerSpec, extraResources)
+
+    AppUpdate:
+      type: object
+      properties:
+        image:
+          $ref: "#/components/schemas/ImageConfig"
+        runtime:
+          $ref: "#/components/schemas/RuntimeConfig"
+        scaling:
+          $ref: "#/components/schemas/ScalingConfig"
+        resources:
+          $ref: "#/components/schemas/ResourceConfig"
+        ingress:
+          $ref: "#/components/schemas/IngressConfig"
+        addons:
+          type: array
+          items:
+            $ref: "#/components/schemas/AddonConfig"
+        customConfig:
+          type: object
+
+    App:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        pipeline:
+          type: string
+        stage:
+          type: string
+        image:
+          $ref: "#/components/schemas/ImageConfig"
+        runtime:
+          $ref: "#/components/schemas/RuntimeConfig"
+        scaling:
+          $ref: "#/components/schemas/ScalingConfig"
+        resources:
+          $ref: "#/components/schemas/ResourceConfig"
+        ingress:
+          $ref: "#/components/schemas/IngressConfig"
+        status:
+          $ref: "#/components/schemas/AppStatus"
+        createdAt:
+          type: string
+          format: date-time
+
+    AppList:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/App"
+        total:
+          type: integer
+
+    AppStatus:
+      type: object
+      properties:
+        phase:
+          type: string
+          enum: [Pending, Building, Deploying, Running, Failed, Sleeping]
+        url:
+          type: string
+        currentImage:
+          type: string
+        lastDeployedAt:
+          type: string
+          format: date-time
+        currentReplicas:
+          type: integer
+        desiredReplicas:
+          type: integer
+
+    ImageConfig:
+      type: object
+      required: [repository]
+      properties:
+        repository:
+          type: string
+        tag:
+          type: string
+        pullPolicy:
+          type: string
+          enum: [Always, IfNotPresent, Never]
+        imagePullSecrets:
+          type: array
+          items:
+            $ref: "#/components/schemas/NameRef"
+
+    RuntimeConfig:
+      type: object
+      properties:
+        port:
+          type: integer
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+        env:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              value:
+                type: string
+        secrets:
+          type: array
+          items:
+            type: object
+            description: Secret binding (secretRef, secretKeyRef, or secretMount)
+
+    ScalingConfig:
+      type: object
+      properties:
+        replicas:
+          type: integer
+        autoscale:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            minReplicas:
+              type: integer
+            maxReplicas:
+              type: integer
+            metrics:
+              type: array
+              items:
+                type: object
+                properties:
+                  type:
+                    type: string
+                    enum: [cpu, memory, custom]
+                  name:
+                    type: string
+                  targetAverageUtilization:
+                    type: integer
+                  targetAverageValue:
+                    type: string
+
+    ResourceConfig:
+      type: object
+      properties:
+        size:
+          type: string
+        requests:
+          type: object
+          properties:
+            cpu:
+              type: string
+            memory:
+              type: string
+        limits:
+          type: object
+          properties:
+            cpu:
+              type: string
+            memory:
+              type: string
+
+    IngressConfig:
+      type: object
+      required: [domain]
+      properties:
+        domain:
+          type: string
+        tls:
+          type: boolean
+        clusterIssuer:
+          type: string
+        basicAuth:
+          type: boolean
+        annotations:
+          type: object
+          additionalProperties:
+            type: string
+
+    AddonConfig:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+        version:
+          type: string
+        size:
+          type: string
+
+    # ── Deploy schemas ───────────────────────────────────────────────────
+    DeployRequest:
+      type: object
+      description: |
+        Deploy a new version. For image deploys, only `tag` is needed --
+        the repository and imagePullSecrets come from the app config.
+      properties:
+        tag:
+          type: string
+          description: New image tag. Combined with the app's spec.image.repository.
+        type:
+          type: string
+          enum: [git, redeploy]
+          description: Omit for image tag deploy (default).
+        git:
+          type: object
+          properties:
+            branch:
+              type: string
+            commitSHA:
+              type: string
+        reason:
+          type: string
+          description: Human-readable deploy reason for the audit log.
+        commitSHA:
+          type: string
+          description: Git commit SHA associated with this image.
+
+    DeployResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        appId:
+          type: string
+        status:
+          type: string
+          enum: [building, deploying, succeeded, failed]
+        version:
+          type: integer
+        image:
+          type: string
+        triggeredBy:
+          type: string
+        triggeredAt:
+          type: string
+          format: date-time
+        statusUrl:
+          type: string
+
+    DeploymentRecord:
+      type: object
+      properties:
+        version:
+          type: integer
+        image:
+          type: string
+        commitSHA:
+          type: string
+        deployedAt:
+          type: string
+          format: date-time
+        deployedBy:
+          type: string
+        reason:
+          type: string
+
+    # ── Secret schemas ───────────────────────────────────────────────────
+    SecretCreate:
+      type: object
+      required: [name, namespace, type]
+      properties:
+        name:
+          type: string
+        namespace:
+          type: string
+        type:
+          type: string
+          enum: [Opaque, kubernetes.io/dockerconfigjson, kubernetes.io/tls]
+        data:
+          type: object
+          additionalProperties:
+            type: string
+          description: Key-value pairs (for Opaque type)
+        dockerConfig:
+          type: object
+          properties:
+            registry:
+              type: string
+            username:
+              type: string
+            password:
+              type: string
+              format: password
+        tls:
+          type: object
+          properties:
+            cert:
+              type: string
+            key:
+              type: string
+              format: password
+
+    SecretUpdate:
+      type: object
+      properties:
+        data:
+          type: object
+          additionalProperties:
+            type: string
+
+    SecretMeta:
+      type: object
+      description: Secret metadata (values are never returned).
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        namespace:
+          type: string
+        type:
+          type: string
+        keys:
+          type: array
+          items:
+            type: string
+          description: List of key names in the secret.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    RegistrySecretCreate:
+      type: object
+      required: [name, namespace, registry, username, password]
+      properties:
+        name:
+          type: string
+        namespace:
+          type: string
+        registry:
+          type: string
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+
+    # ── Template schemas ─────────────────────────────────────────────────
+    Template:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        category:
+          type: string
+        icon:
+          type: string
+        version:
+          type: string
+
+    # ── Auth schemas ─────────────────────────────────────────────────────
+    AuthToken:
+      type: object
+      properties:
+        token:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        user:
+          type: object
+          properties:
+            id:
+              type: string
+            username:
+              type: string
+            role:
+              type: string
+
+    ApiTokenCreated:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        token:
+          type: string
+          description: The token value. Shown only once at creation time.
+        scopes:
+          type: array
+          items:
+            type: string
+        expiresAt:
+          type: string
+          format: date-time
+
+    # ── Metrics schemas ──────────────────────────────────────────────────
+    AppMetrics:
+      type: object
+      properties:
+        cpu:
+          type: object
+          properties:
+            current:
+              type: string
+            limit:
+              type: string
+            history:
+              type: array
+              items:
+                $ref: "#/components/schemas/MetricDataPoint"
+        memory:
+          type: object
+          properties:
+            current:
+              type: string
+            limit:
+              type: string
+            history:
+              type: array
+              items:
+                $ref: "#/components/schemas/MetricDataPoint"
+        requests:
+          type: object
+          properties:
+            ratePerSecond:
+              type: number
+            history:
+              type: array
+              items:
+                $ref: "#/components/schemas/MetricDataPoint"
+
+    MetricDataPoint:
+      type: object
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        value:
+          type: number
+
+    # ── Common schemas ───────────────────────────────────────────────────
+    NameRef:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+
+    Notifications:
+      type: object
+      properties:
+        slack:
+          type: object
+          properties:
+            webhookUrl:
+              type: string
+            events:
+              type: array
+              items:
+                type: string
+        discord:
+          type: object
+          properties:
+            webhookUrl:
+              type: string
+            events:
+              type: array
+              items:
+                type: string
+        webhook:
+          type: object
+          properties:
+            url:
+              type: string
+            events:
+              type: array
+              items:
+                type: string
