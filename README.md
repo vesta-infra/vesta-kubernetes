@@ -102,3 +102,15 @@ GPL-3.0
 
 
 DATABASE_URL="postgres://vesta:vesta-dev@localhost:5433/vesta?sslmode=disable" make run-api
+
+
+# Install CRDs
+kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/main/deploy/helm/vesta/crds/
+
+# Install the chart from GHCR
+helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --create-namespace \
+  --set config.domain=your-domain.com
+
+To upgrade later:
+helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta -n vesta-system
