@@ -34,9 +34,10 @@ type VestaAppSpec struct {
 	Build *BuildConfig `json:"build,omitempty"`
 	Image *ImageConfig `json:"image,omitempty"`
 
-	Runtime   RuntimeConfig   `json:"runtime"`
-	Resources *ResourceConfig `json:"resources,omitempty"`
-	Ingress   *IngressConfig  `json:"ingress,omitempty"`
+	Runtime      RuntimeConfig    `json:"runtime"`
+	Resources    *ResourceConfig  `json:"resources,omitempty"`
+	HealthCheck  *HealthCheckConfig `json:"healthCheck,omitempty"`
+	Ingress      *IngressConfig   `json:"ingress,omitempty"`
 
 	Cronjobs []CronjobConfig `json:"cronjobs,omitempty"`
 	Addons   []AddonConfig   `json:"addons,omitempty"`
@@ -155,6 +156,20 @@ type IngressConfig struct {
 	ClusterIssuer string            `json:"clusterIssuer,omitempty"`
 	BasicAuth     bool              `json:"basicAuth,omitempty"`
 	Annotations   map[string]string `json:"annotations,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	// +kubebuilder:validation:Enum=http;tcp;exec
+	Type    string `json:"type"`
+	Path    string `json:"path,omitempty"`
+	Port    int32  `json:"port,omitempty"`
+	Command string `json:"command,omitempty"`
+
+	InitialDelaySeconds int32 `json:"initialDelaySeconds,omitempty"`
+	PeriodSeconds       int32 `json:"periodSeconds,omitempty"`
+	TimeoutSeconds      int32 `json:"timeoutSeconds,omitempty"`
+	FailureThreshold    int32 `json:"failureThreshold,omitempty"`
+	SuccessThreshold    int32 `json:"successThreshold,omitempty"`
 }
 
 type CronjobConfig struct {

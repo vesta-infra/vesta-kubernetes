@@ -479,7 +479,74 @@ func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envReso
 		container.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("128Mi")
 	}
 
+	// Health checks (liveness + readiness probes)
+	if hc := app.Spec.HealthCheck; hc != nil {
+		probe := r.buildProbe(hc, app.Spec.Runtime.Port)
+		container.LivenessProbe = probe.DeepCopy()
+		container.ReadinessProbe = probe.DeepCopy()
+	}
+
 	return container
+}
+
+func (r *VestaAppReconciler) buildProbe(hc *vestav1alpha1.HealthCheckConfig, runtimePort int32) *corev1.Probe {
+	probe := &corev1.Probe{}
+
+	switch hc.Type {
+	case "http":
+		port := hc.Port
+		if port == 0 {
+			port = runtimePort
+		}
+		path := hc.Path
+		if path == "" {
+			path = "/"
+		}
+		probe.ProbeHandler = corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{
+				Path: path,
+				Port: intstr.FromInt32(port),
+			},
+		}
+	case "tcp":
+		port := hc.Port
+		if port == 0 {
+			port = runtimePort
+		}
+		probe.ProbeHandler = corev1.ProbeHandler{
+			TCPSocket: &corev1.TCPSocketAction{
+				Port: intstr.FromInt32(port),
+			},
+		}
+	case "exec":
+		if hc.Command != "" {
+			probe.ProbeHandler = corev1.ProbeHandler{
+				Exec: &corev1.ExecAction{
+					Command: []string{"/bin/sh", "-c", hc.Command},
+				},
+			}
+		}
+	}
+
+	if hc.InitialDelaySeconds > 0 {
+		probe.InitialDelaySeconds = hc.InitialDelaySeconds
+	}
+	if hc.PeriodSeconds > 0 {
+		probe.PeriodSeconds = hc.PeriodSeconds
+	} else {
+		probe.PeriodSeconds = 10
+	}
+	if hc.TimeoutSeconds > 0 {
+		probe.TimeoutSeconds = hc.TimeoutSeconds
+	}
+	if hc.FailureThreshold > 0 {
+		probe.FailureThreshold = hc.FailureThreshold
+	}
+	if hc.SuccessThreshold > 0 {
+		probe.SuccessThreshold = hc.SuccessThreshold
+	}
+
+	return probe
 }
 
 func (r *VestaAppReconciler) buildPodSpec(app *vestav1alpha1.VestaApp, container corev1.Container, projectPullSecrets, envPullSecrets []corev1.LocalObjectReference) corev1.PodSpec {

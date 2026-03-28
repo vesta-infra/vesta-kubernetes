@@ -92,6 +92,7 @@ type CreateAppRequest struct {
 	Image        map[string]interface{}   `json:"image,omitempty"`
 	Runtime      map[string]interface{}   `json:"runtime,omitempty"`
 	Resources    map[string]interface{}   `json:"resources,omitempty"`
+	HealthCheck  map[string]interface{}   `json:"healthCheck,omitempty"`
 	Ingress      map[string]interface{}   `json:"ingress,omitempty"`
 	Addons       []map[string]interface{} `json:"addons,omitempty"`
 	CustomConfig map[string]interface{}   `json:"customConfig,omitempty"`

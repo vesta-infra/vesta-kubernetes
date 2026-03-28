@@ -462,6 +462,17 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const [domain, setDomain] = useState(app.spec?.ingress?.domain || '')
   const [tls, setTls] = useState(app.spec?.ingress?.tls || false)
 
+  // Health check config
+  const [hcEnabled, setHcEnabled] = useState(!!app.spec?.healthCheck)
+  const [hcType, setHcType] = useState(app.spec?.healthCheck?.type || 'http')
+  const [hcPath, setHcPath] = useState(app.spec?.healthCheck?.path || '/')
+  const [hcPort, setHcPort] = useState(String(app.spec?.healthCheck?.port || ''))
+  const [hcCommand, setHcCommand] = useState(app.spec?.healthCheck?.command || '')
+  const [hcInitialDelay, setHcInitialDelay] = useState(String(app.spec?.healthCheck?.initialDelaySeconds || 0))
+  const [hcPeriod, setHcPeriod] = useState(String(app.spec?.healthCheck?.periodSeconds || 10))
+  const [hcTimeout, setHcTimeout] = useState(String(app.spec?.healthCheck?.timeoutSeconds || 1))
+  const [hcFailureThreshold, setHcFailureThreshold] = useState(String(app.spec?.healthCheck?.failureThreshold || 3))
+
   // Image pull secrets (app-level override)
   const { data: registrySecrets } = useQuery({
     queryKey: ['registrySecrets'],
@@ -535,6 +546,22 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       patch.ingress = { domain, tls }
     }
 
+    // Health check
+    if (hcEnabled) {
+      patch.healthCheck = {
+        type: hcType,
+        ...(hcType === 'http' && { path: hcPath }),
+        ...(hcType !== 'exec' && hcPort && { port: parseInt(hcPort) }),
+        ...(hcType === 'exec' && { command: hcCommand }),
+        initialDelaySeconds: parseInt(hcInitialDelay) || 0,
+        periodSeconds: parseInt(hcPeriod) || 10,
+        timeoutSeconds: parseInt(hcTimeout) || 1,
+        failureThreshold: parseInt(hcFailureThreshold) || 3,
+      }
+    } else {
+      patch.healthCheck = null
+    }
+
     // Environments
     const envArray = Object.entries(envConfigs).map(([name, cfg]) => {
       const env: any = { name, replicas: cfg.replicas }
@@ -600,6 +627,68 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             <span className="text-xs text-text-secondary">TLS</span>
           </label>
         </div>
+      </div>
+
+      <div>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={hcEnabled}
+            onChange={(e) => setHcEnabled(e.target.checked)}
+            className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+          />
+          <span className="label mb-0">Health Check</span>
+        </label>
+        {hcEnabled && (
+          <div className="mt-3 pl-6 space-y-3">
+            <div className="flex items-center gap-4 flex-wrap">
+              <div>
+                <label className="text-xs text-text-tertiary">Type</label>
+                <select value={hcType} onChange={(e) => setHcType(e.target.value)} className="input-field w-28 mt-1">
+                  <option value="http">HTTP</option>
+                  <option value="tcp">TCP</option>
+                  <option value="exec">Exec</option>
+                </select>
+              </div>
+              {hcType === 'http' && (
+                <div>
+                  <label className="text-xs text-text-tertiary">Path</label>
+                  <input value={hcPath} onChange={(e) => setHcPath(e.target.value)} className="input-field w-32 mt-1" placeholder="/healthz" />
+                </div>
+              )}
+              {hcType !== 'exec' && (
+                <div>
+                  <label className="text-xs text-text-tertiary">Port</label>
+                  <input type="number" value={hcPort} onChange={(e) => setHcPort(e.target.value)} className="input-field w-20 mt-1" placeholder={port} />
+                </div>
+              )}
+              {hcType === 'exec' && (
+                <div className="flex-1">
+                  <label className="text-xs text-text-tertiary">Command</label>
+                  <input value={hcCommand} onChange={(e) => setHcCommand(e.target.value)} className="input-field mt-1 font-mono text-xs" placeholder="cat /tmp/healthy" />
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-4 flex-wrap">
+              <div>
+                <label className="text-xs text-text-tertiary">Initial Delay (s)</label>
+                <input type="number" min="0" value={hcInitialDelay} onChange={(e) => setHcInitialDelay(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary">Period (s)</label>
+                <input type="number" min="1" value={hcPeriod} onChange={(e) => setHcPeriod(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary">Timeout (s)</label>
+                <input type="number" min="1" value={hcTimeout} onChange={(e) => setHcTimeout(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary">Failure Threshold</label>
+                <input type="number" min="1" value={hcFailureThreshold} onChange={(e) => setHcFailureThreshold(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {Object.keys(envConfigs).length > 0 && (

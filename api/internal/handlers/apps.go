@@ -139,6 +139,9 @@ func (h *Handler) CreateApp(c *gin.Context) {
 	if req.Resources != nil {
 		spec["resources"] = req.Resources
 	}
+	if req.HealthCheck != nil {
+		spec["healthCheck"] = req.HealthCheck
+	}
 	if req.Ingress != nil {
 		spec["ingress"] = req.Ingress
 	}

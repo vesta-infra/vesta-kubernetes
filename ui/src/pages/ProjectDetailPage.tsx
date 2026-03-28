@@ -455,6 +455,15 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
   const [imageRepo, setImageRepo] = useState('')
   const [imageTag, setImageTag] = useState('')
   const [port, setPort] = useState('3000')
+  const [hcEnabled, setHcEnabled] = useState(false)
+  const [hcType, setHcType] = useState('http')
+  const [hcPath, setHcPath] = useState('/')
+  const [hcPort, setHcPort] = useState('')
+  const [hcCommand, setHcCommand] = useState('')
+  const [hcInitialDelay, setHcInitialDelay] = useState('0')
+  const [hcPeriod, setHcPeriod] = useState('10')
+  const [hcTimeout, setHcTimeout] = useState('1')
+  const [hcFailureThreshold, setHcFailureThreshold] = useState('3')
 
   const { data: podSizes } = useQuery({
     queryKey: ['podSizes'],
@@ -530,6 +539,18 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
       runtime: {
         port: parseInt(port) || 3000,
       },
+      ...(hcEnabled && {
+        healthCheck: {
+          type: hcType,
+          ...(hcType === 'http' && { path: hcPath }),
+          ...(hcType !== 'exec' && hcPort && { port: parseInt(hcPort) }),
+          ...(hcType === 'exec' && { command: hcCommand }),
+          initialDelaySeconds: parseInt(hcInitialDelay) || 0,
+          periodSeconds: parseInt(hcPeriod) || 10,
+          timeoutSeconds: parseInt(hcTimeout) || 1,
+          failureThreshold: parseInt(hcFailureThreshold) || 3,
+        },
+      }),
     })
   }
 
@@ -680,6 +701,68 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
           onChange={(e) => setPort(e.target.value)}
           className="input-field w-32"
         />
+      </div>
+
+      <div>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={hcEnabled}
+            onChange={(e) => setHcEnabled(e.target.checked)}
+            className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+          />
+          <span className="label mb-0">Health Check</span>
+        </label>
+        {hcEnabled && (
+          <div className="mt-3 pl-6 space-y-3">
+            <div className="flex items-center gap-4 flex-wrap">
+              <div>
+                <label className="text-xs text-text-tertiary">Type</label>
+                <select value={hcType} onChange={(e) => setHcType(e.target.value)} className="input-field w-28 mt-1">
+                  <option value="http">HTTP</option>
+                  <option value="tcp">TCP</option>
+                  <option value="exec">Exec</option>
+                </select>
+              </div>
+              {hcType === 'http' && (
+                <div>
+                  <label className="text-xs text-text-tertiary">Path</label>
+                  <input value={hcPath} onChange={(e) => setHcPath(e.target.value)} className="input-field w-32 mt-1" placeholder="/healthz" />
+                </div>
+              )}
+              {hcType !== 'exec' && (
+                <div>
+                  <label className="text-xs text-text-tertiary">Port</label>
+                  <input type="number" value={hcPort} onChange={(e) => setHcPort(e.target.value)} className="input-field w-20 mt-1" placeholder={port} />
+                </div>
+              )}
+              {hcType === 'exec' && (
+                <div className="flex-1">
+                  <label className="text-xs text-text-tertiary">Command</label>
+                  <input value={hcCommand} onChange={(e) => setHcCommand(e.target.value)} className="input-field mt-1 font-mono text-xs" placeholder="cat /tmp/healthy" />
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-4 flex-wrap">
+              <div>
+                <label className="text-xs text-text-tertiary">Initial Delay (s)</label>
+                <input type="number" min="0" value={hcInitialDelay} onChange={(e) => setHcInitialDelay(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary">Period (s)</label>
+                <input type="number" min="1" value={hcPeriod} onChange={(e) => setHcPeriod(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary">Timeout (s)</label>
+                <input type="number" min="1" value={hcTimeout} onChange={(e) => setHcTimeout(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary">Failure Threshold</label>
+                <input type="number" min="1" value={hcFailureThreshold} onChange={(e) => setHcFailureThreshold(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex gap-3 pt-1">

@@ -162,7 +162,3 @@ helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
 for autoscalling, we need metrics server and hpa
 
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
-
-
-- notifications email, slack, google chat, etc
-- webhooks
