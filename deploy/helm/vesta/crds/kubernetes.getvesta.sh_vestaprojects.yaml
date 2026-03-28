@@ -1,0 +1,140 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vestaprojects.kubernetes.getvesta.sh
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.14.0
+spec:
+  group: kubernetes.getvesta.sh
+  names:
+    kind: VestaProject
+    listKind: VestaProjectList
+    plural: vestaprojects
+    singular: vestaproject
+    shortNames:
+      - vprj
+      - vproj
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Team
+          type: string
+          jsonPath: .spec.team
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: VestaProject groups environments and apps under a single project.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              properties:
+                displayName:
+                  type: string
+                  description: Human-readable project name.
+                team:
+                  type: string
+                  description: Team or owner responsible for this project.
+                labels:
+                  type: object
+                  description: Custom labels to apply to all app deployments in this project.
+                  additionalProperties:
+                    type: string
+                annotations:
+                  type: object
+                  description: Custom annotations to apply to all app deployments in this project.
+                  additionalProperties:
+                    type: string
+                environments:
+                  type: array
+                  description: Environments available in this project.
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name:
+                        type: string
+                        description: Environment identifier (e.g., dev, staging, prod).
+                      displayName:
+                        type: string
+                        description: Human-readable environment name.
+                      branch:
+                        type: string
+                        description: Git branch associated with this environment.
+                      order:
+                        type: integer
+                        description: Sort order for display (lower values first).
+                      autoDeploy:
+                        type: boolean
+                        description: Whether to automatically deploy on push to the branch.
+                        default: false
+                      requireApproval:
+                        type: boolean
+                        description: Whether deployments require manual approval.
+                        default: false
+                      autoDeployPRs:
+                        type: boolean
+                        description: Whether to auto-deploy pull requests.
+                        default: false
+                defaultGit:
+                  type: object
+                  description: Default git configuration inherited by apps.
+                  x-kubernetes-preserve-unknown-fields: true
+                defaultBuild:
+                  type: object
+                  description: Default build configuration inherited by apps.
+                  x-kubernetes-preserve-unknown-fields: true
+                defaultImage:
+                  type: object
+                  description: Default image configuration inherited by apps.
+                  x-kubernetes-preserve-unknown-fields: true
+                imagePullSecrets:
+                  type: array
+                  description: Image pull secrets available to all apps in this project.
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                    required: [name]
+                notifications:
+                  type: object
+                  description: Notification configuration for project events.
+                  x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              properties:
+                environmentCount:
+                  type: integer
+                appCount:
+                  type: integer
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                    required: [type, status]

@@ -1,0 +1,95 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vestaenvironments.kubernetes.getvesta.sh
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.14.0
+spec:
+  group: kubernetes.getvesta.sh
+  names:
+    kind: VestaEnvironment
+    listKind: VestaEnvironmentList
+    plural: vestaenvironments
+    singular: vestaenvironment
+    shortNames:
+      - ve
+      - venv
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      additionalPrinterColumns:
+        - name: Project
+          type: string
+          jsonPath: .spec.project
+        - name: Branch
+          type: string
+          jsonPath: .spec.branch
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: VestaEnvironment represents a deployment environment within a project.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - project
+              properties:
+                project:
+                  type: string
+                  description: Name of the VestaProject this environment belongs to.
+                displayName:
+                  type: string
+                  description: Human-readable environment name.
+                order:
+                  type: integer
+                  description: Sort order for display (lower values first).
+                autoDeploy:
+                  type: boolean
+                  description: Whether to automatically deploy on push to the branch.
+                  default: false
+                branch:
+                  type: string
+                  description: Git branch associated with this environment.
+                requireApproval:
+                  type: boolean
+                  description: Whether deployments require manual approval.
+                  default: false
+                autoDeployPRs:
+                  type: boolean
+                  description: Whether to auto-deploy pull requests into this environment.
+                  default: false
+            status:
+              type: object
+              properties:
+                appCount:
+                  type: integer
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                    required: [type, status]

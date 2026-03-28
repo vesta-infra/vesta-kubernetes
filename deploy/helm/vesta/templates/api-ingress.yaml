@@ -1,0 +1,35 @@
+{{- if .Values.api.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "vesta.fullname" . }}-api
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  annotations:
+    {{- if .Values.api.ingress.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.api.ingress.clusterIssuer }}
+    {{- end }}
+    {{- with .Values.api.ingress.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- if .Values.api.ingress.tls }}
+  tls:
+    - hosts:
+        - {{ .Values.api.ingress.host }}
+      secretName: {{ include "vesta.fullname" . }}-api-tls
+  {{- end }}
+  rules:
+    - host: {{ .Values.api.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "vesta.fullname" . }}-api
+                port:
+                  number: 80
+{{- end }}

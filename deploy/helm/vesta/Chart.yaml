@@ -1,0 +1,15 @@
+apiVersion: v2
+name: vesta
+description: Vesta Kubernetes PaaS -- Heroku-like deployments on Kubernetes
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - paas
+  - deployment
+  - gitops
+  - heroku
+home: https://kubernetes.getvesta.sh
+maintainers:
+  - name: Vesta Team

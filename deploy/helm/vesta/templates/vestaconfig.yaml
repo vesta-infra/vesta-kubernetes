@@ -1,0 +1,40 @@
+apiVersion: kubernetes.getvesta.sh/v1alpha1
+kind: VestaConfig
+metadata:
+  name: vesta
+spec:
+  domain: {{ .Values.config.domain }}
+  {{- if .Values.config.clusterIssuer }}
+  clusterIssuer: {{ .Values.config.clusterIssuer }}
+  {{- end }}
+
+  {{- if or .Values.config.registry.build.url .Values.config.registry.globalImagePullSecrets }}
+  registry:
+    {{- if .Values.config.registry.build.url }}
+    build:
+      url: {{ .Values.config.registry.build.url }}
+      {{- if .Values.config.registry.build.credentialsSecret }}
+      credentials:
+        secretRef: {{ .Values.config.registry.build.credentialsSecret }}
+      {{- end }}
+    {{- end }}
+    {{- if .Values.config.registry.globalImagePullSecrets }}
+    globalImagePullSecrets:
+      {{- toYaml .Values.config.registry.globalImagePullSecrets | nindent 6 }}
+    {{- end }}
+  {{- end }}
+
+  {{- if .Values.config.podSizeList }}
+  podSizeList:
+    {{- toYaml .Values.config.podSizeList | nindent 4 }}
+  {{- end }}
+
+  {{- if .Values.config.autoscaleDefaults }}
+  autoscaleDefaults:
+    {{- toYaml .Values.config.autoscaleDefaults | nindent 4 }}
+  {{- end }}
+
+  {{- if .Values.config.auth }}
+  auth:
+    {{- toYaml .Values.config.auth | nindent 4 }}
+  {{- end }}

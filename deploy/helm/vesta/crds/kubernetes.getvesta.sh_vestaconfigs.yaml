@@ -1,0 +1,184 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vestaconfigs.kubernetes.getvesta.sh
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.14.0
+spec:
+  group: kubernetes.getvesta.sh
+  names:
+    kind: VestaConfig
+    listKind: VestaConfigList
+    plural: vestaconfigs
+    singular: vestaconfig
+    shortNames:
+      - vc
+      - vcfg
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: VestaConfig is the cluster-wide configuration for the Vesta platform.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - domain
+              properties:
+                domain:
+                  type: string
+                  description: Base domain for app ingress (e.g. apps.example.com).
+                clusterIssuer:
+                  type: string
+                  description: cert-manager ClusterIssuer name for TLS certificates.
+                registry:
+                  type: object
+                  properties:
+                    build:
+                      type: object
+                      description: Registry where Vesta pushes built images.
+                      properties:
+                        url:
+                          type: string
+                        credentials:
+                          type: object
+                          properties:
+                            secretRef:
+                              type: string
+                      required: [url]
+                    globalImagePullSecrets:
+                      type: array
+                      description: ImagePullSecrets applied to every app cluster-wide.
+                      items:
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                        required: [name]
+                podSizeList:
+                  type: array
+                  description: Predefined resource presets selectable by name.
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name:
+                        type: string
+                      requests:
+                        type: object
+                        additionalProperties:
+                          anyOf:
+                            - type: integer
+                            - type: string
+                          x-kubernetes-int-or-string: true
+                      limits:
+                        type: object
+                        additionalProperties:
+                          anyOf:
+                            - type: integer
+                            - type: string
+                          x-kubernetes-int-or-string: true
+                autoscaleDefaults:
+                  type: object
+                  description: Cluster-wide autoscaling defaults, overridable per app.
+                  properties:
+                    minReplicas:
+                      type: integer
+                      format: int32
+                    maxReplicas:
+                      type: integer
+                      format: int32
+                    targetCPU:
+                      type: integer
+                      format: int32
+                    targetMemory:
+                      type: integer
+                      format: int32
+                buildpacks:
+                  type: array
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name:
+                        type: string
+                      fetchImage:
+                        type: string
+                      buildCommand:
+                        type: string
+                      runCommand:
+                        type: string
+                externalSecrets:
+                  type: object
+                  properties:
+                    enabled:
+                      type: boolean
+                    provider:
+                      type: string
+                    vault:
+                      type: object
+                      properties:
+                        server:
+                          type: string
+                        path:
+                          type: string
+                        auth:
+                          type: object
+                          properties:
+                            method:
+                              type: string
+                            role:
+                              type: string
+                auth:
+                  type: object
+                  properties:
+                    local:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                    oauth2:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                        providers:
+                          type: array
+                          items:
+                            type: object
+                            required: [name, clientId, clientSecret]
+                            properties:
+                              name:
+                                type: string
+                              clientId:
+                                type: string
+                              clientSecret:
+                                type: string
+                              allowedOrgs:
+                                type: array
+                                items:
+                                  type: string
+                    apiTokens:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                        maxTokensPerUser:
+                          type: integer
+                        defaultExpiry:
+                          type: string
+                templates:
+                  type: object
+                  properties:
+                    catalogUrl:
+                      type: string

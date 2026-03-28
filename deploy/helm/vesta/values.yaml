@@ -1,0 +1,118 @@
+# Vesta Helm Chart Values
+
+# -- Operator configuration
+operator:
+  image:
+    repository: ghcr.io/getvesta/kubernetes-operator
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+  leaderElect: true
+
+# -- API server configuration
+api:
+  image:
+    repository: ghcr.io/getvesta/kubernetes-api
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8090
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  ingress:
+    enabled: false
+    host: kubernetes.getvesta.sh
+    tls: true
+    clusterIssuer: letsencrypt-prod
+    annotations: {}
+
+# -- UI configuration
+ui:
+  enabled: true
+  image:
+    repository: ghcr.io/getvesta/kubernetes-ui
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+# -- Vesta platform configuration (creates VestaConfig CRD)
+config:
+  domain: apps.getvesta.sh
+  clusterIssuer: letsencrypt-prod
+
+  registry:
+    build:
+      url: ""
+      credentialsSecret: ""
+    globalImagePullSecrets: []
+
+  podSizeList:
+    - name: small
+      requests:
+        cpu: "250m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+    - name: medium
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+    - name: large
+      requests:
+        cpu: "1000m"
+        memory: "1Gi"
+      limits:
+        cpu: "2000m"
+        memory: "2Gi"
+
+  autoscaleDefaults:
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPU: 70
+    targetMemory: 80
+
+  auth:
+    local:
+      enabled: true
+    oauth2:
+      enabled: false
+      providers: []
+    apiTokens:
+      enabled: true
+      maxTokensPerUser: 10
+      defaultExpiry: "90d"
+
+# -- Service account
+serviceAccount:
+  create: true
+  name: vesta-operator
+  annotations: {}
+
+# -- Namespace
+namespace: vesta-system
+
+# -- Image pull secrets for Vesta's own images
+imagePullSecrets: []
