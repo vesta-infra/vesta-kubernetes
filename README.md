@@ -150,9 +150,15 @@ kubectl rollout restart deployment vesta-api -n vesta-system
 
 
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system --version 0.1.11 \
+  -n vesta-system --version 0.1.16 \
   --set api.database.existingSecret=vesta-db-secret \
-  --set operator.image.tag=0.1.11 \
-  --set api.image.tag=0.1.11 \
-  --set ui.image.tag=0.1.11
+  --set operator.image.tag=0.1.16 \
+  --set api.image.tag=0.1.16 \
+  --set ui.image.tag=0.1.16
 
+
+
+###
+for autoscalling, we need metrics server and hpa
+
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml

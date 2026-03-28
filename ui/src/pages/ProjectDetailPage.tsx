@@ -215,6 +215,9 @@ export default function ProjectDetailPage() {
               </div>
             )}
           </section>
+
+          <ImagePullSecretsSection projectId={projectId!} project={project} />
+          <NotificationsSection projectId={projectId!} />
         </div>
       </div>
     </div>
@@ -436,6 +439,7 @@ function CreateEnvironmentForm({ projectId, onClose }: { projectId: string; onCl
 interface EnvConfig {
   name: string
   replicas: number
+  podSize?: string
   autoscale?: {
     enabled: boolean
     minReplicas: number
@@ -451,6 +455,20 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
   const [imageRepo, setImageRepo] = useState('')
   const [imageTag, setImageTag] = useState('')
   const [port, setPort] = useState('3000')
+  const [hcEnabled, setHcEnabled] = useState(false)
+  const [hcType, setHcType] = useState('http')
+  const [hcPath, setHcPath] = useState('/')
+  const [hcPort, setHcPort] = useState('')
+  const [hcCommand, setHcCommand] = useState('')
+  const [hcInitialDelay, setHcInitialDelay] = useState('0')
+  const [hcPeriod, setHcPeriod] = useState('10')
+  const [hcTimeout, setHcTimeout] = useState('1')
+  const [hcFailureThreshold, setHcFailureThreshold] = useState('3')
+
+  const { data: podSizes } = useQuery({
+    queryKey: ['podSizes'],
+    queryFn: () => api.listPodSizes(),
+  })
 
   const mutation = useMutation({
     mutationFn: (data: any) => api.createApp(projectId, data),
@@ -467,7 +485,7 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
         const { [envName]: _, ...rest } = prev
         return rest
       }
-      return { ...prev, [envName]: { name: envName, replicas: 1 } }
+      return { ...prev, [envName]: { name: envName, replicas: 1, podSize: '' } }
     })
   }
 
@@ -508,7 +526,12 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
     e.preventDefault()
     mutation.mutate({
       name,
-      environments: Object.values(envConfigs),
+      environments: Object.values(envConfigs).map(cfg => ({
+        name: cfg.name,
+        replicas: cfg.replicas,
+        ...(cfg.autoscale && { autoscale: cfg.autoscale }),
+        ...(cfg.podSize && { resources: { size: cfg.podSize } }),
+      })),
       image: {
         repository: imageRepo || undefined,
         tag: imageTag || undefined,
@@ -516,6 +539,18 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
       runtime: {
         port: parseInt(port) || 3000,
       },
+      ...(hcEnabled && {
+        healthCheck: {
+          type: hcType,
+          ...(hcType === 'http' && { path: hcPath }),
+          ...(hcType !== 'exec' && hcPort && { port: parseInt(hcPort) }),
+          ...(hcType === 'exec' && { command: hcCommand }),
+          initialDelaySeconds: parseInt(hcInitialDelay) || 0,
+          periodSeconds: parseInt(hcPeriod) || 10,
+          timeoutSeconds: parseInt(hcTimeout) || 1,
+          failureThreshold: parseInt(hcFailureThreshold) || 3,
+        },
+      }),
     })
   }
 
@@ -559,7 +594,20 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
                   </label>
                   {isSelected && config && (
                     <div className="mt-3 pl-6 space-y-3">
-                      <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-4 flex-wrap">
+                        <div>
+                          <label className="text-xs text-text-tertiary">Pod Size</label>
+                          <select
+                            value={config.podSize || ''}
+                            onChange={(e) => setEnvConfigs(prev => ({ ...prev, [env.name]: { ...prev[env.name], podSize: e.target.value } }))}
+                            className="input-field w-28 mt-1"
+                          >
+                            <option value="">Default</option>
+                            {podSizes?.items?.map((s: any) => (
+                              <option key={s.name} value={s.name}>{s.name}</option>
+                            ))}
+                          </select>
+                        </div>
                         <div>
                           <label className="text-xs text-text-tertiary">Replicas</label>
                           <input
@@ -655,6 +703,68 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
         />
       </div>
 
+      <div>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={hcEnabled}
+            onChange={(e) => setHcEnabled(e.target.checked)}
+            className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+          />
+          <span className="label mb-0">Health Check</span>
+        </label>
+        {hcEnabled && (
+          <div className="mt-3 pl-6 space-y-3">
+            <div className="flex items-center gap-4 flex-wrap">
+              <div>
+                <label className="text-xs text-text-tertiary">Type</label>
+                <select value={hcType} onChange={(e) => setHcType(e.target.value)} className="input-field w-28 mt-1">
+                  <option value="http">HTTP</option>
+                  <option value="tcp">TCP</option>
+                  <option value="exec">Exec</option>
+                </select>
+              </div>
+              {hcType === 'http' && (
+                <div>
+                  <label className="text-xs text-text-tertiary">Path</label>
+                  <input value={hcPath} onChange={(e) => setHcPath(e.target.value)} className="input-field w-32 mt-1" placeholder="/healthz" />
+                </div>
+              )}
+              {hcType !== 'exec' && (
+                <div>
+                  <label className="text-xs text-text-tertiary">Port</label>
+                  <input type="number" value={hcPort} onChange={(e) => setHcPort(e.target.value)} className="input-field w-20 mt-1" placeholder={port} />
+                </div>
+              )}
+              {hcType === 'exec' && (
+                <div className="flex-1">
+                  <label className="text-xs text-text-tertiary">Command</label>
+                  <input value={hcCommand} onChange={(e) => setHcCommand(e.target.value)} className="input-field mt-1 font-mono text-xs" placeholder="cat /tmp/healthy" />
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-4 flex-wrap">
+              <div>
+                <label className="text-xs text-text-tertiary">Initial Delay (s)</label>
+                <input type="number" min="0" value={hcInitialDelay} onChange={(e) => setHcInitialDelay(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary">Period (s)</label>
+                <input type="number" min="1" value={hcPeriod} onChange={(e) => setHcPeriod(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary">Timeout (s)</label>
+                <input type="number" min="1" value={hcTimeout} onChange={(e) => setHcTimeout(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary">Failure Threshold</label>
+                <input type="number" min="1" value={hcFailureThreshold} onChange={(e) => setHcFailureThreshold(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="flex gap-3 pt-1">
         <button type="submit" disabled={mutation.isPending} className="btn-primary">
           {mutation.isPending ? 'Creating...' : 'Create App'}
@@ -691,6 +801,338 @@ function StatusBadge({ phase }: { phase?: string }) {
       {p === 'Running' && <span className="inline-block w-1.5 h-1.5 rounded-full bg-current mr-1.5 animate-glow-pulse" />}
       {p}
     </span>
+  )
+}
+
+function ImagePullSecretsSection({ projectId, project }: { projectId: string; project: any }) {
+  const queryClient = useQueryClient()
+  const { data: registrySecrets } = useQuery({
+    queryKey: ['registrySecrets'],
+    queryFn: () => api.listRegistrySecrets(),
+  })
+
+  const currentPullSecrets: string[] = (project.spec?.imagePullSecrets || []).map((s: any) => s.name)
+  const [selectedSecret, setSelectedSecret] = useState('')
+
+  const addMutation = useMutation({
+    mutationFn: (secretName: string) => {
+      const updated = [...currentPullSecrets.map(n => ({ name: n })), { name: secretName }]
+      return api.updateProject(projectId, { imagePullSecrets: updated })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['project', projectId] })
+      setSelectedSecret('')
+    },
+  })
+
+  const removeMutation = useMutation({
+    mutationFn: (secretName: string) => {
+      const updated = currentPullSecrets.filter(n => n !== secretName).map(n => ({ name: n }))
+      return api.updateProject(projectId, { imagePullSecrets: updated.length > 0 ? updated : null })
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['project', projectId] }),
+  })
+
+  const availableSecrets = (registrySecrets?.items || []).filter(
+    (s: any) => !currentPullSecrets.includes(s.name)
+  )
+
+  return (
+    <section className="card p-5">
+      <h3 className="section-title mb-3">Image Pull Secrets</h3>
+      <p className="text-xs text-text-tertiary mb-3">
+        Registry credentials used to pull private images for all apps in this project.
+      </p>
+
+      {currentPullSecrets.length === 0 && (
+        <p className="text-xs text-text-tertiary mb-3">No registry credentials attached</p>
+      )}
+
+      {currentPullSecrets.map(name => {
+        const detail = registrySecrets?.items?.find((s: any) => s.name === name)
+        return (
+          <div key={name} className="flex items-center justify-between py-2 border-b border-border-subtle last:border-0">
+            <div>
+              <p className="text-sm font-mono text-text-primary">{name}</p>
+              {detail?.registry && (
+                <span className="text-[11px] text-text-tertiary">{detail.registry}</span>
+              )}
+            </div>
+            <button
+              onClick={() => removeMutation.mutate(name)}
+              className="text-xs text-text-tertiary hover:text-status-failed transition-colors"
+            >
+              Remove
+            </button>
+          </div>
+        )
+      })}
+
+      {availableSecrets.length > 0 && (
+        <div className="flex gap-2 mt-3">
+          <select
+            value={selectedSecret}
+            onChange={(e) => setSelectedSecret(e.target.value)}
+            className="input-field text-xs flex-1"
+          >
+            <option value="">Add registry credential...</option>
+            {availableSecrets.map((s: any) => (
+              <option key={s.name} value={s.name}>{s.name} ({s.registry})</option>
+            ))}
+          </select>
+          <button
+            onClick={() => selectedSecret && addMutation.mutate(selectedSecret)}
+            disabled={!selectedSecret || addMutation.isPending}
+            className="btn-primary text-xs"
+          >
+            Add
+          </button>
+        </div>
+      )}
+
+      {availableSecrets.length === 0 && currentPullSecrets.length === 0 && (
+        <p className="text-[11px] text-text-tertiary mt-1">
+          Create registry credentials in Secrets &rarr; Registry Credentials first.
+        </p>
+      )}
+    </section>
+  )
+}
+
+const NOTIFICATION_TYPES = [
+  { value: 'slack', label: 'Slack', configFields: [{ key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://hooks.slack.com/services/...' }] },
+  { value: 'discord', label: 'Discord', configFields: [{ key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://discord.com/api/webhooks/...' }] },
+  { value: 'google_chat', label: 'Google Chat', configFields: [{ key: 'webhookUrl', label: 'Webhook URL', placeholder: 'https://chat.googleapis.com/v1/spaces/...' }] },
+  { value: 'webhook', label: 'Webhook', configFields: [{ key: 'url', label: 'URL', placeholder: 'https://example.com/webhook' }, { key: 'secret', label: 'Secret (HMAC)', placeholder: 'optional signing secret' }] },
+  { value: 'email', label: 'Email', configFields: [{ key: 'smtpHost', label: 'SMTP Host', placeholder: 'smtp.example.com' }, { key: 'smtpPort', label: 'SMTP Port', placeholder: '587' }, { key: 'username', label: 'Username', placeholder: '' }, { key: 'password', label: 'Password', placeholder: '' }, { key: 'from', label: 'From', placeholder: 'vesta@example.com' }, { key: 'to', label: 'To (comma-separated)', placeholder: 'team@example.com' }] },
+]
+
+const EVENT_TYPES = [
+  { value: 'deploy.started', label: 'Deploy Started' },
+  { value: 'deploy.failed', label: 'Deploy Failed' },
+  { value: 'app.restarted', label: 'App Restarted' },
+  { value: 'app.scaled', label: 'App Scaled' },
+  { value: 'app.created', label: 'App Created' },
+  { value: 'app.deleted', label: 'App Deleted' },
+]
+
+function NotificationsSection({ projectId }: { projectId: string }) {
+  const queryClient = useQueryClient()
+  const [showAdd, setShowAdd] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [testingId, setTestingId] = useState<string | null>(null)
+
+  const { data: channels } = useQuery({
+    queryKey: ['notifications', projectId],
+    queryFn: () => api.listNotificationChannels(projectId),
+  })
+
+  const { data: history } = useQuery({
+    queryKey: ['notificationHistory', projectId],
+    queryFn: () => api.listNotificationHistory(projectId, 20),
+    enabled: showHistory,
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (channelId: string) => api.deleteNotificationChannel(projectId, channelId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications', projectId] }),
+  })
+
+  const toggleMutation = useMutation({
+    mutationFn: ({ channelId, enabled }: { channelId: string; enabled: boolean }) =>
+      api.updateNotificationChannel(projectId, channelId, { enabled }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications', projectId] }),
+  })
+
+  const testMutation = useMutation({
+    mutationFn: (channelId: string) => {
+      setTestingId(channelId)
+      return api.testNotificationChannel(projectId, channelId)
+    },
+    onSettled: () => setTestingId(null),
+  })
+
+  const typeLabel = (type: string) => NOTIFICATION_TYPES.find(t => t.value === type)?.label || type
+
+  return (
+    <section className="card p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="section-title">Notifications</h3>
+        <button onClick={() => setShowAdd(!showAdd)} className="text-xs text-accent hover:text-accent-glow transition-colors">
+          {showAdd ? 'Cancel' : '+ Add'}
+        </button>
+      </div>
+
+      {showAdd && (
+        <AddNotificationForm projectId={projectId} onClose={() => setShowAdd(false)} />
+      )}
+
+      {(!channels?.items || channels.items.length === 0) ? (
+        <p className="text-xs text-text-tertiary">No notification channels configured</p>
+      ) : (
+        <div className="space-y-2">
+          {channels.items.map((ch: any) => (
+            <div key={ch.id} className="flex items-center justify-between py-2 border-b border-border-subtle last:border-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${ch.enabled ? 'bg-status-running' : 'bg-text-tertiary'}`} />
+                <div className="min-w-0">
+                  <p className="text-sm text-text-primary truncate">{ch.name}</p>
+                  <span className="text-[11px] font-mono text-text-tertiary">{typeLabel(ch.type)}</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0">
+                <button
+                  onClick={() => testMutation.mutate(ch.id)}
+                  disabled={testingId === ch.id}
+                  className="text-[11px] text-accent hover:text-accent-glow transition-colors disabled:opacity-40"
+                  title="Send test notification"
+                >
+                  {testingId === ch.id ? '...' : 'Test'}
+                </button>
+                <button
+                  onClick={() => toggleMutation.mutate({ channelId: ch.id, enabled: !ch.enabled })}
+                  className={`text-[11px] transition-colors ${ch.enabled ? 'text-status-running hover:text-text-secondary' : 'text-text-tertiary hover:text-status-running'}`}
+                >
+                  {ch.enabled ? 'On' : 'Off'}
+                </button>
+                <button
+                  onClick={() => { if (confirm(`Delete channel "${ch.name}"?`)) deleteMutation.mutate(ch.id) }}
+                  className="text-[11px] text-text-tertiary hover:text-status-failed transition-colors"
+                >
+                  &times;
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {testMutation.isSuccess && (
+        <p className="text-[11px] text-status-running mt-2">Test notification sent</p>
+      )}
+      {testMutation.isError && (
+        <p className="text-[11px] text-status-failed mt-2">{(testMutation.error as Error).message}</p>
+      )}
+
+      <button
+        onClick={() => setShowHistory(!showHistory)}
+        className="text-[11px] text-text-tertiary hover:text-text-secondary mt-3 block transition-colors"
+      >
+        {showHistory ? 'Hide history' : 'Show history'}
+      </button>
+
+      {showHistory && history?.items && (
+        <div className="mt-2 space-y-1 max-h-48 overflow-y-auto">
+          {history.items.length === 0 ? (
+            <p className="text-[11px] text-text-tertiary">No notifications sent yet</p>
+          ) : (
+            history.items.map((h: any) => (
+              <div key={h.id} className="flex items-center justify-between py-1.5 text-[11px]">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${h.status === 'sent' ? 'bg-status-running' : 'bg-status-failed'}`} />
+                  <span className="text-text-secondary truncate font-mono">{h.eventType}</span>
+                  {h.appId && <span className="text-text-tertiary truncate">{h.appId}</span>}
+                </div>
+                <span className="text-text-tertiary flex-shrink-0" title={h.error || undefined}>
+                  {new Date(h.createdAt).toLocaleTimeString()}
+                </span>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function AddNotificationForm({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+  const queryClient = useQueryClient()
+  const [name, setName] = useState('')
+  const [type, setType] = useState('slack')
+  const [config, setConfig] = useState<Record<string, string>>({})
+  const [events, setEvents] = useState<string[]>(['deploy.started', 'deploy.failed'])
+
+  const typeDef = NOTIFICATION_TYPES.find(t => t.value === type)!
+
+  const mutation = useMutation({
+    mutationFn: (data: any) => api.createNotificationChannel(projectId, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['notifications', projectId] })
+      onClose()
+    },
+  })
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    const parsedConfig = { ...config }
+    // Convert comma-separated 'to' into array for email
+    if (type === 'email' && parsedConfig.to) {
+      (parsedConfig as any).to = parsedConfig.to.split(',').map((s: string) => s.trim()).filter(Boolean)
+    }
+    mutation.mutate({ name, type, config: parsedConfig, events })
+  }
+
+  const toggleEvent = (ev: string) => {
+    setEvents(prev => prev.includes(ev) ? prev.filter(e => e !== ev) : [...prev, ev])
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3 mb-4 p-3 bg-surface-3 rounded-lg animate-slide-up">
+      <div>
+        <label className="label">Name</label>
+        <input value={name} onChange={e => setName(e.target.value)} className="input-field" required placeholder="My Slack Channel" />
+      </div>
+
+      <div>
+        <label className="label">Type</label>
+        <select value={type} onChange={e => { setType(e.target.value); setConfig({}) }} className="input-field">
+          {NOTIFICATION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+        </select>
+      </div>
+
+      {typeDef.configFields.map(f => (
+        <div key={f.key}>
+          <label className="label">{f.label}</label>
+          <input
+            value={config[f.key] || ''}
+            onChange={e => setConfig(prev => ({ ...prev, [f.key]: e.target.value }))}
+            className="input-field text-xs font-mono"
+            placeholder={f.placeholder}
+            type={f.key === 'password' || f.key === 'secret' ? 'password' : 'text'}
+          />
+        </div>
+      ))}
+
+      <div>
+        <label className="label">Events</label>
+        <div className="flex flex-wrap gap-1.5">
+          {EVENT_TYPES.map(ev => (
+            <button
+              key={ev.value}
+              type="button"
+              onClick={() => toggleEvent(ev.value)}
+              className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${
+                events.includes(ev.value)
+                  ? 'border-accent bg-accent/10 text-accent'
+                  : 'border-border bg-surface-2 text-text-tertiary hover:text-text-secondary'
+              }`}
+            >
+              {ev.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex gap-2 pt-1">
+        <button type="submit" disabled={mutation.isPending || !name || events.length === 0} className="btn-primary text-xs">
+          {mutation.isPending ? 'Creating...' : 'Add Channel'}
+        </button>
+        <button type="button" onClick={onClose} className="btn-ghost text-xs">Cancel</button>
+      </div>
+      {mutation.isError && (
+        <p className="text-status-failed text-xs">{(mutation.error as Error).message}</p>
+      )}
+    </form>
   )
 }
 

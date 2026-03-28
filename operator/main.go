@@ -66,9 +66,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	configResolver := controllers.NewConfigResolver(mgr.GetClient())
+
 	if err = (&controllers.VestaAppReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		ConfigResolver: configResolver,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "VestaApp")
 		os.Exit(1)

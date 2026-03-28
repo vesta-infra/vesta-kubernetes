@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -144,6 +145,36 @@ func (d *DB) GetUserTeamIDs(ctx context.Context, userID string) ([]string, error
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// Password reset tokens
+
+func (d *DB) CreatePasswordResetToken(ctx context.Context, userID, tokenHash string, expiresAt time.Time) error {
+	// Invalidate any existing tokens for this user
+	_, _ = d.ExecContext(ctx, `UPDATE password_reset_tokens SET used = true WHERE user_id = $1 AND used = false`, userID)
+
+	_, err := d.ExecContext(ctx,
+		`INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
+		userID, tokenHash, expiresAt)
+	return err
+}
+
+func (d *DB) ValidatePasswordResetToken(ctx context.Context, tokenHash string) (string, error) {
+	var userID string
+	err := d.QueryRowContext(ctx,
+		`SELECT user_id FROM password_reset_tokens
+		 WHERE token_hash = $1 AND used = false AND expires_at > now()`, tokenHash,
+	).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return userID, err
+}
+
+func (d *DB) ConsumePasswordResetToken(ctx context.Context, tokenHash string) error {
+	_, err := d.ExecContext(ctx,
+		`UPDATE password_reset_tokens SET used = true WHERE token_hash = $1`, tokenHash)
+	return err
 }
 
 func isUniqueViolation(err error) bool {

@@ -375,3 +375,79 @@ func slugify(s string) string {
 	}
 	return string(result)
 }
+
+// ForgotPasswordStatus returns whether forgot password is available (email channel configured).
+func (h *Handler) ForgotPasswordStatus(c *gin.Context) {
+	has, err := h.DB.HasEmailChannel()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "database error"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"available": has})
+}
+
+// ForgotPassword generates a reset token and emails it. Only works if an email channel is configured.
+func (h *Handler) ForgotPassword(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
+	// Always return success to prevent email enumeration
+	successMsg := gin.H{"message": "If an account with that email exists, a reset code has been sent."}
+
+	user, err := h.DB.GetUserByEmail(c.Request.Context(), req.Email)
+	if err != nil {
+		c.JSON(http.StatusOK, successMsg)
+		return
+	}
+
+	rawToken := generateRandomToken()
+	tokenHash := db.HashToken(rawToken)
+	expiresAt := time.Now().Add(1 * time.Hour)
+
+	if err := h.DB.CreatePasswordResetToken(c.Request.Context(), user.ID, tokenHash, expiresAt); err != nil {
+		c.JSON(http.StatusOK, successMsg)
+		return
+	}
+
+	go func() {
+		if err := h.Notifier.SendPasswordResetEmail(user.Email, rawToken); err != nil {
+			// Log but don't expose to user
+			_ = err
+		}
+	}()
+
+	c.JSON(http.StatusOK, successMsg)
+}
+
+// ResetPassword validates the reset token and sets the new password.
+func (h *Handler) ResetPassword(c *gin.Context) {
+	var req struct {
+		Token       string `json:"token" binding:"required"`
+		NewPassword string `json:"newPassword" binding:"required,min=8"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
+	tokenHash := db.HashToken(req.Token)
+	userID, err := h.DB.ValidatePasswordResetToken(c.Request.Context(), tokenHash)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "Invalid or expired reset token"})
+		return
+	}
+
+	if err := h.DB.UpdateUserPassword(c.Request.Context(), userID, req.NewPassword); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "Failed to update password"})
+		return
+	}
+
+	_ = h.DB.ConsumePasswordResetToken(c.Request.Context(), tokenHash)
+
+	c.JSON(http.StatusOK, gin.H{"message": "Password has been reset. You can now log in."})
+}

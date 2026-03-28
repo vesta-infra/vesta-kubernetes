@@ -104,6 +104,11 @@ func (in *VestaAppSpec) DeepCopyInto(out *VestaAppSpec) {
 		*out = new(ResourceConfig)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.HealthCheck != nil {
+		in, out := &in.HealthCheck, &out.HealthCheck
+		*out = new(HealthCheckConfig)
+		**out = **in
+	}
 	if in.Ingress != nil {
 		in, out := &in.Ingress, &out.Ingress
 		*out = new(IngressConfig)
@@ -155,6 +160,16 @@ func (in *AppEnvironmentConfig) DeepCopyInto(out *AppEnvironmentConfig) {
 		in, out := &in.Autoscale, &out.Autoscale
 		*out = new(AutoscaleConfig)
 		(*in).DeepCopyInto(*out)
+	}
+	if in.Resources != nil {
+		in, out := &in.Resources, &out.Resources
+		*out = new(ResourceConfig)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.ImagePullSecrets != nil {
+		in, out := &in.ImagePullSecrets, &out.ImagePullSecrets
+		*out = make([]corev1.LocalObjectReference, len(*in))
+		copy(*out, *in)
 	}
 }
 
@@ -506,6 +521,21 @@ func (in *IngressConfig) DeepCopy() *IngressConfig {
 		return nil
 	}
 	out := new(IngressConfig)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// --- HealthCheckConfig ---
+
+func (in *HealthCheckConfig) DeepCopyInto(out *HealthCheckConfig) {
+	*out = *in
+}
+
+func (in *HealthCheckConfig) DeepCopy() *HealthCheckConfig {
+	if in == nil {
+		return nil
+	}
+	out := new(HealthCheckConfig)
 	in.DeepCopyInto(out)
 	return out
 }

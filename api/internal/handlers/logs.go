@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
 )
@@ -58,7 +60,7 @@ func (h *Handler) StreamLogs(c *gin.Context) {
 	}
 
 	// Otherwise list all pods for the app and return logs for each
-	labelSelector := fmt.Sprintf("app=%s", appId)
+	labelSelector := fmt.Sprintf("kubernetes.getvesta.sh/app=%s", appId)
 	pods, err := h.K8s.ListPods(c.Request.Context(), targetNS, labelSelector)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to list pods: %v", err)})
@@ -127,28 +129,53 @@ func (h *Handler) GetMetrics(c *gin.Context) {
 	targetNS := fmt.Sprintf("%s-%s", project, env)
 
 	// Get pods to report pod-level status/resource info
-	labelSelector := fmt.Sprintf("app=%s", appId)
+	labelSelector := fmt.Sprintf("kubernetes.getvesta.sh/app=%s", appId)
 	pods, err := h.K8s.ListPods(c.Request.Context(), targetNS, labelSelector)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to list pods: %v", err)})
 		return
 	}
 
-	type podMetric struct {
-		Name      string `json:"name"`
-		Status    string `json:"status"`
-		Ready     bool   `json:"ready"`
-		Restarts  int32  `json:"restarts"`
-		CPUReq    string `json:"cpuRequest"`
-		MemReq    string `json:"memoryRequest"`
-		CPULim    string `json:"cpuLimit"`
-		MemLim    string `json:"memoryLimit"`
-		StartedAt string `json:"startedAt,omitempty"`
-		NodeName  string `json:"nodeName"`
+	type containerInfo struct {
+		Name     string `json:"name"`
+		Image    string `json:"image"`
+		Ready    bool   `json:"ready"`
+		State    string `json:"state"`
+		Restarts int32  `json:"restarts"`
+		CPUReq   string `json:"cpuRequest,omitempty"`
+		MemReq   string `json:"memoryRequest,omitempty"`
+		CPULim   string `json:"cpuLimit,omitempty"`
+		MemLim   string `json:"memoryLimit,omitempty"`
+		CPUUsage string `json:"cpuUsage,omitempty"`
+		MemUsage string `json:"memoryUsage,omitempty"`
 	}
 
+	type podMetric struct {
+		Name       string          `json:"name"`
+		Status     string          `json:"status"`
+		Ready      bool            `json:"ready"`
+		Restarts   int32           `json:"restarts"`
+		CPUReq     string          `json:"cpuRequest"`
+		MemReq     string          `json:"memoryRequest"`
+		CPULim     string          `json:"cpuLimit"`
+		MemLim     string          `json:"memoryLimit"`
+		CPUUsage   string          `json:"cpuUsage,omitempty"`
+		MemUsage   string          `json:"memoryUsage,omitempty"`
+		StartedAt  string          `json:"startedAt,omitempty"`
+		Age        string          `json:"age,omitempty"`
+		NodeName   string          `json:"nodeName"`
+		IP         string          `json:"ip,omitempty"`
+		Containers []containerInfo `json:"containers,omitempty"`
+	}
+
+	// Get live metrics from metrics-server (best effort)
+	liveMetrics, _ := h.K8s.GetPodMetrics(c.Request.Context(), targetNS, labelSelector)
+
+	now := time.Now()
 	podMetrics := make([]podMetric, 0, len(pods))
 	totalReady := 0
+	var totalCPUUsageNano, totalMemUsageBytes int64
+	var totalCPUReqNano, totalMemReqBytes int64
 	for _, pod := range pods {
 		ready := false
 		restarts := int32(0)
@@ -162,40 +189,117 @@ func (h *Handler) GetMetrics(c *gin.Context) {
 			totalReady++
 		}
 
+		// Aggregate CPU/mem requests/limits across all containers
+		var podCPUReqNano, podMemReqBytes, podCPULimNano, podMemLimBytes int64
+		containers := make([]containerInfo, 0, len(pod.Spec.Containers))
+		for _, ctr := range pod.Spec.Containers {
+			ci := containerInfo{
+				Name:  ctr.Name,
+				Image: ctr.Image,
+			}
+			if q, ok := ctr.Resources.Requests["cpu"]; ok {
+				ci.CPUReq = q.String()
+				podCPUReqNano += q.ScaledValue(0) * 1000000000
+				if q.MilliValue() > 0 {
+					podCPUReqNano = 0
+					// Use MilliValue for precision
+				}
+			}
+			if q, ok := ctr.Resources.Requests["memory"]; ok {
+				ci.MemReq = q.String()
+				podMemReqBytes += q.Value()
+			}
+			if q, ok := ctr.Resources.Limits["cpu"]; ok {
+				ci.CPULim = q.String()
+			}
+			if q, ok := ctr.Resources.Limits["memory"]; ok {
+				ci.MemLim = q.String()
+			}
+			// Container status
+			for _, cs := range pod.Status.ContainerStatuses {
+				if cs.Name == ctr.Name {
+					ci.Ready = cs.Ready
+					ci.Restarts = cs.RestartCount
+					if cs.State.Running != nil {
+						ci.State = "running"
+					} else if cs.State.Waiting != nil {
+						ci.State = cs.State.Waiting.Reason
+					} else if cs.State.Terminated != nil {
+						ci.State = cs.State.Terminated.Reason
+					}
+					break
+				}
+			}
+			containers = append(containers, ci)
+		}
+
+		// Per-container live metrics
+		if pm, ok := liveMetrics[pod.Name]; ok {
+			for i, cm := range pm.Containers {
+				for j := range containers {
+					if containers[j].Name == cm.Name {
+						containers[j].CPUUsage = cm.CPU
+						containers[j].MemUsage = cm.Memory
+					}
+				}
+				_ = i
+			}
+		}
+
+		// Calculate aggregated requests via resource.Quantity for accuracy
 		cpuReq, memReq, cpuLim, memLim := "", "", "", ""
-		if len(pod.Spec.Containers) > 0 {
-			c0 := pod.Spec.Containers[0]
-			if q, ok := c0.Resources.Requests["cpu"]; ok {
+		for _, ctr := range pod.Spec.Containers {
+			if q, ok := ctr.Resources.Requests["cpu"]; ok {
 				cpuReq = q.String()
+				totalCPUReqNano += q.MilliValue() * 1000000
 			}
-			if q, ok := c0.Resources.Requests["memory"]; ok {
+			if q, ok := ctr.Resources.Requests["memory"]; ok {
 				memReq = q.String()
+				totalMemReqBytes += q.Value()
 			}
-			if q, ok := c0.Resources.Limits["cpu"]; ok {
+			if q, ok := ctr.Resources.Limits["cpu"]; ok {
 				cpuLim = q.String()
+				podCPULimNano += q.MilliValue() * 1000000
 			}
-			if q, ok := c0.Resources.Limits["memory"]; ok {
+			if q, ok := ctr.Resources.Limits["memory"]; ok {
 				memLim = q.String()
+				podMemLimBytes += q.Value()
 			}
 		}
 
 		startedAt := ""
+		age := ""
 		if pod.Status.StartTime != nil {
 			startedAt = pod.Status.StartTime.Format("2006-01-02T15:04:05Z")
+			dur := now.Sub(pod.Status.StartTime.Time)
+			age = formatDuration(dur)
 		}
 
-		podMetrics = append(podMetrics, podMetric{
-			Name:      pod.Name,
-			Status:    string(pod.Status.Phase),
-			Ready:     ready,
-			Restarts:  restarts,
-			CPUReq:    cpuReq,
-			MemReq:    memReq,
-			CPULim:    cpuLim,
-			MemLim:    memLim,
-			StartedAt: startedAt,
-			NodeName:  pod.Spec.NodeName,
-		})
+		pm := podMetric{
+			Name:       pod.Name,
+			Status:     string(pod.Status.Phase),
+			Ready:      ready,
+			Restarts:   restarts,
+			CPUReq:     cpuReq,
+			MemReq:     memReq,
+			CPULim:     cpuLim,
+			MemLim:     memLim,
+			CPUUsage:   liveMetrics[pod.Name].CPU,
+			MemUsage:   liveMetrics[pod.Name].Memory,
+			StartedAt:  startedAt,
+			Age:        age,
+			NodeName:   pod.Spec.NodeName,
+			IP:         pod.Status.PodIP,
+			Containers: containers,
+		}
+
+		// Accumulate total usage
+		if mu, ok := liveMetrics[pod.Name]; ok {
+			totalCPUUsageNano += k8s.ParseCPUNano(mu.CPU)
+			totalMemUsageBytes += k8s.ParseMemBytes(mu.Memory)
+		}
+
+		podMetrics = append(podMetrics, pm)
 	}
 
 	// Get the Deployment to report desired/available replicas
@@ -210,12 +314,70 @@ func (h *Handler) GetMetrics(c *gin.Context) {
 		deployInfo["updatedReplicas"] = dStatus["updatedReplicas"]
 	}
 
+	// Get HPA info if it exists
+	hpaInfo := map[string]interface{}{}
+	hpaGVR := schema.GroupVersionResource{Group: "autoscaling", Version: "v2", Resource: "horizontalpodautoscalers"}
+	hpa, hpaErr := h.K8s.GetResource(c.Request.Context(), hpaGVR, targetNS, appId)
+	if hpaErr == nil {
+		hpaSpec, _, _ := unstructuredNestedMap(hpa.Object, "spec")
+		hpaStatus, _, _ := unstructuredNestedMap(hpa.Object, "status")
+		hpaInfo["minReplicas"] = hpaSpec["minReplicas"]
+		hpaInfo["maxReplicas"] = hpaSpec["maxReplicas"]
+		hpaInfo["currentReplicas"] = hpaStatus["currentReplicas"]
+		hpaInfo["desiredReplicas"] = hpaStatus["desiredReplicas"]
+		if conditions, ok := hpaStatus["conditions"].([]interface{}); ok {
+			hpaInfo["conditions"] = conditions
+		}
+		if currentMetrics, ok := hpaStatus["currentMetrics"].([]interface{}); ok {
+			hpaInfo["currentMetrics"] = currentMetrics
+		}
+	}
+
+	// Build summary with totals
+	summary := map[string]interface{}{
+		"totalCPUUsage":    k8s.FormatCPUNano(totalCPUUsageNano),
+		"totalMemoryUsage": k8s.FormatMemBytes(totalMemUsageBytes),
+		"totalCPURequest":  k8s.FormatCPUNano(totalCPUReqNano),
+		"totalMemoryRequest": k8s.FormatMemBytes(totalMemReqBytes),
+	}
+	if totalCPUReqNano > 0 {
+		summary["cpuUtilization"] = float64(totalCPUUsageNano) / float64(totalCPUReqNano) * 100
+	}
+	if totalMemReqBytes > 0 {
+		summary["memoryUtilization"] = float64(totalMemUsageBytes) / float64(totalMemReqBytes) * 100
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"environment": env,
 		"namespace":   targetNS,
 		"deployment":  deployInfo,
+		"autoscaling": hpaInfo,
+		"summary":     summary,
 		"pods":        podMetrics,
 		"totalPods":   len(podMetrics),
 		"readyPods":   totalReady,
 	})
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	if d < 24*time.Hour {
+		h := int(d.Hours())
+		m := int(d.Minutes()) % 60
+		if m > 0 {
+			return fmt.Sprintf("%dh%dm", h, m)
+		}
+		return fmt.Sprintf("%dh", h)
+	}
+	days := int(d.Hours()) / 24
+	h := int(d.Hours()) % 24
+	if h > 0 {
+		return fmt.Sprintf("%dd%dh", days, h)
+	}
+	return fmt.Sprintf("%dd", days)
 }

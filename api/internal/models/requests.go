@@ -81,6 +81,7 @@ type AppEnvironmentConfig struct {
 	Name      string                 `json:"name" binding:"required"`
 	Replicas  *int32                 `json:"replicas,omitempty"`
 	Autoscale map[string]interface{} `json:"autoscale,omitempty"`
+	Resources map[string]interface{} `json:"resources,omitempty"`
 }
 
 type CreateAppRequest struct {
@@ -91,6 +92,7 @@ type CreateAppRequest struct {
 	Image        map[string]interface{}   `json:"image,omitempty"`
 	Runtime      map[string]interface{}   `json:"runtime,omitempty"`
 	Resources    map[string]interface{}   `json:"resources,omitempty"`
+	HealthCheck  map[string]interface{}   `json:"healthCheck,omitempty"`
 	Ingress      map[string]interface{}   `json:"ingress,omitempty"`
 	Addons       []map[string]interface{} `json:"addons,omitempty"`
 	CustomConfig map[string]interface{}   `json:"customConfig,omitempty"`
@@ -143,4 +145,19 @@ type TLSConfigReq struct {
 
 type NameRef struct {
 	Name string `json:"name"`
+}
+
+// Notifications
+type CreateNotificationChannelRequest struct {
+	Name   string                 `json:"name" binding:"required"`
+	Type   string                 `json:"type" binding:"required"`
+	Config map[string]interface{} `json:"config" binding:"required"`
+	Events []string               `json:"events" binding:"required"`
+}
+
+type UpdateNotificationChannelRequest struct {
+	Name    string                 `json:"name"`
+	Config  map[string]interface{} `json:"config,omitempty"`
+	Events  []string               `json:"events,omitempty"`
+	Enabled *bool                  `json:"enabled,omitempty"`
 }

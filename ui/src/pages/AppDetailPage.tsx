@@ -462,14 +462,35 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const [domain, setDomain] = useState(app.spec?.ingress?.domain || '')
   const [tls, setTls] = useState(app.spec?.ingress?.tls || false)
 
+  // Health check config
+  const [hcEnabled, setHcEnabled] = useState(!!app.spec?.healthCheck)
+  const [hcType, setHcType] = useState(app.spec?.healthCheck?.type || 'http')
+  const [hcPath, setHcPath] = useState(app.spec?.healthCheck?.path || '/')
+  const [hcPort, setHcPort] = useState(String(app.spec?.healthCheck?.port || ''))
+  const [hcCommand, setHcCommand] = useState(app.spec?.healthCheck?.command || '')
+  const [hcInitialDelay, setHcInitialDelay] = useState(String(app.spec?.healthCheck?.initialDelaySeconds || 0))
+  const [hcPeriod, setHcPeriod] = useState(String(app.spec?.healthCheck?.periodSeconds || 10))
+  const [hcTimeout, setHcTimeout] = useState(String(app.spec?.healthCheck?.timeoutSeconds || 1))
+  const [hcFailureThreshold, setHcFailureThreshold] = useState(String(app.spec?.healthCheck?.failureThreshold || 3))
+
+  // Image pull secrets (app-level override)
+  const { data: registrySecrets } = useQuery({
+    queryKey: ['registrySecrets'],
+    queryFn: () => api.listRegistrySecrets(),
+  })
+  const [pullSecrets, setPullSecrets] = useState<string[]>(() => {
+    return (app.spec?.image?.imagePullSecrets || []).map((s: any) => s.name)
+  })
+
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
-  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number }>>(() => {
+  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
       const env = typeof e === 'string' ? { name: e } : e
       configs[env.name] = {
         replicas: env.replicas ?? 1,
+        podSize: env.resources?.size || '',
         autoscaleEnabled: env.autoscale?.enabled || false,
         minReplicas: env.autoscale?.minReplicas || 1,
         maxReplicas: env.autoscale?.maxReplicas || 5,
@@ -477,6 +498,11 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       }
     }
     return configs
+  })
+
+  const { data: podSizes } = useQuery({
+    queryKey: ['podSizes'],
+    queryFn: () => api.listPodSizes(),
   })
 
   // Custom labels and annotations
@@ -505,7 +531,11 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
     // Image
     if (imageRepo) {
-      patch.image = { repository: imageRepo, tag: imageTag || 'latest' }
+      patch.image = {
+        repository: imageRepo,
+        tag: imageTag || 'latest',
+        ...(pullSecrets.length > 0 && { imagePullSecrets: pullSecrets.map(n => ({ name: n })) }),
+      }
     }
 
     // Runtime
@@ -514,6 +544,22 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     // Ingress
     if (domain) {
       patch.ingress = { domain, tls }
+    }
+
+    // Health check
+    if (hcEnabled) {
+      patch.healthCheck = {
+        type: hcType,
+        ...(hcType === 'http' && { path: hcPath }),
+        ...(hcType !== 'exec' && hcPort && { port: parseInt(hcPort) }),
+        ...(hcType === 'exec' && { command: hcCommand }),
+        initialDelaySeconds: parseInt(hcInitialDelay) || 0,
+        periodSeconds: parseInt(hcPeriod) || 10,
+        timeoutSeconds: parseInt(hcTimeout) || 1,
+        failureThreshold: parseInt(hcFailureThreshold) || 3,
+      }
+    } else {
+      patch.healthCheck = null
     }
 
     // Environments
@@ -526,6 +572,9 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           maxReplicas: cfg.maxReplicas,
           metrics: [{ type: 'cpu', targetAverageUtilization: cfg.targetCPU }],
         }
+      }
+      if (cfg.podSize) {
+        env.resources = { size: cfg.podSize }
       }
       return env
     })
@@ -580,6 +629,68 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         </div>
       </div>
 
+      <div>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={hcEnabled}
+            onChange={(e) => setHcEnabled(e.target.checked)}
+            className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+          />
+          <span className="label mb-0">Health Check</span>
+        </label>
+        {hcEnabled && (
+          <div className="mt-3 pl-6 space-y-3">
+            <div className="flex items-center gap-4 flex-wrap">
+              <div>
+                <label className="text-xs text-text-tertiary">Type</label>
+                <select value={hcType} onChange={(e) => setHcType(e.target.value)} className="input-field w-28 mt-1">
+                  <option value="http">HTTP</option>
+                  <option value="tcp">TCP</option>
+                  <option value="exec">Exec</option>
+                </select>
+              </div>
+              {hcType === 'http' && (
+                <div>
+                  <label className="text-xs text-text-tertiary">Path</label>
+                  <input value={hcPath} onChange={(e) => setHcPath(e.target.value)} className="input-field w-32 mt-1" placeholder="/healthz" />
+                </div>
+              )}
+              {hcType !== 'exec' && (
+                <div>
+                  <label className="text-xs text-text-tertiary">Port</label>
+                  <input type="number" value={hcPort} onChange={(e) => setHcPort(e.target.value)} className="input-field w-20 mt-1" placeholder={port} />
+                </div>
+              )}
+              {hcType === 'exec' && (
+                <div className="flex-1">
+                  <label className="text-xs text-text-tertiary">Command</label>
+                  <input value={hcCommand} onChange={(e) => setHcCommand(e.target.value)} className="input-field mt-1 font-mono text-xs" placeholder="cat /tmp/healthy" />
+                </div>
+              )}
+            </div>
+            <div className="flex items-center gap-4 flex-wrap">
+              <div>
+                <label className="text-xs text-text-tertiary">Initial Delay (s)</label>
+                <input type="number" min="0" value={hcInitialDelay} onChange={(e) => setHcInitialDelay(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary">Period (s)</label>
+                <input type="number" min="1" value={hcPeriod} onChange={(e) => setHcPeriod(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary">Timeout (s)</label>
+                <input type="number" min="1" value={hcTimeout} onChange={(e) => setHcTimeout(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary">Failure Threshold</label>
+                <input type="number" min="1" value={hcFailureThreshold} onChange={(e) => setHcFailureThreshold(e.target.value)} className="input-field w-20 mt-1" />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
       {Object.keys(envConfigs).length > 0 && (
         <div>
           <label className="label">Per-Environment Config</label>
@@ -588,6 +699,19 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
               <div key={envName} className="rounded-lg border border-border bg-surface-1 p-3">
                 <span className="text-sm font-mono text-accent">{envName}</span>
                 <div className="mt-2 flex items-center gap-4 flex-wrap">
+                  <div>
+                    <label className="text-xs text-text-tertiary">Pod Size</label>
+                    <select
+                      value={cfg.podSize}
+                      onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], podSize: e.target.value } }))}
+                      className="input-field w-28 mt-1"
+                    >
+                      <option value="">Default</option>
+                      {podSizes?.items?.map((s: any) => (
+                        <option key={s.name} value={s.name}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
                   <div>
                     <label className="text-xs text-text-tertiary">Replicas</label>
                     <input
@@ -636,6 +760,35 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {(registrySecrets?.items?.length ?? 0) > 0 && (
+        <div>
+          <label className="label mb-2">Image Pull Secrets (app-level override)</label>
+          <p className="text-[11px] text-text-tertiary mb-2">
+            Project-level credentials are inherited automatically. Only add here to override.
+          </p>
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {pullSecrets.map(name => (
+              <span key={name} className="inline-flex items-center gap-1.5 text-[11px] font-mono bg-surface-3 text-text-secondary px-2 py-1 rounded">
+                {name}
+                <button type="button" onClick={() => setPullSecrets(prev => prev.filter(n => n !== name))} className="text-text-tertiary hover:text-status-failed">&times;</button>
+              </span>
+            ))}
+          </div>
+          {(registrySecrets?.items?.filter((s: any) => !pullSecrets.includes(s.name))?.length ?? 0) > 0 && (
+            <select
+              value=""
+              onChange={(e) => { if (e.target.value) setPullSecrets(prev => [...prev, e.target.value]) }}
+              className="input-field text-xs w-48"
+            >
+              <option value="">+ Add pull secret</option>
+              {registrySecrets?.items?.filter((s: any) => !pullSecrets.includes(s.name)).map((s: any) => (
+                <option key={s.name} value={s.name}>{s.name} ({s.registry})</option>
+              ))}
+            </select>
+          )}
         </div>
       )}
 
@@ -814,8 +967,9 @@ function AppLogs({ appId, environments }: { appId: string; environments: string[
 
 function AppMetrics({ appId, environments }: { appId: string; environments: string[] }) {
   const [env, setEnv] = useState('')
+  const [expandedPod, setExpandedPod] = useState<string | null>(null)
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['appMetrics', appId, env],
     queryFn: () => api.getAppMetrics(appId, env),
     enabled: !!env,
@@ -824,7 +978,14 @@ function AppMetrics({ appId, environments }: { appId: string; environments: stri
 
   return (
     <div>
-      <h3 className="section-title mb-4">Metrics</h3>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="section-title">Metrics</h3>
+        {env && (
+          <button onClick={() => refetch()} disabled={isFetching} className="btn-ghost text-xs">
+            {isFetching ? 'Refreshing...' : 'Refresh'}
+          </button>
+        )}
+      </div>
 
       <div className="mb-4">
         <select
@@ -864,58 +1025,201 @@ function AppMetrics({ appId, environments }: { appId: string; environments: stri
             </div>
           )}
 
+          {/* Resource usage summary */}
+          {data.summary && (
+            <div className="bg-surface-1 border border-border rounded-lg p-4">
+              <h4 className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider mb-3">Resource Usage</h4>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] text-text-secondary">CPU</span>
+                    <span className="text-[11px] font-mono text-text-primary">
+                      {data.summary.totalCPUUsage || '0'} / {data.summary.totalCPURequest || '0'}
+                      {data.summary.cpuUtilization !== undefined && (
+                        <span className={`ml-1.5 ${data.summary.cpuUtilization > 90 ? 'text-status-failed' : data.summary.cpuUtilization > 70 ? 'text-yellow-400' : 'text-status-running'}`}>
+                          ({Math.round(data.summary.cpuUtilization)}%)
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="w-full bg-surface-2 rounded-full h-2">
+                    <div
+                      className={`h-2 rounded-full transition-all ${(data.summary.cpuUtilization ?? 0) > 90 ? 'bg-status-failed' : (data.summary.cpuUtilization ?? 0) > 70 ? 'bg-yellow-400' : 'bg-accent'}`}
+                      style={{ width: `${Math.min(data.summary.cpuUtilization ?? 0, 100)}%` }}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] text-text-secondary">Memory</span>
+                    <span className="text-[11px] font-mono text-text-primary">
+                      {data.summary.totalMemoryUsage || '0'} / {data.summary.totalMemoryRequest || '0'}
+                      {data.summary.memoryUtilization !== undefined && (
+                        <span className={`ml-1.5 ${data.summary.memoryUtilization > 90 ? 'text-status-failed' : data.summary.memoryUtilization > 70 ? 'text-yellow-400' : 'text-status-running'}`}>
+                          ({Math.round(data.summary.memoryUtilization)}%)
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <div className="w-full bg-surface-2 rounded-full h-2">
+                    <div
+                      className={`h-2 rounded-full transition-all ${(data.summary.memoryUtilization ?? 0) > 90 ? 'bg-status-failed' : (data.summary.memoryUtilization ?? 0) > 70 ? 'bg-yellow-400' : 'bg-accent'}`}
+                      style={{ width: `${Math.min(data.summary.memoryUtilization ?? 0, 100)}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Autoscaling info */}
+          {data.autoscaling && data.autoscaling.maxReplicas && (
+            <div className="bg-surface-1 border border-border rounded-lg p-4">
+              <h4 className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider mb-3">Autoscaling (HPA)</h4>
+              <div className="grid grid-cols-4 gap-3">
+                <div>
+                  <p className="text-[10px] text-text-tertiary mb-0.5">Min Replicas</p>
+                  <p className="text-sm font-mono font-medium text-text-primary">{data.autoscaling.minReplicas ?? 1}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-text-tertiary mb-0.5">Max Replicas</p>
+                  <p className="text-sm font-mono font-medium text-text-primary">{data.autoscaling.maxReplicas}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-text-tertiary mb-0.5">Current</p>
+                  <p className="text-sm font-mono font-medium text-text-primary">{data.autoscaling.currentReplicas ?? '—'}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] text-text-tertiary mb-0.5">Desired</p>
+                  <p className="text-sm font-mono font-medium text-text-primary">{data.autoscaling.desiredReplicas ?? '—'}</p>
+                </div>
+              </div>
+              {data.autoscaling.currentMetrics?.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-border-subtle">
+                  <p className="text-[10px] text-text-tertiary mb-2">Current Metrics</p>
+                  <div className="flex gap-4">
+                    {data.autoscaling.currentMetrics.map((m: any, i: number) => (
+                      <span key={i} className="text-xs font-mono text-text-secondary">
+                        {m.resource?.name || m.type}: {m.resource?.current?.averageUtilization ?? '—'}%
+                        {m.resource?.current?.averageValue ? ` (${m.resource.current.averageValue})` : ''}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Pod table */}
           {data.pods?.length > 0 && (
-            <div className="border border-border rounded-lg overflow-hidden">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="bg-surface-1 border-b border-border">
-                    <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-medium uppercase tracking-wider text-[10px]">Pod</th>
-                    <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-medium uppercase tracking-wider text-[10px]">Status</th>
-                    <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-medium uppercase tracking-wider text-[10px]">Restarts</th>
-                    <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-medium uppercase tracking-wider text-[10px]">CPU</th>
-                    <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-medium uppercase tracking-wider text-[10px]">Memory</th>
-                    <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-medium uppercase tracking-wider text-[10px]">Started</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.pods.map((pod: any) => (
-                    <tr key={pod.name} className="border-b border-border-subtle last:border-0 hover:bg-surface-1/50">
-                      <td className="px-4 py-2.5 font-mono text-text-secondary">
-                        <div className="flex items-center gap-2">
-                          <span className={`inline-block w-1.5 h-1.5 rounded-full ${
-                            pod.ready ? 'bg-status-running' :
-                            pod.status === 'Failed' ? 'bg-status-failed' :
-                            'bg-status-pending'
-                          }`} />
-                          {pod.name}
-                        </div>
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <span className={`${
-                          pod.status === 'Running' ? 'text-status-running' :
-                          pod.status === 'Failed' ? 'text-status-failed' :
-                          'text-status-pending'
-                        }`}>{pod.status}</span>
-                      </td>
-                      <td className="px-4 py-2.5">
-                        <span className={pod.restarts > 0 ? 'text-status-failed' : 'text-text-tertiary'}>
-                          {pod.restarts}
-                        </span>
-                      </td>
-                      <td className="px-4 py-2.5 text-text-tertiary font-mono">
-                        {pod.cpuRequest || '—'}{pod.cpuLimit ? ` / ${pod.cpuLimit}` : ''}
-                      </td>
-                      <td className="px-4 py-2.5 text-text-tertiary font-mono">
-                        {pod.memoryRequest || '—'}{pod.memoryLimit ? ` / ${pod.memoryLimit}` : ''}
-                      </td>
-                      <td className="px-4 py-2.5 text-text-tertiary">
-                        {pod.startedAt ? new Date(pod.startedAt).toLocaleString() : '—'}
-                      </td>
+            <div>
+              <h4 className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider mb-2">Pods</h4>
+              <div className="border border-border rounded-lg overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-surface-1 border-b border-border">
+                      <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-medium uppercase tracking-wider text-[10px]">Pod</th>
+                      <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-medium uppercase tracking-wider text-[10px]">Status</th>
+                      <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-medium uppercase tracking-wider text-[10px]">Restarts</th>
+                      <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-medium uppercase tracking-wider text-[10px]">CPU</th>
+                      <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-medium uppercase tracking-wider text-[10px]">Memory</th>
+                      <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-medium uppercase tracking-wider text-[10px]">Age</th>
+                      <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-medium uppercase tracking-wider text-[10px]">Node</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {data.pods.map((pod: any) => (
+                      <>
+                        <tr
+                          key={pod.name}
+                          className={`border-b border-border-subtle last:border-0 hover:bg-surface-1/50 cursor-pointer ${expandedPod === pod.name ? 'bg-surface-1/30' : ''}`}
+                          onClick={() => setExpandedPod(expandedPod === pod.name ? null : pod.name)}
+                        >
+                          <td className="px-4 py-2.5 font-mono text-text-secondary">
+                            <div className="flex items-center gap-2">
+                              <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                                pod.ready ? 'bg-status-running' :
+                                pod.status === 'Failed' ? 'bg-status-failed' :
+                                'bg-status-pending'
+                              }`} />
+                              <span className="truncate max-w-[180px]" title={pod.name}>{pod.name}</span>
+                              {pod.containers?.length > 1 && (
+                                <span className="text-[10px] text-text-tertiary bg-surface-2 px-1.5 py-0.5 rounded">{pod.containers.length}c</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <span className={`${
+                              pod.status === 'Running' ? 'text-status-running' :
+                              pod.status === 'Failed' ? 'text-status-failed' :
+                              'text-status-pending'
+                            }`}>{pod.status}</span>
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <span className={pod.restarts > 0 ? 'text-status-failed' : 'text-text-tertiary'}>
+                              {pod.restarts}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2.5 font-mono">
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-text-secondary">{pod.cpuUsage || '—'}</span>
+                              {pod.cpuRequest && <span className="text-[10px] text-text-tertiary">req: {pod.cpuRequest}</span>}
+                              {pod.cpuLimit && <span className="text-[10px] text-text-tertiary">lim: {pod.cpuLimit}</span>}
+                            </div>
+                          </td>
+                          <td className="px-4 py-2.5 font-mono">
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-text-secondary">{pod.memoryUsage || '—'}</span>
+                              {pod.memoryRequest && <span className="text-[10px] text-text-tertiary">req: {pod.memoryRequest}</span>}
+                              {pod.memoryLimit && <span className="text-[10px] text-text-tertiary">lim: {pod.memoryLimit}</span>}
+                            </div>
+                          </td>
+                          <td className="px-4 py-2.5 text-text-tertiary" title={pod.startedAt ? new Date(pod.startedAt).toLocaleString() : ''}>
+                            {pod.age || '—'}
+                          </td>
+                          <td className="px-4 py-2.5 text-text-tertiary font-mono truncate max-w-[120px]" title={pod.nodeName}>
+                            {pod.nodeName || '—'}
+                          </td>
+                        </tr>
+                        {/* Expanded container details */}
+                        {expandedPod === pod.name && pod.containers?.length > 0 && (
+                          <tr key={`${pod.name}-detail`}>
+                            <td colSpan={7} className="px-0 py-0">
+                              <div className="bg-surface-1/50 border-t border-border-subtle">
+                                <div className="px-6 py-2">
+                                  <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider mb-1.5">
+                                    Containers ({pod.containers.length})
+                                    {pod.ip && <span className="ml-3 normal-case tracking-normal">IP: {pod.ip}</span>}
+                                  </p>
+                                  <div className="space-y-1.5">
+                                    {pod.containers.map((ctr: any) => (
+                                      <div key={ctr.name} className="flex items-center gap-4 text-[11px]">
+                                        <div className="flex items-center gap-1.5 min-w-[120px]">
+                                          <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+                                            ctr.ready ? 'bg-status-running' :
+                                            ctr.state === 'running' ? 'bg-status-pending' :
+                                            'bg-status-failed'
+                                          }`} />
+                                          <span className="font-mono text-text-primary">{ctr.name}</span>
+                                        </div>
+                                        <span className="text-text-tertiary font-mono truncate max-w-[200px]" title={ctr.image}>{ctr.image}</span>
+                                        <span className={`${ctr.state === 'running' ? 'text-status-running' : 'text-status-pending'}`}>{ctr.state || '—'}</span>
+                                        <span className="font-mono text-text-secondary">cpu: {ctr.cpuUsage || '—'}{ctr.cpuRequest ? ` / ${ctr.cpuRequest}` : ''}</span>
+                                        <span className="font-mono text-text-secondary">mem: {ctr.memoryUsage || '—'}{ctr.memoryRequest ? ` / ${ctr.memoryRequest}` : ''}</span>
+                                        {ctr.restarts > 0 && <span className="text-status-failed">{ctr.restarts} restarts</span>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
