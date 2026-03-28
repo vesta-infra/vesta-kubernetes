@@ -38,7 +38,7 @@ func (h *Handler) DeployApp(c *gin.Context) {
 		return
 	}
 
-	targetNS := fmt.Sprintf("%s-%s-%s", project, appId, req.Environment)
+	targetNS := fmt.Sprintf("%s-%s", project, req.Environment)
 
 	deployType := req.Type
 	if deployType == "" && req.Tag != "" {
@@ -159,7 +159,7 @@ func (h *Handler) RollbackApp(c *gin.Context) {
 		return
 	}
 
-	targetNS := fmt.Sprintf("%s-%s-%s", project, appId, req.Environment)
+	targetNS := fmt.Sprintf("%s-%s", project, req.Environment)
 
 	status, _, _ := unstructuredNestedMap(existing.Object, "status")
 	history, _ := status["deploymentHistory"].([]interface{})
@@ -263,7 +263,7 @@ func (h *Handler) RestartApp(c *gin.Context) {
 		return
 	}
 
-	targetNS := fmt.Sprintf("%s-%s-%s", project, appId, req.Environment)
+	targetNS := fmt.Sprintf("%s-%s", project, req.Environment)
 	now := models.NowRFC3339()
 
 	patch := map[string]interface{}{

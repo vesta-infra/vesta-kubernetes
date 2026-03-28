@@ -43,6 +43,8 @@ type targetEnv struct {
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 
+const vestaAppFinalizer = "kubernetes.getvesta.sh/app-cleanup"
+
 func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -52,6 +54,29 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Handle deletion: clean up resources in target namespaces
+	if !app.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&app, vestaAppFinalizer) {
+			if err := r.cleanupApp(ctx, &app); err != nil {
+				logger.Error(err, "failed to clean up app resources")
+				return ctrl.Result{}, err
+			}
+			controllerutil.RemoveFinalizer(&app, vestaAppFinalizer)
+			if err := r.Update(ctx, &app); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(&app, vestaAppFinalizer) {
+		controllerutil.AddFinalizer(&app, vestaAppFinalizer)
+		if err := r.Update(ctx, &app); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	logger.Info("reconciling VestaApp", "name", app.Name, "project", app.Spec.Project)
@@ -117,7 +142,7 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
-// resolveTargetNamespaces determines which {project}-{app}-{env} namespaces to deploy
+// resolveTargetNamespaces determines which {project}-{env} namespaces to deploy
 // into. If spec.environments is set, only those environments are targeted.
 // Otherwise all environments for the project are used with default config.
 func (r *VestaAppReconciler) resolveTargetNamespaces(ctx context.Context, app *vestav1alpha1.VestaApp) ([]targetEnv, error) {
@@ -125,7 +150,7 @@ func (r *VestaAppReconciler) resolveTargetNamespaces(ctx context.Context, app *v
 		targets := make([]targetEnv, 0, len(app.Spec.Environments))
 		for _, env := range app.Spec.Environments {
 			targets = append(targets, targetEnv{
-				Namespace: fmt.Sprintf("%s-%s-%s", app.Spec.Project, app.Name, env.Name),
+				Namespace: fmt.Sprintf("%s-%s", app.Spec.Project, env.Name),
 				Config:    env,
 			})
 		}
@@ -142,11 +167,59 @@ func (r *VestaAppReconciler) resolveTargetNamespaces(ctx context.Context, app *v
 	targets := make([]targetEnv, 0, len(envList.Items))
 	for _, env := range envList.Items {
 		targets = append(targets, targetEnv{
-			Namespace: fmt.Sprintf("%s-%s-%s", app.Spec.Project, app.Name, env.Name),
+			Namespace: fmt.Sprintf("%s-%s", app.Spec.Project, env.Name),
 			Config:    vestav1alpha1.AppEnvironmentConfig{Name: env.Name},
 		})
 	}
 	return targets, nil
+}
+
+func (r *VestaAppReconciler) cleanupApp(ctx context.Context, app *vestav1alpha1.VestaApp) error {
+	logger := log.FromContext(ctx)
+	logger.Info("cleaning up resources for deleted app", "name", app.Name, "project", app.Spec.Project)
+
+	targets, err := r.resolveTargetNamespaces(ctx, app)
+	if err != nil {
+		return fmt.Errorf("resolve namespaces for cleanup: %w", err)
+	}
+
+	for _, target := range targets {
+		// Delete Deployment
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: app.Name, Namespace: target.Namespace},
+		}
+		if err := r.Delete(ctx, deploy); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete deployment %s/%s: %w", target.Namespace, app.Name, err)
+		}
+
+		// Delete Service
+		svc := &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{Name: app.Name, Namespace: target.Namespace},
+		}
+		if err := r.Delete(ctx, svc); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete service %s/%s: %w", target.Namespace, app.Name, err)
+		}
+
+		// Delete Ingress
+		ing := &networkingv1.Ingress{
+			ObjectMeta: metav1.ObjectMeta{Name: app.Name, Namespace: target.Namespace},
+		}
+		if err := r.Delete(ctx, ing); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete ingress %s/%s: %w", target.Namespace, app.Name, err)
+		}
+
+		// Delete HPA
+		hpa := &autoscalingv2.HorizontalPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{Name: app.Name, Namespace: target.Namespace},
+		}
+		if err := r.Delete(ctx, hpa); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete hpa %s/%s: %w", target.Namespace, app.Name, err)
+		}
+
+		logger.Info("cleaned up resources", "namespace", target.Namespace, "app", app.Name)
+	}
+
+	return nil
 }
 
 func (r *VestaAppReconciler) ensureNamespace(ctx context.Context, name string) error {
