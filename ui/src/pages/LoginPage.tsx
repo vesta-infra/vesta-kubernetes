@@ -98,31 +98,38 @@ export default function LoginPage() {
   if (checking) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-surface-0">
-        <svg className="w-5 h-5 animate-spin text-accent" fill="none" viewBox="0 0 24 24">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
+        <div className="relative">
+          <div className="w-10 h-10 rounded-xl bg-accent/10 border border-accent/20 flex items-center justify-center animate-glow-pulse">
+            <div className="w-3 h-3 rounded bg-accent" />
+          </div>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-surface-0 noise-bg relative overflow-hidden">
+      {/* Atmospheric background */}
       <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute -top-1/2 -left-1/2 w-full h-full bg-accent/[0.03] rounded-full blur-3xl" />
-        <div className="absolute -bottom-1/2 -right-1/2 w-full h-full bg-accent/[0.02] rounded-full blur-3xl" />
+        <div className="absolute top-[-30%] left-[-20%] w-[70%] h-[70%] bg-accent/[0.03] rounded-full blur-[120px] animate-float" />
+        <div className="absolute bottom-[-20%] right-[-15%] w-[60%] h-[60%] bg-accent/[0.02] rounded-full blur-[100px] animate-float" style={{ animationDelay: '-4s' }} />
+        <div className="absolute top-[20%] right-[10%] w-[30%] h-[30%] bg-blue-500/[0.015] rounded-full blur-[80px]" />
       </div>
 
-      <div className="w-full max-w-sm relative z-10 animate-slide-up">
-        <div className="text-center mb-10">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-2xl bg-accent/10 mb-5">
-            <div className="w-4 h-4 rounded bg-accent" />
+      {/* Dot grid overlay */}
+      <div className="absolute inset-0 dot-grid opacity-30" />
+
+      <div className="w-full max-w-[380px] relative z-10 animate-slide-up px-4">
+        {/* Brand */}
+        <div className="text-center mb-12">
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-accent/10 border border-accent/20 mb-6 shadow-glow animate-slide-up">
+            <div className="w-5 h-5 rounded-md bg-accent shadow-[0_0_12px_rgba(245,158,11,0.5)]" />
           </div>
-          <h1 className="text-3xl font-display text-text-primary">Vesta</h1>
-          <p className="text-xs font-mono text-text-tertiary uppercase tracking-[0.25em] mt-2">Kubernetes PaaS</p>
+          <h1 className="text-4xl font-display italic text-text-primary animate-slide-up" style={{ animationDelay: '0.05s', animationFillMode: 'both' }}>Vesta</h1>
+          <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-[0.3em] mt-3 animate-slide-up" style={{ animationDelay: '0.1s', animationFillMode: 'both' }}>Kubernetes Platform</p>
         </div>
 
-        <div className="card p-7">
+        <div className="card p-8 gradient-border animate-slide-up" style={{ animationDelay: '0.15s', animationFillMode: 'both' }}>
           {view === 'login' && (
             <form onSubmit={handleLogin} className="space-y-5">
               {error && (
@@ -303,7 +310,7 @@ export default function LoginPage() {
           )}
         </div>
 
-        <p className="text-center text-[11px] text-text-tertiary mt-8 font-mono">
+        <p className="text-center text-[10px] text-text-tertiary/40 mt-10 font-mono tracking-wider">
           kubernetes.getvesta.sh
         </p>
       </div>

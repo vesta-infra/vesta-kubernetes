@@ -38,51 +38,55 @@ export default function ProjectsPage() {
       {isLoading && <Spinner />}
 
       {!isLoading && data?.items?.length === 0 && (
-        <div className="card px-6 py-12 text-center">
-          <div className="w-10 h-10 rounded-xl bg-surface-3 flex items-center justify-center mx-auto mb-3">
+        <div className="card px-6 py-16 text-center gradient-border">
+          <div className="w-12 h-12 rounded-xl bg-surface-3 border border-border flex items-center justify-center mx-auto mb-4">
             <svg className="w-5 h-5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
           </div>
-          <p className="text-sm text-text-secondary">No projects yet</p>
-          <p className="text-xs text-text-tertiary mt-1">Create your first project to start deploying.</p>
+          <p className="text-sm text-text-secondary font-medium">No projects yet</p>
+          <p className="text-xs text-text-tertiary mt-1.5">Create your first project to start deploying.</p>
         </div>
       )}
 
       <div className="space-y-2">
-        {data?.items?.map((p: any) => (
+        {data?.items?.map((p: any, i: number) => (
           <Link
             key={p.id}
             to={`/projects/${p.id}`}
-            className="card-hover flex items-center justify-between px-5 py-4 group block"
+            className="card-hover flex items-center justify-between px-5 py-4 group block relative overflow-hidden"
+            style={{ animationDelay: `${i * 0.03}s` }}
           >
+            <div className="absolute left-0 top-0 bottom-0 w-px bg-gradient-to-b from-transparent via-accent/0 to-transparent group-hover:via-accent/30 transition-all duration-500" />
             <div className="flex items-center gap-4">
-              <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center">
-                <svg className="w-4 h-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+              <div className="w-10 h-10 rounded-lg bg-accent/[0.06] border border-accent/10 flex items-center justify-center group-hover:border-accent/25 group-hover:bg-accent/10 transition-all duration-300">
+                <svg className="w-4 h-4 text-accent/70 group-hover:text-accent transition-colors duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
                 </svg>
               </div>
               <div>
-                <p className="text-sm font-medium text-text-primary group-hover:text-accent transition-colors">
+                <p className="text-sm font-semibold text-text-primary group-hover:text-accent transition-colors duration-200">
                   {p.displayName || p.name}
                 </p>
-                <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-xs text-text-tertiary font-mono">{p.name}</span>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-[11px] text-text-tertiary font-mono">{p.name}</span>
                   {p.teamName && (
-                    <span className="text-[11px] font-mono bg-surface-3 text-text-tertiary px-2 py-0.5 rounded">
+                    <span className="text-[10px] font-mono bg-surface-3/80 text-text-tertiary px-2 py-0.5 rounded border border-border/50">
                       {p.teamName}
                     </span>
                   )}
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-4">
-              <span className="text-xs font-mono text-text-tertiary">
-                {p.environmentCount ?? 0} env{(p.environmentCount ?? 0) !== 1 ? 's' : ''}
-              </span>
-              <span className="text-xs font-mono text-text-tertiary">
-                {p.appCount ?? 0} app{(p.appCount ?? 0) !== 1 ? 's' : ''}
-              </span>
+            <div className="flex items-center gap-5">
+              <div className="text-right">
+                <span className="text-[11px] font-mono text-text-tertiary block">
+                  {p.environmentCount ?? 0} env{(p.environmentCount ?? 0) !== 1 ? 's' : ''}
+                </span>
+                <span className="text-[11px] font-mono text-text-tertiary block mt-0.5">
+                  {p.appCount ?? 0} app{(p.appCount ?? 0) !== 1 ? 's' : ''}
+                </span>
+              </div>
               {role !== 'viewer' && (
               <button
                 onClick={(e) => {
@@ -91,7 +95,7 @@ export default function ProjectsPage() {
                   if (confirm(`Delete project "${p.name}"? This will remove all environments and apps.`))
                     deleteMutation.mutate(p.id)
                 }}
-                className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
+                className="text-[11px] text-text-tertiary hover:text-status-failed transition-all duration-200 opacity-0 group-hover:opacity-100"
               >
                 Delete
               </button>
@@ -179,11 +183,12 @@ function CreateProjectForm({ onClose }: { onClose: () => void }) {
 
 function Spinner() {
   return (
-    <div className="flex items-center justify-center py-12">
-      <svg className="w-5 h-5 animate-spin text-accent" fill="none" viewBox="0 0 24 24">
-        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-      </svg>
+    <div className="flex items-center justify-center py-16">
+      <div className="relative">
+        <div className="w-8 h-8 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center animate-glow-pulse">
+          <div className="w-2.5 h-2.5 rounded bg-accent" />
+        </div>
+      </div>
     </div>
   )
 }

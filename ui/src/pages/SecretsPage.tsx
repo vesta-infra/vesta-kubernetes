@@ -432,11 +432,12 @@ function CreateSecretForm({ apps, onClose }: { apps: any[]; onClose: () => void 
 
 function Spinner() {
   return (
-    <div className="flex items-center justify-center py-12">
-      <svg className="w-5 h-5 animate-spin text-accent" fill="none" viewBox="0 0 24 24">
-        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-      </svg>
+    <div className="flex items-center justify-center py-16">
+      <div className="relative">
+        <div className="w-8 h-8 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center animate-glow-pulse">
+          <div className="w-2.5 h-2.5 rounded bg-accent" />
+        </div>
+      </div>
     </div>
   )
 }
