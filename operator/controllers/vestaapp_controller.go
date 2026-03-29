@@ -364,6 +364,29 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 	}
 
 	container := r.buildContainer(app, target.Config.Resources)
+
+	// Auto-inject the per-app secret ("{appName}-secrets") as envFrom if it exists in the target namespace.
+	// This secret is created by the API when users add per-environment secrets.
+	appSecretName := app.Name + "-secrets"
+	appSecrets := &corev1.Secret{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: appSecretName}, appSecrets); err == nil {
+		// Check it's not already referenced via explicit spec.runtime.secrets
+		alreadyBound := false
+		for _, sb := range app.Spec.Runtime.Secrets {
+			if sb.SecretRef != nil && sb.SecretRef.Name == appSecretName {
+				alreadyBound = true
+				break
+			}
+		}
+		if !alreadyBound {
+			container.EnvFrom = append(container.EnvFrom, corev1.EnvFromSource{
+				SecretRef: &corev1.SecretEnvSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: appSecretName},
+				},
+			})
+		}
+	}
+
 	podSpec := r.buildPodSpec(app, container, projectPullSecrets, target.Config.ImagePullSecrets)
 
 	// Set the per-app ServiceAccount (which has imagePullSecrets attached)

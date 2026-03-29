@@ -33,6 +33,14 @@ export default function AppDetailPage() {
   const rawEnvs = app?.environments || app?.spec?.environments || []
   const appEnvironments: string[] = rawEnvs.map((e: any) => typeof e === 'string' ? e : e.name)
 
+  // Default selectors to first environment
+  useEffect(() => {
+    if (appEnvironments.length > 0) {
+      if (!secretEnv) setSecretEnv(appEnvironments[0])
+      if (!deployEnv) setDeployEnv(appEnvironments[0])
+    }
+  }, [appEnvironments.join(',')])
+
   const { data: projectEnvs } = useQuery({
     queryKey: ['environments', projectId],
     queryFn: () => api.listEnvironments(projectId),
@@ -854,7 +862,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 }
 
 function AppLogs({ appId, environments }: { appId: string; environments: string[] }) {
-  const [env, setEnv] = useState('')
+  const [env, setEnv] = useState(environments[0] || '')
   const [tail, setTail] = useState(100)
   const [previous, setPrevious] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(false)
@@ -986,7 +994,7 @@ function AppLogs({ appId, environments }: { appId: string; environments: string[
 }
 
 function AppMetrics({ appId, environments }: { appId: string; environments: string[] }) {
-  const [env, setEnv] = useState('')
+  const [env, setEnv] = useState(environments[0] || '')
   const [expandedPod, setExpandedPod] = useState<string | null>(null)
 
   const { data, isLoading, refetch, isFetching } = useQuery({
