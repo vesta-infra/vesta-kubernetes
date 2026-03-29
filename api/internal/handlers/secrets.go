@@ -31,7 +31,7 @@ func (h *Handler) CreateAppEnvSecret(c *gin.Context) {
 	appSpec, _, _ := unstructuredNestedMap(app.Object, "spec")
 	project := getNestedString(appSpec, "project")
 	namespace := fmt.Sprintf("%s-%s", project, env)
-	secretName := "app-secrets"
+	secretName := fmt.Sprintf("%s-secrets", appID)
 
 	// Try to get existing secret and merge keys
 	existing, _ := h.K8s.GetResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, secretName)
@@ -116,7 +116,8 @@ func (h *Handler) DeleteAppEnvSecretKey(c *gin.Context) {
 	project := getNestedString(appSpec, "project")
 	namespace := fmt.Sprintf("%s-%s", project, env)
 
-	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, "app-secrets")
+	secretName := fmt.Sprintf("%s-secrets", appID)
+	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, secretName)
 	if err != nil {
 		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "no secrets found"})
 		return
@@ -154,8 +155,9 @@ func (h *Handler) ListAppEnvSecrets(c *gin.Context) {
 	project := getNestedString(appSpec, "project")
 	namespace := fmt.Sprintf("%s-%s", project, env)
 
-	// Only one secret per app/env named "app-secrets"
-	secret, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, "app-secrets")
+	// One secret per app/env named "{appID}-secrets"
+	secretName := fmt.Sprintf("%s-secrets", appID)
+	secret, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, secretName)
 	if err != nil {
 		// No secret exists yet
 		c.JSON(http.StatusOK, models.ListResponse{Items: []map[string]interface{}{}, Total: 0})
@@ -167,7 +169,7 @@ func (h *Handler) ListAppEnvSecrets(c *gin.Context) {
 
 	items := []map[string]interface{}{
 		{
-			"name":        "app-secrets",
+			"name":        secretName,
 			"namespace":   namespace,
 			"type":        getNestedString(spec, "type"),
 			"keys":        keys,

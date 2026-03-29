@@ -15,7 +15,7 @@ rules:
     resources: ["vestaapps/finalizers"]
     verbs: ["update"]
   - apiGroups: [""]
-    resources: ["namespaces", "services", "secrets", "configmaps"]
+    resources: ["namespaces", "services", "secrets", "configmaps", "serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: [""]
     resources: ["pods", "pods/log"]

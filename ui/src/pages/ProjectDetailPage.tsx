@@ -476,6 +476,13 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
   const [hcTimeout, setHcTimeout] = useState('1')
   const [hcFailureThreshold, setHcFailureThreshold] = useState('3')
 
+  // Image pull secrets
+  const { data: registrySecrets } = useQuery({
+    queryKey: ['registrySecrets'],
+    queryFn: () => api.listRegistrySecrets(),
+  })
+  const [pullSecrets, setPullSecrets] = useState<string[]>([])
+
   const { data: podSizes } = useQuery({
     queryKey: ['podSizes'],
     queryFn: () => api.listPodSizes(),
@@ -547,6 +554,7 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
         repository: imageRepo || undefined,
         tag: imageTag || undefined,
         pullPolicy,
+        ...(pullSecrets.length > 0 && { imagePullSecrets: pullSecrets.map(n => ({ name: n })) }),
       },
       runtime: {
         port: parseInt(port) || 3000,
@@ -712,6 +720,33 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
           <option value="Always">Always</option>
           <option value="Never">Never</option>
         </select>
+      </div>
+
+      <div>
+        <label className="label mb-2">Image Pull Secrets</label>
+        <div className="flex flex-wrap gap-2 mb-2">
+          {pullSecrets.map(name => (
+            <span key={name} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-surface-2 border border-border rounded-lg text-xs font-mono text-text-secondary">
+              {name}
+              <button type="button" onClick={() => setPullSecrets(prev => prev.filter(n => n !== name))} className="text-text-tertiary hover:text-status-failed">&times;</button>
+            </span>
+          ))}
+        </div>
+        {(registrySecrets?.items?.filter((s: any) => !pullSecrets.includes(s.name))?.length ?? 0) > 0 && (
+          <select
+            value=""
+            onChange={(e) => { if (e.target.value) setPullSecrets(prev => [...prev, e.target.value]) }}
+            className="input-field w-48"
+          >
+            <option value="">+ Add pull secret</option>
+            {registrySecrets?.items?.filter((s: any) => !pullSecrets.includes(s.name)).map((s: any) => (
+              <option key={s.name} value={s.name}>{s.name}</option>
+            ))}
+          </select>
+        )}
+        {(!registrySecrets?.items || registrySecrets.items.length === 0) && pullSecrets.length === 0 && (
+          <p className="text-[11px] text-text-tertiary">No registry credentials. Create one in Secrets first.</p>
+        )}
       </div>
 
       <div>

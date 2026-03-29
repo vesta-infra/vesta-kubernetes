@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 
@@ -298,15 +298,43 @@ function CreateSecretForm({ apps, onClose }: { apps: any[]; onClose: () => void 
   const [name, setName] = useState('')
   const [type, setType] = useState('Opaque')
   const [keys, setKeys] = useState([{ key: '', value: '' }])
+  const [inputMode, setInputMode] = useState<'manual' | 'env'>('manual')
+  const [envInput, setEnvInput] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const selectedApp = apps.find((a: any) => a.id === selectedAppId)
   const appEnvironments: string[] = selectedApp?.environments || selectedApp?.spec?.environments || []
 
-  const mutation = useMutation({
-    mutationFn: () => {
-      const data: Record<string, string> = {}
-      keys.forEach((kv) => { if (kv.key) data[kv.key] = kv.value })
+  const parseEnvContent = (content: string): Record<string, string> => {
+    const result: Record<string, string> = {}
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      const eqIdx = trimmed.indexOf('=')
+      if (eqIdx === -1) continue
+      const key = trimmed.slice(0, eqIdx).trim()
+      let value = trimmed.slice(eqIdx + 1).trim()
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1)
+      }
+      if (key) result[key] = value
+    }
+    return result
+  }
 
+  const parsedEnvKeys = inputMode === 'env' ? parseEnvContent(envInput) : {}
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => setEnvInput(ev.target?.result as string)
+    reader.readAsText(file)
+    e.target.value = ''
+  }
+
+  const mutation = useMutation({
+    mutationFn: (data: Record<string, string>) => {
       if (selectedAppId && selectedEnv) {
         return api.createAppEnvSecret(selectedAppId, selectedEnv, { data })
       }
@@ -320,18 +348,19 @@ function CreateSecretForm({ apps, onClose }: { apps: any[]; onClose: () => void 
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    const data: Record<string, string> = {}
-    keys.forEach((kv) => { if (kv.key) data[kv.key] = kv.value })
-
-    if (selectedAppId && selectedEnv) {
-      api.createAppEnvSecret(selectedAppId, selectedEnv, { data })
-        .then(() => {
-          queryClient.invalidateQueries({ queryKey: ['secrets'] })
-          onClose()
-        })
-        .catch(() => {})
+    let data: Record<string, string> = {}
+    if (inputMode === 'env') {
+      data = parseEnvContent(envInput)
+    } else {
+      keys.forEach((kv) => { if (kv.key) data[kv.key] = kv.value })
     }
+    if (Object.keys(data).length === 0) return
+    mutation.mutate(data)
   }
+
+  const hasData = inputMode === 'env'
+    ? Object.keys(parsedEnvKeys).length > 0
+    : keys.some(kv => kv.key)
 
   return (
     <form onSubmit={handleSubmit} className="card p-5 space-y-4 animate-slide-up">
@@ -388,44 +417,107 @@ function CreateSecretForm({ apps, onClose }: { apps: any[]; onClose: () => void 
       </div>
 
       <div>
-        <label className="label">Key-Value Pairs</label>
-        <div className="space-y-2">
-          {keys.map((kv, i) => (
-            <div key={i} className="flex gap-2">
-              <input
-                value={kv.key}
-                onChange={(e) => { const u = [...keys]; u[i].key = e.target.value; setKeys(u) }}
-                placeholder="KEY"
-                className="input-field flex-1 font-mono text-xs"
-              />
-              <input
-                value={kv.value}
-                onChange={(e) => { const u = [...keys]; u[i].value = e.target.value; setKeys(u) }}
-                placeholder="value"
-                type="password"
-                className="input-field flex-1"
-              />
-              {keys.length > 1 && (
-                <button type="button" onClick={() => setKeys(keys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              )}
-            </div>
-          ))}
+        <div className="flex items-center justify-between mb-2">
+          <label className="label mb-0">Secret Data</label>
+          <div className="flex items-center gap-1 bg-surface-1 border border-border rounded-lg p-0.5">
+            <button
+              type="button"
+              onClick={() => setInputMode('manual')}
+              className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                inputMode === 'manual'
+                  ? 'bg-surface-3 text-accent'
+                  : 'text-text-tertiary hover:text-text-secondary'
+              }`}
+            >
+              Key-Value
+            </button>
+            <button
+              type="button"
+              onClick={() => setInputMode('env')}
+              className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                inputMode === 'env'
+                  ? 'bg-surface-3 text-accent'
+                  : 'text-text-tertiary hover:text-text-secondary'
+              }`}
+            >
+              Paste .env
+            </button>
+          </div>
         </div>
-        <button type="button" onClick={() => setKeys([...keys, { key: '', value: '' }])} className="text-xs text-accent hover:text-accent-glow transition-colors mt-2 font-mono">
-          + Add key
-        </button>
+
+        {inputMode === 'manual' && (
+          <>
+            <div className="space-y-2">
+              {keys.map((kv, i) => (
+                <div key={i} className="flex gap-2">
+                  <input
+                    value={kv.key}
+                    onChange={(e) => { const u = [...keys]; u[i].key = e.target.value; setKeys(u) }}
+                    placeholder="KEY"
+                    className="input-field flex-1 font-mono text-xs"
+                  />
+                  <input
+                    value={kv.value}
+                    onChange={(e) => { const u = [...keys]; u[i].value = e.target.value; setKeys(u) }}
+                    placeholder="value"
+                    type="password"
+                    className="input-field flex-1"
+                  />
+                  {keys.length > 1 && (
+                    <button type="button" onClick={() => setKeys(keys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={() => setKeys([...keys, { key: '', value: '' }])} className="text-xs text-accent hover:text-accent-glow transition-colors mt-2 font-mono">
+              + Add key
+            </button>
+          </>
+        )}
+
+        {inputMode === 'env' && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] text-text-tertiary">Paste .env content or upload a file. Format: KEY=value (one per line, # comments ignored).</p>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="text-xs text-accent hover:text-accent-glow transition-colors font-mono flex-shrink-0 ml-2"
+              >
+                Upload file
+              </button>
+              <input ref={fileInputRef} type="file" accept=".env,.env.*,text/plain" onChange={handleFileUpload} className="hidden" />
+            </div>
+            <textarea
+              value={envInput}
+              onChange={(e) => setEnvInput(e.target.value)}
+              placeholder={"DATABASE_URL=postgres://...\nAPI_KEY=sk-...\nSECRET_TOKEN=abc123\n# Comments are ignored"}
+              rows={8}
+              className="input-field font-mono text-xs w-full"
+              spellCheck={false}
+            />
+            {envInput && (
+              <p className="text-[11px] text-text-tertiary">
+                {Object.keys(parsedEnvKeys).length} key{Object.keys(parsedEnvKeys).length !== 1 ? 's' : ''} detected
+              </p>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex gap-3 pt-1">
-        <button type="submit" disabled={!selectedAppId || !selectedEnv || !name || mutation.isPending} className="btn-primary">
+        <button type="submit" disabled={!selectedAppId || !selectedEnv || !name || !hasData || mutation.isPending} className="btn-primary">
           {mutation.isPending ? 'Creating...' : 'Create Secret'}
         </button>
         <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
       </div>
+      {mutation.isError && (
+        <p className="text-status-failed text-xs">{(mutation.error as Error).message}</p>
+      )}
     </form>
   )
 }
