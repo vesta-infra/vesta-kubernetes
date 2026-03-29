@@ -869,6 +869,14 @@ func (r *VestaAppReconciler) reconcileHPA(ctx context.Context, app *vestav1alpha
 
 			if as.Behavior != nil {
 				hpa.Spec.Behavior = as.Behavior
+			} else {
+				// Default: 5-minute stabilization window for scale-down to avoid flapping
+				stabilizationSec := int32(300)
+				hpa.Spec.Behavior = &autoscalingv2.HorizontalPodAutoscalerBehavior{
+					ScaleDown: &autoscalingv2.HPAScalingRules{
+						StabilizationWindowSeconds: &stabilizationSec,
+					},
+				}
 			}
 
 			return nil
