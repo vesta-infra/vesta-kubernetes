@@ -52,7 +52,7 @@ export default function ProjectDetailPage() {
             </svg>
           </Link>
           <div>
-            <h2 className="text-xl font-display text-text-primary">{project.displayName || project.name}</h2>
+            <h2 className="text-xl font-display italic text-text-primary">{project.displayName || project.name}</h2>
             <div className="flex items-center gap-2 mt-0.5">
               <span className="text-xs text-text-tertiary font-mono">{project.name}</span>
               {project.teamName && (
@@ -812,14 +812,14 @@ function StatusBadge({ phase }: { phase?: string }) {
   const p = phase || 'Pending'
   const styles =
     p === 'Running'
-      ? 'bg-status-running-bg text-status-running'
+      ? 'bg-status-running-bg text-status-running border border-status-running/10'
       : p === 'Failed'
-      ? 'bg-status-failed-bg text-status-failed'
-      : 'bg-status-pending-bg text-status-pending'
+      ? 'bg-status-failed-bg text-status-failed border border-status-failed/10'
+      : 'bg-status-pending-bg text-status-pending border border-status-pending/10'
 
   return (
     <span className={`status-badge ${styles}`}>
-      {p === 'Running' && <span className="inline-block w-1.5 h-1.5 rounded-full bg-current mr-1.5 animate-glow-pulse" />}
+      {p === 'Running' && <span className="inline-block w-1.5 h-1.5 rounded-full bg-current animate-glow-pulse" />}
       {p}
     </span>
   )
@@ -1160,10 +1160,11 @@ function AddNotificationForm({ projectId, onClose }: { projectId: string; onClos
 function Spinner() {
   return (
     <div className="flex items-center justify-center py-20">
-      <svg className="w-5 h-5 animate-spin text-accent" fill="none" viewBox="0 0 24 24">
-        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-      </svg>
+      <div className="relative">
+        <div className="w-8 h-8 rounded-lg bg-accent/10 border border-accent/20 flex items-center justify-center animate-glow-pulse">
+          <div className="w-2.5 h-2.5 rounded bg-accent" />
+        </div>
+      </div>
     </div>
   )
 }

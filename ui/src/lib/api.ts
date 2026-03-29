@@ -61,16 +61,16 @@ export const api = {
 
   // User
   getCurrentUser: () =>
-    request<{ id: string; username: string; email: string; displayName: string; role: string; teamIds: string[] }>('/user/me'),
+    request<{ id: string; username: string; email: string; displayName: string; role: string; teamIds: string[] }>('/users/me'),
 
   updateProfile: (data: { displayName?: string; email?: string }) =>
-    request<any>('/user/me', {
+    request<any>('/users/me', {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
 
   changePassword: (data: { currentPassword: string; newPassword: string }) =>
-    request<void>('/user/me/password', {
+    request<void>('/users/me/password', {
       method: 'PUT',
       body: JSON.stringify(data),
     }),
