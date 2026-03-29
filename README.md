@@ -60,7 +60,7 @@ kubectl create secret generic vesta-db-secret \
 
 ```bash
 helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system --create-namespace \
+  -n vesta-system   \
   --set api.database.existingSecret=vesta-db-secret
 ```
 
@@ -69,7 +69,10 @@ helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
 ```bash
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
-  --set api.database.existingSecret=vesta-db-secret
+  --set api.database.existingSecret=vesta-db-secret \
+  --set config.domain=apps.yourdomain.com \
+  --set api.ingress.enabled=true \
+  --set api.ingress.host=vesta-api.yourdomain.com
 ```
 
 To pin specific image versions:
@@ -78,9 +81,11 @@ To pin specific image versions:
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
   --set api.database.existingSecret=vesta-db-secret \
-  --set operator.image.tag=0.1.17 \
-  --set api.image.tag=0.1.17 \
-  --set ui.image.tag=0.1.17
+  --set operator.image.tag=0.1.19 \
+  --set api.image.tag=0.1.19 \
+  --set ui.ingress.host=apps.yourdomain.com \
+  --set ui.ingress.enabled=true \
+  --set ui.image.tag=0.1.19
 ```
 
 ### Optional: Metrics Server (for autoscaling)

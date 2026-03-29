@@ -44,6 +44,7 @@ type targetEnv struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 
 const vestaAppFinalizer = "kubernetes.getvesta.sh/app-cleanup"
@@ -123,6 +124,10 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return r.updateStatusFailed(ctx, &app, err)
 		}
 
+		if err := r.reconcileServiceAccount(ctx, &app, target); err != nil {
+			return r.updateStatusFailed(ctx, &app, err)
+		}
+
 		if err := r.reconcileDeployment(ctx, &app, target, projectLabels, projectAnnotations); err != nil {
 			return r.updateStatusFailed(ctx, &app, err)
 		}
@@ -193,6 +198,14 @@ func (r *VestaAppReconciler) cleanupApp(ctx context.Context, app *vestav1alpha1.
 	}
 
 	for _, target := range targets {
+		// Delete ServiceAccount
+		sa := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{Name: app.Name, Namespace: target.Namespace},
+		}
+		if err := r.Delete(ctx, sa); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete serviceaccount %s/%s: %w", target.Namespace, app.Name, err)
+		}
+
 		// Delete Deployment
 		deploy := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: app.Name, Namespace: target.Namespace},
@@ -280,6 +293,62 @@ func (r *VestaAppReconciler) copyPullSecrets(ctx context.Context, refs []corev1.
 	return nil
 }
 
+// reconcileServiceAccount creates a ServiceAccount per app per namespace with
+// imagePullSecrets attached. Some registries require secrets on the SA rather
+// than (or in addition to) the pod spec.
+func (r *VestaAppReconciler) reconcileServiceAccount(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
+	// Collect all pull secrets (same merge logic as buildPodSpec)
+	var projectPullSecrets []corev1.LocalObjectReference
+	var project vestav1alpha1.VestaProject
+	if err := r.Get(ctx, client.ObjectKey{Namespace: app.Namespace, Name: app.Spec.Project}, &project); err == nil {
+		projectPullSecrets = project.Spec.ImagePullSecrets
+	}
+
+	seen := map[string]bool{}
+	var merged []corev1.LocalObjectReference
+	addRef := func(refs []corev1.LocalObjectReference) {
+		for _, ref := range refs {
+			if !seen[ref.Name] {
+				merged = append(merged, corev1.LocalObjectReference{Name: ref.Name})
+				seen[ref.Name] = true
+			}
+		}
+	}
+	addRef(projectPullSecrets)
+	if app.Spec.Image != nil {
+		addRef(app.Spec.Image.ImagePullSecrets)
+	}
+	addRef(target.Config.ImagePullSecrets)
+
+	// Copy secrets to the target namespace first
+	if err := r.copyPullSecrets(ctx, merged, target.Namespace); err != nil {
+		log.FromContext(ctx).Error(err, "failed to copy pull secrets for SA", "namespace", target.Namespace)
+	}
+
+	labels := r.labelsForApp(app)
+
+	return retry.OnError(retry.DefaultRetry, isRetriable, func() error {
+		sa := &corev1.ServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      app.Name,
+				Namespace: target.Namespace,
+			},
+		}
+
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, sa, func() error {
+			sa.Labels = labels
+			sa.ImagePullSecrets = merged
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("reconcile serviceaccount %s/%s: %w", target.Namespace, app.Name, err)
+		}
+
+		log.FromContext(ctx).Info("serviceaccount reconciled", "namespace", target.Namespace, "pullSecrets", len(merged))
+		return nil
+	})
+}
+
 func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv, projectLabels, projectAnnotations map[string]string) error {
 	labels := r.labelsForApp(app)
 	replicas := int32(1)
@@ -297,10 +366,8 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 	container := r.buildContainer(app, target.Config.Resources)
 	podSpec := r.buildPodSpec(app, container, projectPullSecrets, target.Config.ImagePullSecrets)
 
-	// Copy referenced registry secrets to target namespace
-	if err := r.copyPullSecrets(ctx, podSpec.ImagePullSecrets, target.Namespace); err != nil {
-		log.FromContext(ctx).Error(err, "failed to copy pull secrets", "namespace", target.Namespace)
-	}
+	// Set the per-app ServiceAccount (which has imagePullSecrets attached)
+	podSpec.ServiceAccountName = app.Name
 
 	var op controllerutil.OperationResult
 	err := retry.OnError(retry.DefaultRetry, isRetriable, func() error {
