@@ -1131,11 +1131,20 @@ function AppMetrics({ appId, environments }: { appId: string; environments: stri
                 <PrometheusChart appId={appId} env={env} metric="network_rx" range={promRange} label="Network Receive" unit="bytes/s" color="#10b981" />
                 <PrometheusChart appId={appId} env={env} metric="network_tx" range={promRange} label="Network Transmit" unit="bytes/s" color="#f59e0b" />
               </div>
-              <div className="grid grid-cols-3 gap-4 mt-4">
-                <PrometheusChart appId={appId} env={env} metric="http_rate" range={promRange} label="Request Rate" unit="req/s" color="#8b5cf6" />
-                <PrometheusChart appId={appId} env={env} metric="http_errors" range={promRange} label="Error Rate" unit="%" color="#ef4444" />
-                <PrometheusChart appId={appId} env={env} metric="http_latency_p95" range={promRange} label="Latency (p95)" unit="s" color="#f97316" />
-              </div>
+              {promStatus?.httpAvailable ? (
+                <div className="grid grid-cols-3 gap-4 mt-4">
+                  <PrometheusChart appId={appId} env={env} metric="http_rate" range={promRange} label="Request Rate" unit="req/s" color="#8b5cf6" />
+                  <PrometheusChart appId={appId} env={env} metric="http_errors" range={promRange} label="Error Rate" unit="%" color="#ef4444" />
+                  <PrometheusChart appId={appId} env={env} metric="http_latency_p95" range={promRange} label="Latency (p95)" unit="s" color="#f97316" />
+                </div>
+              ) : (
+                <div className="mt-4 px-3 py-2 bg-surface-2/50 rounded-lg">
+                  <p className="text-[10px] font-mono text-text-tertiary">
+                    HTTP metrics (request rate, errors, latency) require nginx-ingress-controller with metrics enabled.
+                    Enable with: <span className="text-text-secondary">--set controller.metrics.enabled=true --set controller.metrics.serviceMonitor.enabled=true</span>
+                  </p>
+                </div>
+              )}
             </div>
           )}
 

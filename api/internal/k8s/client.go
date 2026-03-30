@@ -394,3 +394,40 @@ func (c *Client) QueryPrometheusRange(ctx context.Context, prometheusURL, query 
 	}
 	return result, nil
 }
+
+// QueryPrometheusHasData sends an instant query and returns true if results exist.
+func (c *Client) QueryPrometheusHasData(ctx context.Context, prometheusURL, query string) bool {
+	u, err := url.Parse(prometheusURL + "/api/v1/query")
+	if err != nil {
+		return false
+	}
+	q := u.Query()
+	q.Set("query", query)
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return false
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	var promResp struct {
+		Status string `json:"status"`
+		Data   struct {
+			Result []interface{} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&promResp); err != nil {
+		return false
+	}
+	return promResp.Status == "success" && len(promResp.Data.Result) > 0
+}

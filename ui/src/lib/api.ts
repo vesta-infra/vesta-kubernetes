@@ -245,7 +245,7 @@ export const api = {
     request<any>(`/apps/${appId}/metrics/prometheus?environment=${encodeURIComponent(environment)}&metric=${encodeURIComponent(metric)}&range=${encodeURIComponent(range)}`),
 
   getPrometheusStatus: () =>
-    request<{ available: boolean; prometheusUrl: string; availableMetrics: string[] }>('/metrics/prometheus/status'),
+    request<{ available: boolean; prometheusUrl: string; availableMetrics: string[]; httpAvailable: boolean }>('/metrics/prometheus/status'),
 
   // API Tokens
   listTokens: () =>
