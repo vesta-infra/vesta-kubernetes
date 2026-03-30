@@ -462,19 +462,23 @@ func (h *Handler) GetPrometheusMetrics(c *gin.Context) {
 	case "restarts":
 		query = fmt.Sprintf(`sum(increase(kube_pod_container_status_restarts_total{namespace="%s",pod=~"%s-.*"}[1h])) by (pod)`, targetNS, appId)
 	case "http_rate":
-		traefik := fmt.Sprintf(`sum(rate(traefik_service_requests_total{service=~"%s-%s-.*@kubernetes"}[5m]))`, targetNS, appId)
+		trafikSvc := fmt.Sprintf(`%s-%s-.*@kubernetes`, targetNS, appId)
+		traefik := fmt.Sprintf(`sum(rate(traefik_service_requests_total{exported_service=~"%s"}[5m])) or sum(rate(traefik_service_requests_total{service=~"%s"}[5m]))`, trafikSvc, trafikSvc)
 		nginx := fmt.Sprintf(`sum(rate(nginx_ingress_controller_requests{exported_namespace="%s",ingress="%s"}[5m])) or sum(rate(nginx_ingress_controller_requests{namespace="%s",ingress="%s"}[5m]))`, targetNS, appId, targetNS, appId)
 		query = fmt.Sprintf(`%s or %s`, traefik, nginx)
 	case "http_errors":
-		traefik := fmt.Sprintf(`sum(rate(traefik_service_requests_total{service=~"%s-%s-.*@kubernetes",code=~"[45].."}[5m])) / sum(rate(traefik_service_requests_total{service=~"%s-%s-.*@kubernetes"}[5m])) * 100`, targetNS, appId, targetNS, appId)
+		trafikSvc := fmt.Sprintf(`%s-%s-.*@kubernetes`, targetNS, appId)
+		traefik := fmt.Sprintf(`(sum(rate(traefik_service_requests_total{exported_service=~"%s",code=~"[45].."}[5m])) or sum(rate(traefik_service_requests_total{service=~"%s",code=~"[45].."}[5m]))) / (sum(rate(traefik_service_requests_total{exported_service=~"%s"}[5m])) or sum(rate(traefik_service_requests_total{service=~"%s"}[5m]))) * 100`, trafikSvc, trafikSvc, trafikSvc, trafikSvc)
 		nginx := fmt.Sprintf(`(sum(rate(nginx_ingress_controller_requests{exported_namespace="%s",ingress="%s",status=~"[45].."}[5m])) or sum(rate(nginx_ingress_controller_requests{namespace="%s",ingress="%s",status=~"[45].."}[5m]))) / (sum(rate(nginx_ingress_controller_requests{exported_namespace="%s",ingress="%s"}[5m])) or sum(rate(nginx_ingress_controller_requests{namespace="%s",ingress="%s"}[5m]))) * 100`, targetNS, appId, targetNS, appId, targetNS, appId, targetNS, appId)
 		query = fmt.Sprintf(`%s or %s`, traefik, nginx)
 	case "http_latency_p95":
-		traefik := fmt.Sprintf(`histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket{service=~"%s-%s-.*@kubernetes"}[5m])) by (le))`, targetNS, appId)
+		trafikSvc := fmt.Sprintf(`%s-%s-.*@kubernetes`, targetNS, appId)
+		traefik := fmt.Sprintf(`histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket{exported_service=~"%s"}[5m])) by (le)) or histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket{service=~"%s"}[5m])) by (le))`, trafikSvc, trafikSvc)
 		nginx := fmt.Sprintf(`histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{exported_namespace="%s",ingress="%s"}[5m])) by (le)) or histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",ingress="%s"}[5m])) by (le))`, targetNS, appId, targetNS, appId)
 		query = fmt.Sprintf(`%s or %s`, traefik, nginx)
 	case "http_latency_p99":
-		traefik := fmt.Sprintf(`histogram_quantile(0.99, sum(rate(traefik_service_request_duration_seconds_bucket{service=~"%s-%s-.*@kubernetes"}[5m])) by (le))`, targetNS, appId)
+		trafikSvc := fmt.Sprintf(`%s-%s-.*@kubernetes`, targetNS, appId)
+		traefik := fmt.Sprintf(`histogram_quantile(0.99, sum(rate(traefik_service_request_duration_seconds_bucket{exported_service=~"%s"}[5m])) by (le)) or histogram_quantile(0.99, sum(rate(traefik_service_request_duration_seconds_bucket{service=~"%s"}[5m])) by (le))`, trafikSvc, trafikSvc)
 		nginx := fmt.Sprintf(`histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{exported_namespace="%s",ingress="%s"}[5m])) by (le)) or histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",ingress="%s"}[5m])) by (le))`, targetNS, appId, targetNS, appId)
 		query = fmt.Sprintf(`%s or %s`, traefik, nginx)
 	default:
