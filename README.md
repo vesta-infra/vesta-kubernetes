@@ -81,9 +81,9 @@ To pin specific image versions:
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
   --set api.database.existingSecret=vesta-db-secret \
-  --set operator.image.tag=0.1.23 \
-  --set api.image.tag=0.1.23 \
-  --set ui.image.tag=0.1.23
+  --set operator.image.tag=0.1.24 \
+  --set api.image.tag=0.1.24 \
+  --set ui.image.tag=0.1.24 
 ```
   --set ui.ingress.host=apps.yourdomain.com \
   # --set ui.ingress.enabled=true \
@@ -153,6 +153,29 @@ cd ui && npm install && npm run dev
 
 # CLI
 cd cli && go build -o vesta . && ./vesta --help
+```
+
+
+```
+kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: vesta-ui
+  namespace: vesta-system
+spec:
+  rules:
+    - host: k8.getvesta.sh
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: vesta-ui
+                port:
+                  number: 80
+EOF
 ```
 
 ## License
