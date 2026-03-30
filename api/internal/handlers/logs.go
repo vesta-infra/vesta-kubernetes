@@ -462,13 +462,21 @@ func (h *Handler) GetPrometheusMetrics(c *gin.Context) {
 	case "restarts":
 		query = fmt.Sprintf(`sum(increase(kube_pod_container_status_restarts_total{namespace="%s",pod=~"%s-.*"}[1h])) by (pod)`, targetNS, appId)
 	case "http_rate":
-		query = fmt.Sprintf(`sum(rate(nginx_ingress_controller_requests{exported_namespace="%s",ingress="%s"}[5m])) or sum(rate(nginx_ingress_controller_requests{namespace="%s",ingress="%s"}[5m]))`, targetNS, appId, targetNS, appId)
+		traefik := fmt.Sprintf(`sum(rate(traefik_service_requests_total{service=~"%s-%s-.*@kubernetes"}[5m]))`, targetNS, appId)
+		nginx := fmt.Sprintf(`sum(rate(nginx_ingress_controller_requests{exported_namespace="%s",ingress="%s"}[5m])) or sum(rate(nginx_ingress_controller_requests{namespace="%s",ingress="%s"}[5m]))`, targetNS, appId, targetNS, appId)
+		query = fmt.Sprintf(`%s or %s`, traefik, nginx)
 	case "http_errors":
-		query = fmt.Sprintf(`(sum(rate(nginx_ingress_controller_requests{exported_namespace="%s",ingress="%s",status=~"[45].."}[5m])) or sum(rate(nginx_ingress_controller_requests{namespace="%s",ingress="%s",status=~"[45].."}[5m]))) / (sum(rate(nginx_ingress_controller_requests{exported_namespace="%s",ingress="%s"}[5m])) or sum(rate(nginx_ingress_controller_requests{namespace="%s",ingress="%s"}[5m]))) * 100`, targetNS, appId, targetNS, appId, targetNS, appId, targetNS, appId)
+		traefik := fmt.Sprintf(`sum(rate(traefik_service_requests_total{service=~"%s-%s-.*@kubernetes",code=~"[45].."}[5m])) / sum(rate(traefik_service_requests_total{service=~"%s-%s-.*@kubernetes"}[5m])) * 100`, targetNS, appId, targetNS, appId)
+		nginx := fmt.Sprintf(`(sum(rate(nginx_ingress_controller_requests{exported_namespace="%s",ingress="%s",status=~"[45].."}[5m])) or sum(rate(nginx_ingress_controller_requests{namespace="%s",ingress="%s",status=~"[45].."}[5m]))) / (sum(rate(nginx_ingress_controller_requests{exported_namespace="%s",ingress="%s"}[5m])) or sum(rate(nginx_ingress_controller_requests{namespace="%s",ingress="%s"}[5m]))) * 100`, targetNS, appId, targetNS, appId, targetNS, appId, targetNS, appId)
+		query = fmt.Sprintf(`%s or %s`, traefik, nginx)
 	case "http_latency_p95":
-		query = fmt.Sprintf(`histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{exported_namespace="%s",ingress="%s"}[5m])) by (le)) or histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",ingress="%s"}[5m])) by (le))`, targetNS, appId, targetNS, appId)
+		traefik := fmt.Sprintf(`histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket{service=~"%s-%s-.*@kubernetes"}[5m])) by (le))`, targetNS, appId)
+		nginx := fmt.Sprintf(`histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{exported_namespace="%s",ingress="%s"}[5m])) by (le)) or histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",ingress="%s"}[5m])) by (le))`, targetNS, appId, targetNS, appId)
+		query = fmt.Sprintf(`%s or %s`, traefik, nginx)
 	case "http_latency_p99":
-		query = fmt.Sprintf(`histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{exported_namespace="%s",ingress="%s"}[5m])) by (le)) or histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",ingress="%s"}[5m])) by (le))`, targetNS, appId, targetNS, appId)
+		traefik := fmt.Sprintf(`histogram_quantile(0.99, sum(rate(traefik_service_request_duration_seconds_bucket{service=~"%s-%s-.*@kubernetes"}[5m])) by (le))`, targetNS, appId)
+		nginx := fmt.Sprintf(`histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{exported_namespace="%s",ingress="%s"}[5m])) by (le)) or histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",ingress="%s"}[5m])) by (le))`, targetNS, appId, targetNS, appId)
+		query = fmt.Sprintf(`%s or %s`, traefik, nginx)
 	default:
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Code:    400,
@@ -513,8 +521,8 @@ func (h *Handler) GetPrometheusStatus(c *gin.Context) {
 	httpAvailable := false
 	if available {
 		metrics = []string{"cpu", "memory", "network_rx", "network_tx", "restarts"}
-		// Probe Prometheus to check if nginx-ingress metrics exist
-		if h.K8s.QueryPrometheusHasData(c.Request.Context(), prometheusURL, `count(nginx_ingress_controller_requests)`) {
+		// Probe Prometheus to check if ingress metrics exist (Traefik or nginx)
+		if h.K8s.QueryPrometheusHasData(c.Request.Context(), prometheusURL, `count(nginx_ingress_controller_requests)`) || h.K8s.QueryPrometheusHasData(c.Request.Context(), prometheusURL, `count(traefik_service_requests_total)`) {
 			metrics = append(metrics, "http_rate", "http_errors", "http_latency_p95", "http_latency_p99")
 			httpAvailable = true
 		}

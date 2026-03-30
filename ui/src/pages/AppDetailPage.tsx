@@ -1140,8 +1140,9 @@ function AppMetrics({ appId, environments }: { appId: string; environments: stri
               ) : (
                 <div className="mt-4 px-3 py-2 bg-surface-2/50 rounded-lg">
                   <p className="text-[10px] font-mono text-text-tertiary">
-                    HTTP metrics (request rate, errors, latency) require nginx-ingress-controller with metrics enabled.
-                    Enable with: <span className="text-text-secondary">--set controller.metrics.enabled=true --set controller.metrics.serviceMonitor.enabled=true</span>
+                    HTTP metrics (request rate, errors, latency) require an ingress controller with Prometheus metrics enabled.
+                    <br />Traefik: <span className="text-text-secondary">--set metrics.prometheus.enabled=true --set metrics.prometheus.serviceMonitor.enabled=true</span>
+                    <br />nginx: <span className="text-text-secondary">--set controller.metrics.enabled=true --set controller.metrics.serviceMonitor.enabled=true</span>
                   </p>
                 </div>
               )}
