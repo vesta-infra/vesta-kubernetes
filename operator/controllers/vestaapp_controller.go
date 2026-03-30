@@ -356,6 +356,9 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 		replicas = *target.Config.Replicas
 	}
 
+	// When autoscaling is enabled, don't override replicas — let the HPA control them.
+	autoscalingEnabled := target.Config.Autoscale != nil && target.Config.Autoscale.Enabled
+
 	// Fetch project for imagePullSecrets
 	var project vestav1alpha1.VestaProject
 	var projectPullSecrets []corev1.LocalObjectReference
@@ -424,17 +427,20 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 				}
 			}
 
-			deploy.Spec = appsv1.DeploymentSpec{
-				Replicas: &replicas,
-				Selector: &metav1.LabelSelector{
-					MatchLabels: labels,
+			deploy.Spec.Selector = &metav1.LabelSelector{
+				MatchLabels: labels,
+			}
+			deploy.Spec.Template = corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
 				},
-				Template: corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{
-						Labels: labels,
-					},
-					Spec: podSpec,
-				},
+				Spec: podSpec,
+			}
+
+			// Only set replicas when autoscaling is NOT enabled;
+			// otherwise let the HPA manage the replica count.
+			if !autoscalingEnabled {
+				deploy.Spec.Replicas = &replicas
 			}
 
 			return nil
@@ -869,6 +875,14 @@ func (r *VestaAppReconciler) reconcileHPA(ctx context.Context, app *vestav1alpha
 
 			if as.Behavior != nil {
 				hpa.Spec.Behavior = as.Behavior
+			} else {
+				// Default: 5-minute stabilization window for scale-down to avoid flapping
+				stabilizationSec := int32(300)
+				hpa.Spec.Behavior = &autoscalingv2.HorizontalPodAutoscalerBehavior{
+					ScaleDown: &autoscalingv2.HPAScalingRules{
+						StabilizationWindowSeconds: &stabilizationSec,
+					},
+				}
 			}
 
 			return nil

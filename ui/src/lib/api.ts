@@ -13,6 +13,11 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     ...options,
   })
   if (!res.ok) {
+    if (res.status === 401) {
+      localStorage.removeItem('vesta-token')
+      localStorage.removeItem('vesta-user')
+      window.location.href = '/login'
+    }
     const err = await res.json().catch(() => ({ message: res.statusText }))
     throw new Error(err.message || res.statusText)
   }
