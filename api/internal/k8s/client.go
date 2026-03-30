@@ -108,10 +108,6 @@ func (c *Client) PatchResource(ctx context.Context, gvr schema.GroupVersionResou
 	return c.Dynamic.Resource(gvr).Namespace(namespace).Patch(ctx, name, types.MergePatchType, patchData, metav1.PatchOptions{})
 }
 
-func (c *Client) StrategicPatchResource(ctx context.Context, gvr schema.GroupVersionResource, namespace, name string, patchData []byte) (*unstructured.Unstructured, error) {
-	return c.Dynamic.Resource(gvr).Namespace(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchData, metav1.PatchOptions{})
-}
-
 func (c *Client) GetClusterResource(ctx context.Context, gvr schema.GroupVersionResource, name string) (*unstructured.Unstructured, error) {
 	return c.Dynamic.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
 }

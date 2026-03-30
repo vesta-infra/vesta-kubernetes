@@ -85,7 +85,7 @@ func (h *Handler) DeployApp(c *gin.Context) {
 			},
 		}
 		patchBytes, _ := json.Marshal(patch)
-		_, err := h.K8s.StrategicPatchResource(c.Request.Context(), k8s.DeploymentGVR, targetNS, appId, patchBytes)
+		_, err := h.K8s.PatchResource(c.Request.Context(), k8s.DeploymentGVR, targetNS, appId, patchBytes)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to patch deployment in %s: %v", targetNS, err)})
 			return
@@ -125,7 +125,7 @@ func (h *Handler) DeployApp(c *gin.Context) {
 			},
 		}
 		patchBytes, _ := json.Marshal(patch)
-		_, err := h.K8s.StrategicPatchResource(c.Request.Context(), k8s.DeploymentGVR, targetNS, appId, patchBytes)
+		_, err := h.K8s.PatchResource(c.Request.Context(), k8s.DeploymentGVR, targetNS, appId, patchBytes)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to restart deployment in %s: %v", targetNS, err)})
 			return
@@ -218,7 +218,7 @@ func (h *Handler) RollbackApp(c *gin.Context) {
 		},
 	}
 	patchBytes, _ := json.Marshal(patch)
-	_, err = h.K8s.StrategicPatchResource(c.Request.Context(), k8s.DeploymentGVR, targetNS, appId, patchBytes)
+	_, err = h.K8s.PatchResource(c.Request.Context(), k8s.DeploymentGVR, targetNS, appId, patchBytes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to rollback deployment in %s: %v", targetNS, err)})
 		return
@@ -308,7 +308,7 @@ func (h *Handler) RestartApp(c *gin.Context) {
 		},
 	}
 	patchBytes, _ := json.Marshal(patch)
-	_, err = h.K8s.StrategicPatchResource(c.Request.Context(), k8s.DeploymentGVR, targetNS, appId, patchBytes)
+	_, err = h.K8s.PatchResource(c.Request.Context(), k8s.DeploymentGVR, targetNS, appId, patchBytes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to restart deployment in %s: %v", targetNS, err)})
 		return
