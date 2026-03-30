@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
 import { api } from '../lib/api'
 import { useUserRole } from '../lib/useRole'
 
@@ -996,12 +997,19 @@ function AppLogs({ appId, environments }: { appId: string; environments: string[
 function AppMetrics({ appId, environments }: { appId: string; environments: string[] }) {
   const [env, setEnv] = useState(environments[0] || '')
   const [expandedPod, setExpandedPod] = useState<string | null>(null)
+  const [promRange, setPromRange] = useState<string>('1h')
 
   const { data, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['appMetrics', appId, env],
     queryFn: () => api.getAppMetrics(appId, env),
     enabled: !!env,
     refetchInterval: 15000,
+  })
+
+  const { data: promStatus } = useQuery({
+    queryKey: ['prometheusStatus'],
+    queryFn: () => api.getPrometheusStatus(),
+    staleTime: 60000,
   })
 
   return (
@@ -1096,6 +1104,37 @@ function AppMetrics({ appId, environments }: { appId: string; environments: stri
                     />
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Prometheus Time-Series Charts */}
+          {promStatus?.available && env && (
+            <div className="bg-surface-1 border border-border rounded-lg p-4">
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">Historical Metrics</h4>
+                <div className="flex gap-1">
+                  {(['1h', '6h', '24h', '7d'] as const).map((r) => (
+                    <button
+                      key={r}
+                      onClick={() => setPromRange(r)}
+                      className={`px-2 py-0.5 text-[10px] font-mono rounded ${promRange === r ? 'bg-accent text-white' : 'bg-surface-2 text-text-tertiary hover:text-text-secondary'}`}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <PrometheusChart appId={appId} env={env} metric="cpu" range={promRange} label="CPU Usage" unit="cores" color="#6366f1" />
+                <PrometheusChart appId={appId} env={env} metric="memory" range={promRange} label="Memory Usage" unit="bytes" color="#06b6d4" />
+                <PrometheusChart appId={appId} env={env} metric="network_rx" range={promRange} label="Network Receive" unit="bytes/s" color="#10b981" />
+                <PrometheusChart appId={appId} env={env} metric="network_tx" range={promRange} label="Network Transmit" unit="bytes/s" color="#f59e0b" />
+              </div>
+              <div className="grid grid-cols-3 gap-4 mt-4">
+                <PrometheusChart appId={appId} env={env} metric="http_rate" range={promRange} label="Request Rate" unit="req/s" color="#8b5cf6" />
+                <PrometheusChart appId={appId} env={env} metric="http_errors" range={promRange} label="Error Rate" unit="%" color="#ef4444" />
+                <PrometheusChart appId={appId} env={env} metric="http_latency_p95" range={promRange} label="Latency (p95)" unit="s" color="#f97316" />
               </div>
             </div>
           )}
@@ -1271,6 +1310,133 @@ function MetricCard({ label, value, total, ok }: { label: string; value: any; to
       }`}>
         {value}{total !== undefined ? <span className="text-xs text-text-tertiary font-normal">/{total}</span> : null}
       </p>
+    </div>
+  )
+}
+
+function formatMetricValue(value: number, unit: string): string {
+  if (isNaN(value)) return '—'
+  switch (unit) {
+    case 'cores':
+      return value < 0.01 ? `${(value * 1000).toFixed(0)}m` : value.toFixed(3)
+    case 'bytes':
+      if (value >= 1024 * 1024 * 1024) return `${(value / (1024 * 1024 * 1024)).toFixed(1)} Gi`
+      if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(0)} Mi`
+      if (value >= 1024) return `${(value / 1024).toFixed(0)} Ki`
+      return `${value.toFixed(0)} B`
+    case 'bytes/s':
+      if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB/s`
+      if (value >= 1024) return `${(value / 1024).toFixed(1)} KB/s`
+      return `${value.toFixed(0)} B/s`
+    case 'req/s':
+      return value < 1 ? value.toFixed(2) : value.toFixed(0)
+    case '%':
+      return `${value.toFixed(1)}%`
+    case 's':
+      if (value < 0.001) return `${(value * 1000000).toFixed(0)}µs`
+      if (value < 1) return `${(value * 1000).toFixed(0)}ms`
+      return `${value.toFixed(2)}s`
+    default:
+      return value.toFixed(2)
+  }
+}
+
+function PrometheusChart({ appId, env, metric, range: timeRange, label, unit, color }: {
+  appId: string; env: string; metric: string; range: string; label: string; unit: string; color: string
+}) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['prometheusMetrics', appId, env, metric, timeRange],
+    queryFn: () => api.getPrometheusMetrics(appId, env, metric, timeRange),
+    enabled: !!env,
+    refetchInterval: 30000,
+    staleTime: 15000,
+  })
+
+  const chartData = useMemo(() => {
+    if (!data?.series?.length) return []
+    // Aggregate all series by timestamp (sum across pods)
+    const byTime: Record<number, number> = {}
+    for (const series of data.series) {
+      for (const pt of series.values) {
+        const ts = Math.floor(pt.timestamp)
+        byTime[ts] = (byTime[ts] || 0) + parseFloat(pt.value || '0')
+      }
+    }
+    return Object.entries(byTime)
+      .map(([ts, val]) => ({ time: parseInt(ts), value: val }))
+      .sort((a, b) => a.time - b.time)
+  }, [data])
+
+  const isEmpty = !isLoading && chartData.length === 0
+  const noData = data && data.available === false
+
+  return (
+    <div className="bg-surface-2/50 rounded-lg p-3">
+      <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider mb-2">{label}</p>
+      {isLoading && (
+        <div className="h-[120px] flex items-center justify-center">
+          <svg className="w-4 h-4 animate-spin text-text-tertiary" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+        </div>
+      )}
+      {noData && (
+        <div className="h-[120px] flex items-center justify-center">
+          <p className="text-[10px] text-text-tertiary">Not available</p>
+        </div>
+      )}
+      {isEmpty && !noData && !isLoading && (
+        <div className="h-[120px] flex items-center justify-center">
+          <p className="text-[10px] text-text-tertiary">No data</p>
+        </div>
+      )}
+      {!isLoading && chartData.length > 0 && (
+        <ResponsiveContainer width="100%" height={120}>
+          <AreaChart data={chartData}>
+            <defs>
+              <linearGradient id={`grad-${metric}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="5%" stopColor={color} stopOpacity={0.3} />
+                <stop offset="95%" stopColor={color} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <XAxis
+              dataKey="time"
+              type="number"
+              domain={['dataMin', 'dataMax']}
+              tickFormatter={(ts: number) => {
+                const d = new Date(ts * 1000)
+                return timeRange === '7d' ? `${d.getMonth()+1}/${d.getDate()}` : `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`
+              }}
+              tick={{ fontSize: 9, fill: '#6b7280' }}
+              axisLine={false}
+              tickLine={false}
+              minTickGap={40}
+            />
+            <YAxis
+              tickFormatter={(v: number) => formatMetricValue(v, unit)}
+              tick={{ fontSize: 9, fill: '#6b7280' }}
+              axisLine={false}
+              tickLine={false}
+              width={50}
+            />
+            <Tooltip
+              contentStyle={{ backgroundColor: '#1a1a2e', border: '1px solid #2a2a4a', borderRadius: '6px', fontSize: '11px' }}
+              labelFormatter={(ts: number) => new Date(ts * 1000).toLocaleString()}
+              formatter={(value: number) => [formatMetricValue(value, unit), label]}
+            />
+            <Area
+              type="monotone"
+              dataKey="value"
+              stroke={color}
+              strokeWidth={1.5}
+              fill={`url(#grad-${metric})`}
+              dot={false}
+              isAnimationActive={false}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      )}
     </div>
   )
 }

@@ -125,6 +125,8 @@ func main() {
 		// Logs and monitoring
 		auth.GET("/apps/:appId/logs", h.StreamLogs)
 		auth.GET("/apps/:appId/metrics", h.GetMetrics)
+		auth.GET("/apps/:appId/metrics/prometheus", h.GetPrometheusMetrics)
+		auth.GET("/metrics/prometheus/status", h.GetPrometheusStatus)
 
 		// Templates
 		auth.GET("/templates", h.ListTemplates)

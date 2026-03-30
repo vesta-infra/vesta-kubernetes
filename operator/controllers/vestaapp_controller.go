@@ -898,8 +898,22 @@ func (r *VestaAppReconciler) updateStatusRunning(ctx context.Context, key client
 			return err
 		}
 		app.Status.Phase = "Running"
+		now := time.Now().UTC().Format(time.RFC3339)
 		if app.Spec.Image != nil {
-			app.Status.CurrentImage = fmt.Sprintf("%s:%s", app.Spec.Image.Repository, app.Spec.Image.Tag)
+			newImage := fmt.Sprintf("%s:%s", app.Spec.Image.Repository, app.Spec.Image.Tag)
+			// Append to deployment history if the image changed
+			if newImage != app.Status.CurrentImage {
+				nextVersion := 1
+				if len(app.Status.DeploymentHistory) > 0 {
+					nextVersion = app.Status.DeploymentHistory[len(app.Status.DeploymentHistory)-1].Version + 1
+				}
+				app.Status.DeploymentHistory = append(app.Status.DeploymentHistory, vestav1alpha1.DeploymentRecord{
+					Version:    nextVersion,
+					Image:      newImage,
+					DeployedAt: now,
+				})
+			}
+			app.Status.CurrentImage = newImage
 		}
 		if app.Spec.Ingress != nil {
 			scheme := "http"
@@ -908,7 +922,7 @@ func (r *VestaAppReconciler) updateStatusRunning(ctx context.Context, key client
 			}
 			app.Status.URL = fmt.Sprintf("%s://%s", scheme, app.Spec.Ingress.Domain)
 		}
-		app.Status.LastDeployedAt = time.Now().UTC().Format(time.RFC3339)
+		app.Status.LastDeployedAt = now
 		return r.Status().Update(ctx, &app)
 	})
 }

@@ -81,12 +81,12 @@ To pin specific image versions:
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
   --set api.database.existingSecret=vesta-db-secret \
-  --set operator.image.tag=0.1.24 \
-  --set api.image.tag=0.1.24 \
-  --set ui.image.tag=0.1.24 
+  --set operator.image.tag=0.1.28 \
+  --set api.image.tag=0.1.28 \
+  --set ui.image.tag=0.1.28 
 ```
-  --set ui.ingress.host=apps.yourdomain.com \
-  # --set ui.ingress.enabled=true \
+  
+  
   
 ### Optional: Metrics Server (for autoscaling)
 
