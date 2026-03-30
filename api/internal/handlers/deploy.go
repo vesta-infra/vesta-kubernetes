@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -72,22 +73,19 @@ func (h *Handler) DeployApp(c *gin.Context) {
 		repo, _ := imageSpec["repository"].(string)
 		targetImage := fmt.Sprintf("%s:%s", repo, req.Tag)
 
-		// Patch the K8s Deployment in the target environment namespace
-		patch := map[string]interface{}{
+		// Update the VestaApp CRD's image tag — the operator will reconcile
+		// the Deployment with the full pod spec (envFrom, ports, resources, etc.)
+		crdPatch := map[string]interface{}{
 			"spec": map[string]interface{}{
-				"template": map[string]interface{}{
-					"spec": map[string]interface{}{
-						"containers": []map[string]interface{}{
-							{"name": appId, "image": targetImage},
-						},
-					},
+				"image": map[string]interface{}{
+					"tag": req.Tag,
 				},
 			},
 		}
-		patchBytes, _ := json.Marshal(patch)
-		_, err := h.K8s.PatchResource(c.Request.Context(), k8s.DeploymentGVR, targetNS, appId, patchBytes)
+		crdPatchBytes, _ := json.Marshal(crdPatch)
+		_, err := h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId, crdPatchBytes)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to patch deployment in %s: %v", targetNS, err)})
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to update app image tag: %v", err)})
 			return
 		}
 
@@ -179,8 +177,6 @@ func (h *Handler) RollbackApp(c *gin.Context) {
 		return
 	}
 
-	targetNS := fmt.Sprintf("%s-%s", project, req.Environment)
-
 	status, _, _ := unstructuredNestedMap(existing.Object, "status")
 	history, _ := status["deploymentHistory"].([]interface{})
 
@@ -205,22 +201,23 @@ func (h *Handler) RollbackApp(c *gin.Context) {
 		return
 	}
 
-	// Patch the K8s Deployment in the target environment namespace
-	patch := map[string]interface{}{
+	// Update the VestaApp CRD's image tag — the operator will reconcile
+	// the Deployment with the full pod spec (envFrom, ports, resources, etc.)
+	rollbackTag := targetImage
+	if idx := strings.LastIndex(targetImage, ":"); idx >= 0 {
+		rollbackTag = targetImage[idx+1:]
+	}
+	crdPatch := map[string]interface{}{
 		"spec": map[string]interface{}{
-			"template": map[string]interface{}{
-				"spec": map[string]interface{}{
-					"containers": []map[string]interface{}{
-						{"name": appId, "image": targetImage},
-					},
-				},
+			"image": map[string]interface{}{
+				"tag": rollbackTag,
 			},
 		},
 	}
-	patchBytes, _ := json.Marshal(patch)
-	_, err = h.K8s.PatchResource(c.Request.Context(), k8s.DeploymentGVR, targetNS, appId, patchBytes)
+	crdPatchBytes, _ := json.Marshal(crdPatch)
+	_, err = h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId, crdPatchBytes)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to rollback deployment in %s: %v", targetNS, err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to rollback app image tag: %v", err)})
 		return
 	}
 

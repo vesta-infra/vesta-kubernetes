@@ -241,6 +241,12 @@ export const api = {
   getAppMetrics: (appId: string, environment: string) =>
     request<any>(`/apps/${appId}/metrics?environment=${encodeURIComponent(environment)}`),
 
+  getPrometheusMetrics: (appId: string, environment: string, metric: string, range: string = '1h') =>
+    request<any>(`/apps/${appId}/metrics/prometheus?environment=${encodeURIComponent(environment)}&metric=${encodeURIComponent(metric)}&range=${encodeURIComponent(range)}`),
+
+  getPrometheusStatus: () =>
+    request<{ available: boolean; prometheusUrl: string; availableMetrics: string[] }>('/metrics/prometheus/status'),
+
   // API Tokens
   listTokens: () =>
     request<{ items: any[]; total: number }>('/auth/tokens'),

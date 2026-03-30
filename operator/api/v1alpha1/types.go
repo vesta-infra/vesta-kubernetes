@@ -384,6 +384,7 @@ type VestaConfigSpec struct {
 	ExternalSecrets   *ExternalSecretsConfig `json:"externalSecrets,omitempty"`
 	Auth              *AuthConfig            `json:"auth,omitempty"`
 	Templates         *TemplatesConfig       `json:"templates,omitempty"`
+	PrometheusURL     string                 `json:"prometheusUrl,omitempty"`
 }
 
 type RegistryConfig struct {

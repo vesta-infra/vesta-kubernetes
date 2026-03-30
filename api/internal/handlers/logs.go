@@ -381,3 +381,142 @@ func formatDuration(d time.Duration) string {
 	}
 	return fmt.Sprintf("%dd", days)
 }
+
+// GetPrometheusMetrics returns time-series metrics from Prometheus for an app.
+func (h *Handler) GetPrometheusMetrics(c *gin.Context) {
+	appId := c.Param("appId")
+	env := c.Query("environment")
+	metric := c.Query("metric")
+	timeRange := c.Query("range")
+
+	if env == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "environment query param is required"})
+		return
+	}
+	if metric == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "metric query param is required"})
+		return
+	}
+
+	// Resolve Prometheus URL: check VestaConfig first, then auto-discover
+	prometheusURL := ""
+	if cfg, err := h.K8s.GetClusterResource(c.Request.Context(), k8s.VestaConfigGVR, "vesta"); err == nil {
+		spec, _, _ := unstructuredNestedMap(cfg.Object, "spec")
+		if u, ok := spec["prometheusUrl"].(string); ok && u != "" {
+			prometheusURL = u
+		}
+	}
+	if prometheusURL == "" {
+		prometheusURL = h.K8s.DiscoverPrometheusURL(c.Request.Context())
+	}
+	if prometheusURL == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"available": false,
+			"message":   "Prometheus not configured. Set spec.prometheusUrl in VestaConfig or install Prometheus in the monitoring namespace.",
+		})
+		return
+	}
+
+	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
+		return
+	}
+	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+	project := getNestedString(spec, "project")
+	targetNS := fmt.Sprintf("%s-%s", project, env)
+
+	// Parse time range
+	rangeDuration := 1 * time.Hour
+	step := 30 * time.Second
+	switch timeRange {
+	case "6h":
+		rangeDuration = 6 * time.Hour
+		step = 2 * time.Minute
+	case "24h":
+		rangeDuration = 24 * time.Hour
+		step = 5 * time.Minute
+	case "7d":
+		rangeDuration = 7 * 24 * time.Hour
+		step = 30 * time.Minute
+	case "1h":
+		// defaults
+	}
+
+	end := time.Now()
+	start := end.Add(-rangeDuration)
+	podSelector := fmt.Sprintf("namespace=\"%s\",pod=~\"%s-.*\"", targetNS, appId)
+	containerFilter := fmt.Sprintf("container!=\"\",%s", podSelector)
+
+	// Build the PromQL query based on the requested metric
+	var query string
+	switch metric {
+	case "cpu":
+		query = fmt.Sprintf(`sum(rate(container_cpu_usage_seconds_total{%s}[5m])) by (pod)`, containerFilter)
+	case "memory":
+		query = fmt.Sprintf(`sum(container_memory_working_set_bytes{%s}) by (pod)`, containerFilter)
+	case "network_rx":
+		query = fmt.Sprintf(`sum(rate(container_network_receive_bytes_total{%s}[5m])) by (pod)`, podSelector)
+	case "network_tx":
+		query = fmt.Sprintf(`sum(rate(container_network_transmit_bytes_total{%s}[5m])) by (pod)`, podSelector)
+	case "restarts":
+		query = fmt.Sprintf(`sum(increase(kube_pod_container_status_restarts_total{namespace="%s",pod=~"%s-.*"}[1h])) by (pod)`, targetNS, appId)
+	case "http_rate":
+		query = fmt.Sprintf(`sum(rate(nginx_ingress_controller_requests{namespace="%s",service="%s"}[5m]))`, targetNS, appId)
+	case "http_errors":
+		query = fmt.Sprintf(`sum(rate(nginx_ingress_controller_requests{namespace="%s",service="%s",status=~"[45].."}[5m])) / sum(rate(nginx_ingress_controller_requests{namespace="%s",service="%s"}[5m])) * 100`, targetNS, appId, targetNS, appId)
+	case "http_latency_p95":
+		query = fmt.Sprintf(`histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",service="%s"}[5m])) by (le))`, targetNS, appId)
+	case "http_latency_p99":
+		query = fmt.Sprintf(`histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",service="%s"}[5m])) by (le))`, targetNS, appId)
+	default:
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Code:    400,
+			Message: fmt.Sprintf("unknown metric: %s. Available: cpu, memory, network_rx, network_tx, restarts, http_rate, http_errors, http_latency_p95, http_latency_p99", metric),
+		})
+		return
+	}
+
+	result, err := h.K8s.QueryPrometheusRange(c.Request.Context(), prometheusURL, query, start, end, step)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, models.ErrorResponse{Code: 502, Message: fmt.Sprintf("prometheus query failed: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"available":  true,
+		"metric":     metric,
+		"range":      timeRange,
+		"start":      start.Unix(),
+		"end":        end.Unix(),
+		"step":       int(step.Seconds()),
+		"resultType": result.ResultType,
+		"series":     result.Results,
+	})
+}
+
+// GetPrometheusStatus returns whether Prometheus is available for this cluster.
+func (h *Handler) GetPrometheusStatus(c *gin.Context) {
+	prometheusURL := ""
+	if cfg, err := h.K8s.GetClusterResource(c.Request.Context(), k8s.VestaConfigGVR, "vesta"); err == nil {
+		spec, _, _ := unstructuredNestedMap(cfg.Object, "spec")
+		if u, ok := spec["prometheusUrl"].(string); ok && u != "" {
+			prometheusURL = u
+		}
+	}
+	if prometheusURL == "" {
+		prometheusURL = h.K8s.DiscoverPrometheusURL(c.Request.Context())
+	}
+
+	available := prometheusURL != ""
+	metrics := []string{}
+	if available {
+		metrics = []string{"cpu", "memory", "network_rx", "network_tx", "restarts", "http_rate", "http_errors", "http_latency_p95", "http_latency_p99"}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"available":      available,
+		"prometheusUrl":  prometheusURL,
+		"availableMetrics": metrics,
+	})
+}

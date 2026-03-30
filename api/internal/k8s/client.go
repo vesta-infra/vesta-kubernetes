@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -278,4 +281,116 @@ func FormatMemBytes(b int64) string {
 		return fmt.Sprintf("%dKi", b/1024)
 	}
 	return fmt.Sprintf("%d", b)
+}
+
+// PrometheusDataPoint represents a single [timestamp, value] data point.
+type PrometheusDataPoint struct {
+	Timestamp float64 `json:"timestamp"`
+	Value     string  `json:"value"`
+}
+
+// PrometheusResult represents a single result from a range query.
+type PrometheusResult struct {
+	Metric map[string]string     `json:"metric"`
+	Values []PrometheusDataPoint `json:"values"`
+}
+
+// PrometheusQueryResult holds the full response from a Prometheus range query.
+type PrometheusQueryResult struct {
+	ResultType string             `json:"resultType"`
+	Results    []PrometheusResult `json:"result"`
+}
+
+// DiscoverPrometheusURL tries to find Prometheus in the cluster by checking
+// well-known service names. Returns empty string if not found.
+func (c *Client) DiscoverPrometheusURL(ctx context.Context) string {
+	candidates := []struct {
+		namespace string
+		name      string
+		port      int
+	}{
+		{"monitoring", "prometheus-server", 80},
+		{"monitoring", "prometheus-operated", 9090},
+		{"monitoring", "prometheus-kube-prometheus-prometheus", 9090},
+		{"prometheus", "prometheus-server", 80},
+		{"vesta-system", "prometheus-server", 80},
+	}
+	for _, candidate := range candidates {
+		_, err := c.Clientset.CoreV1().Services(candidate.namespace).Get(ctx, candidate.name, metav1.GetOptions{})
+		if err == nil {
+			return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", candidate.name, candidate.namespace, candidate.port)
+		}
+	}
+	return ""
+}
+
+// QueryPrometheusRange sends a range query to the Prometheus HTTP API.
+func (c *Client) QueryPrometheusRange(ctx context.Context, prometheusURL, query string, start, end time.Time, step time.Duration) (*PrometheusQueryResult, error) {
+	u, err := url.Parse(prometheusURL + "/api/v1/query_range")
+	if err != nil {
+		return nil, fmt.Errorf("invalid prometheus URL: %w", err)
+	}
+	q := u.Query()
+	q.Set("query", query)
+	q.Set("start", fmt.Sprintf("%d", start.Unix()))
+	q.Set("end", fmt.Sprintf("%d", end.Unix()))
+	q.Set("step", fmt.Sprintf("%d", int(step.Seconds())))
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("prometheus query failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("prometheus returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var promResp struct {
+		Status string `json:"status"`
+		Data   struct {
+			ResultType string `json:"resultType"`
+			Result     []struct {
+				Metric map[string]string `json:"metric"`
+				Values [][]interface{}   `json:"values"`
+			} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&promResp); err != nil {
+		return nil, fmt.Errorf("failed to decode prometheus response: %w", err)
+	}
+	if promResp.Status != "success" {
+		return nil, fmt.Errorf("prometheus query status: %s", promResp.Status)
+	}
+
+	result := &PrometheusQueryResult{
+		ResultType: promResp.Data.ResultType,
+		Results:    make([]PrometheusResult, 0, len(promResp.Data.Result)),
+	}
+	for _, r := range promResp.Data.Result {
+		pr := PrometheusResult{
+			Metric: r.Metric,
+			Values: make([]PrometheusDataPoint, 0, len(r.Values)),
+		}
+		for _, v := range r.Values {
+			if len(v) != 2 {
+				continue
+			}
+			ts, _ := v[0].(float64)
+			val, _ := v[1].(string)
+			pr.Values = append(pr.Values, PrometheusDataPoint{
+				Timestamp: ts,
+				Value:     val,
+			})
+		}
+		result.Results = append(result.Results, pr)
+	}
+	return result, nil
 }
