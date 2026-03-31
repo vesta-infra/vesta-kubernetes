@@ -100,6 +100,9 @@ func (h *Handler) CreateAppEnvSecret(c *gin.Context) {
 		"type":        req.Type,
 		"keys":        keys,
 	})
+
+	h.auditLog(c, "create_secret", "secret", secretName, secretName, project, env,
+		map[string]interface{}{"app": appID, "keyCount": len(keys)})
 }
 
 func (h *Handler) DeleteAppEnvSecretKey(c *gin.Context) {

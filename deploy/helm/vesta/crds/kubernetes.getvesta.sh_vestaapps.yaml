@@ -360,6 +360,21 @@ spec:
                         properties:
                           size:
                             type: string
+                      environments:
+                        type: array
+                        description: Per-environment overrides. Omit an environment to use defaults.
+                        items:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            enabled:
+                              type: boolean
+                              description: Set to false to skip this cronjob in this environment.
+                            schedule:
+                              type: string
+                              description: Override the cron schedule for this environment.
+                          required: [name]
                     required: [name, schedule, command]
                 addons:
                   type: array

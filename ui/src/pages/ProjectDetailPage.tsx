@@ -320,13 +320,28 @@ function EditProjectForm({ project, projectId, onClose }: { project: any; projec
 function EnvironmentRow({ env, projectId }: { env: any; projectId: string }) {
   const queryClient = useQueryClient()
   const role = useUserRole()
+  const [showClone, setShowClone] = useState(false)
+  const [cloneName, setCloneName] = useState('')
+  const [cloneBranch, setCloneBranch] = useState('')
 
   const deleteMutation = useMutation({
     mutationFn: () => api.deleteEnvironment(projectId, env.name),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['environments', projectId] }),
   })
 
+  const cloneMutation = useMutation({
+    mutationFn: (data: { name: string; branch?: string }) => api.cloneEnvironment(projectId, env.name, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['environments', projectId] })
+      queryClient.invalidateQueries({ queryKey: ['projectApps', projectId] })
+      setShowClone(false)
+      setCloneName('')
+      setCloneBranch('')
+    },
+  })
+
   return (
+    <div>
     <div className="card-hover flex items-center justify-between px-5 py-3.5 group">
       <div className="flex items-center gap-4">
         <div className="w-8 h-8 rounded-lg bg-surface-3 flex items-center justify-center">
@@ -350,16 +365,63 @@ function EnvironmentRow({ env, projectId }: { env: any; projectId: string }) {
         </div>
       </div>
       {role !== 'viewer' && (
-      <button
-        onClick={() => {
-          if (confirm(`Delete environment "${env.name}"?`))
-            deleteMutation.mutate()
-        }}
-        className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
-      >
-        Delete
-      </button>
+      <div className="flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+        <button
+          onClick={() => setShowClone(!showClone)}
+          className="text-xs text-text-tertiary hover:text-accent transition-colors"
+        >
+          Clone
+        </button>
+        <button
+          onClick={() => {
+            if (confirm(`Delete environment "${env.name}"?`))
+              deleteMutation.mutate()
+          }}
+          className="text-xs text-text-tertiary hover:text-status-failed transition-colors"
+        >
+          Delete
+        </button>
+      </div>
       )}
+    </div>
+    {showClone && (
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          cloneMutation.mutate({ name: cloneName, branch: cloneBranch || undefined })
+        }}
+        className="px-5 py-3 bg-surface-1 border border-border border-t-0 rounded-b-lg animate-slide-up"
+      >
+        <div className="flex items-end gap-3">
+          <div className="flex-1">
+            <label className="text-xs text-text-tertiary">New Environment Name</label>
+            <input
+              value={cloneName}
+              onChange={(e) => setCloneName(e.target.value)}
+              className="input-field mt-1"
+              placeholder="staging-2"
+              required
+            />
+          </div>
+          <div className="flex-1">
+            <label className="text-xs text-text-tertiary">Branch (optional)</label>
+            <input
+              value={cloneBranch}
+              onChange={(e) => setCloneBranch(e.target.value)}
+              className="input-field mt-1"
+              placeholder={env.branch || 'main'}
+            />
+          </div>
+          <button type="submit" disabled={cloneMutation.isPending || !cloneName} className="btn-primary text-xs">
+            {cloneMutation.isPending ? 'Cloning...' : 'Clone'}
+          </button>
+          <button type="button" onClick={() => setShowClone(false)} className="btn-ghost text-xs">Cancel</button>
+        </div>
+        {cloneMutation.isError && (
+          <p className="text-status-failed text-xs mt-2">{(cloneMutation.error as Error).message}</p>
+        )}
+      </form>
+    )}
     </div>
   )
 }

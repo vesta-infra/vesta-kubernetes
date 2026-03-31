@@ -94,6 +94,7 @@ type CreateAppRequest struct {
 	Resources    map[string]interface{}   `json:"resources,omitempty"`
 	HealthCheck  map[string]interface{}   `json:"healthCheck,omitempty"`
 	Ingress      map[string]interface{}   `json:"ingress,omitempty"`
+	Cronjobs     []map[string]interface{} `json:"cronjobs,omitempty"`
 	Addons       []map[string]interface{} `json:"addons,omitempty"`
 	CustomConfig map[string]interface{}   `json:"customConfig,omitempty"`
 }

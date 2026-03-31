@@ -49,6 +49,7 @@ var (
 type Client struct {
 	Dynamic   dynamic.Interface
 	Clientset kubernetes.Interface
+	Config    *rest.Config
 }
 
 func NewClient() (*Client, error) {
@@ -76,7 +77,7 @@ func NewClient() (*Client, error) {
 		return nil, fmt.Errorf("cannot create clientset: %w", err)
 	}
 
-	return &Client{Dynamic: dyn, Clientset: cs}, nil
+	return &Client{Dynamic: dyn, Clientset: cs, Config: config}, nil
 }
 
 func (c *Client) CreateResource(ctx context.Context, gvr schema.GroupVersionResource, namespace string, obj map[string]interface{}) (*unstructured.Unstructured, error) {
@@ -153,6 +154,18 @@ func (c *Client) GetPodLogs(ctx context.Context, namespace, podName, container s
 		return "", err
 	}
 	return string(data), nil
+}
+
+// StreamPodLogs returns a streaming reader for pod logs (follow mode).
+func (c *Client) StreamPodLogs(ctx context.Context, namespace, podName, container string, tailLines int64) (io.ReadCloser, error) {
+	opts := &corev1.PodLogOptions{
+		Follow:    true,
+		TailLines: &tailLines,
+	}
+	if container != "" {
+		opts.Container = container
+	}
+	return c.Clientset.CoreV1().Pods(namespace).GetLogs(podName, opts).Stream(ctx)
 }
 
 // ContainerMetricsUsage holds live CPU/memory usage for a single container.

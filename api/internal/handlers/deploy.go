@@ -109,6 +109,9 @@ func (h *Handler) DeployApp(c *gin.Context) {
 			StatusURL:   fmt.Sprintf("/api/v1/apps/%s/deployments/%s", appId, deployId),
 		})
 
+		h.auditLog(c, "deploy", "app", appId, appId, project, req.Environment,
+			map[string]interface{}{"image": targetImage, "tag": req.Tag, "reason": req.Reason})
+
 	case "redeploy":
 		// Rolling restart of the deployment in the target namespace
 		patch := map[string]interface{}{
@@ -146,6 +149,8 @@ func (h *Handler) DeployApp(c *gin.Context) {
 			TriggeredAt: now,
 			StatusURL:   fmt.Sprintf("/api/v1/apps/%s/deployments/%s", appId, deployId),
 		})
+
+		h.auditLog(c, "redeploy", "app", appId, appId, project, req.Environment, nil)
 
 	default:
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: fmt.Sprintf("unknown deploy type: %s", deployType)})
@@ -242,6 +247,9 @@ func (h *Handler) RollbackApp(c *gin.Context) {
 		TriggeredAt: now,
 		StatusURL:   fmt.Sprintf("/api/v1/apps/%s/deployments/latest", appId),
 	})
+
+	h.auditLog(c, "rollback", "app", appId, appId, project, req.Environment,
+		map[string]interface{}{"version": req.Version, "image": targetImage, "reason": req.Reason})
 }
 
 func (h *Handler) ListDeployments(c *gin.Context) {
@@ -321,6 +329,8 @@ func (h *Handler) RestartApp(c *gin.Context) {
 	})
 
 	c.JSON(http.StatusAccepted, gin.H{"status": "restarting", "environment": req.Environment})
+
+	h.auditLog(c, "restart", "app", appId, appId, project, req.Environment, nil)
 }
 
 func (h *Handler) ScaleApp(c *gin.Context) {
@@ -359,6 +369,9 @@ func (h *Handler) ScaleApp(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"replicas": req.Replicas})
+
+	h.auditLog(c, "scale", "app", appId, appId, "", "",
+		map[string]interface{}{"replicas": req.Replicas})
 }
 
 func extractTag(image string) string {
@@ -388,4 +401,49 @@ func (h *Handler) appHasEnvironment(obj map[string]interface{}, envName string) 
 		}
 	}
 	return false
+}
+
+// SleepApp puts an app to sleep (scales to zero).
+func (h *Handler) SleepApp(c *gin.Context) {
+	appId := c.Param("appId")
+
+	patch := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"sleep": map[string]interface{}{
+				"enabled": true,
+			},
+		},
+		"status": map[string]interface{}{
+			"phase": "Sleeping",
+		},
+	}
+	patchBytes, _ := json.Marshal(patch)
+	_, err := h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId, patchBytes)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to sleep app: %v", err)})
+		return
+	}
+
+	h.auditLog(c, "app.slept", "app", appId, appId, "", "", nil)
+	c.JSON(http.StatusOK, gin.H{"status": "sleeping", "app": appId})
+}
+
+// WakeApp wakes an app from sleep.
+func (h *Handler) WakeApp(c *gin.Context) {
+	appId := c.Param("appId")
+
+	patch := map[string]interface{}{
+		"status": map[string]interface{}{
+			"phase": "Pending",
+		},
+	}
+	patchBytes, _ := json.Marshal(patch)
+	_, err := h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId, patchBytes)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to wake app: %v", err)})
+		return
+	}
+
+	h.auditLog(c, "app.woken", "app", appId, appId, "", "", nil)
+	c.JSON(http.StatusOK, gin.H{"status": "waking", "app": appId})
 }

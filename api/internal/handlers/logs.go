@@ -1,16 +1,29 @@
 package handlers
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
 )
+
+var wsUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+}
 
 func (h *Handler) StreamLogs(c *gin.Context) {
 	appId := c.Param("appId")
@@ -538,4 +551,105 @@ func (h *Handler) GetPrometheusStatus(c *gin.Context) {
 		"availableMetrics": metrics,
 		"httpAvailable":    httpAvailable,
 	})
+}
+
+// StreamLogsWS upgrades to WebSocket and streams live pod logs.
+func (h *Handler) StreamLogsWS(c *gin.Context) {
+	appId := c.Param("appId")
+	env := c.Query("environment")
+	if env == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "environment query param is required"})
+		return
+	}
+
+	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
+		return
+	}
+	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+	project := getNestedString(spec, "project")
+	targetNS := fmt.Sprintf("%s-%s", project, env)
+
+	tailLines := int64(100)
+	if tl := c.Query("tail"); tl != "" {
+		if n, err := strconv.ParseInt(tl, 10, 64); err == nil && n > 0 {
+			tailLines = n
+		}
+	}
+	container := c.Query("container")
+
+	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	// List pods for the app
+	labelSelector := fmt.Sprintf("kubernetes.getvesta.sh/app=%s", appId)
+	pods, err := h.K8s.ListPods(c.Request.Context(), targetNS, labelSelector)
+	if err != nil {
+		msg, _ := json.Marshal(map[string]string{"type": "error", "message": fmt.Sprintf("failed to list pods: %v", err)})
+		conn.WriteMessage(websocket.TextMessage, msg)
+		return
+	}
+
+	if len(pods) == 0 {
+		msg, _ := json.Marshal(map[string]string{"type": "error", "message": "no pods found"})
+		conn.WriteMessage(websocket.TextMessage, msg)
+		return
+	}
+
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
+
+	// Read pump: detect client disconnect
+	go func() {
+		defer cancel()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	var writeMu sync.Mutex
+
+	for _, pod := range pods {
+		targetContainer := container
+		if targetContainer == "" && len(pod.Spec.Containers) > 0 {
+			targetContainer = pod.Spec.Containers[0].Name
+		}
+
+		stream, err := h.K8s.StreamPodLogs(ctx, targetNS, pod.Name, targetContainer, tailLines)
+		if err != nil {
+			continue
+		}
+
+		wg.Add(1)
+		podName := pod.Name
+		go func() {
+			defer wg.Done()
+			defer stream.Close()
+			scanner := bufio.NewScanner(stream)
+			scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+			for scanner.Scan() {
+				line := scanner.Text()
+				msg, _ := json.Marshal(map[string]string{
+					"type": "log",
+					"pod":  podName,
+					"line": line,
+				})
+				writeMu.Lock()
+				err := conn.WriteMessage(websocket.TextMessage, msg)
+				writeMu.Unlock()
+				if err != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
 }

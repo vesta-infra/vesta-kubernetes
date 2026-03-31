@@ -94,6 +94,7 @@ func main() {
 		auth.POST("/projects/:projectId/environments", dv, h.CreateEnvironment)
 		auth.GET("/projects/:projectId/environments", h.ListEnvironments)
 		auth.DELETE("/projects/:projectId/environments/:env", dv, h.DeleteEnvironment)
+		auth.POST("/projects/:projectId/environments/:env/clone", dv, h.CloneEnvironment)
 
 		// Apps
 		auth.GET("/pod-sizes", h.ListPodSizes)
@@ -103,6 +104,7 @@ func main() {
 		auth.GET("/apps/:appId", middleware.RequireScope("read"), h.GetApp)
 		auth.PUT("/apps/:appId", dv, middleware.RequireScope("write"), h.UpdateApp)
 		auth.DELETE("/apps/:appId", dv, middleware.RequireScope("write"), h.DeleteApp)
+		auth.POST("/apps/:appId/clone", dv, middleware.RequireScope("write"), h.CloneApp)
 
 		// Deploy
 		auth.POST("/apps/:appId/deploy", dv, middleware.RequireScope("deploy", "write"), h.DeployApp)
@@ -110,6 +112,8 @@ func main() {
 		auth.GET("/apps/:appId/deployments", middleware.RequireScope("read"), h.ListDeployments)
 		auth.POST("/apps/:appId/restart", dv, middleware.RequireScope("deploy", "write"), h.RestartApp)
 		auth.POST("/apps/:appId/scale", dv, middleware.RequireScope("deploy", "write"), h.ScaleApp)
+		auth.POST("/apps/:appId/sleep", dv, middleware.RequireScope("deploy", "write"), h.SleepApp)
+		auth.POST("/apps/:appId/wake", dv, middleware.RequireScope("deploy", "write"), h.WakeApp)
 
 		// Secrets (per app per environment) -- viewers have no access
 		auth.POST("/apps/:appId/envs/:env/secrets", dv, h.CreateAppEnvSecret)
@@ -124,6 +128,8 @@ func main() {
 
 		// Logs and monitoring
 		auth.GET("/apps/:appId/logs", h.StreamLogs)
+		auth.GET("/apps/:appId/logs/ws", h.StreamLogsWS)
+		auth.GET("/apps/:appId/exec", dv, h.ExecWS)
 		auth.GET("/apps/:appId/metrics", h.GetMetrics)
 		auth.GET("/apps/:appId/metrics/prometheus", h.GetPrometheusMetrics)
 		auth.GET("/metrics/prometheus/status", h.GetPrometheusStatus)
@@ -131,6 +137,9 @@ func main() {
 		// Templates
 		auth.GET("/templates", h.ListTemplates)
 		auth.POST("/templates/:id/deploy", dv, h.DeployTemplate)
+
+		// Health Dashboard
+		auth.GET("/health/dashboard", h.GetHealthDashboard)
 
 		// Notifications -- viewers can see channels and history but not manage
 		auth.POST("/projects/:projectId/notifications", dv, h.CreateNotificationChannel)
@@ -144,6 +153,13 @@ func main() {
 		auth.GET("/auth/tokens", h.ListAPITokens)
 		auth.POST("/auth/tokens", h.CreateAPIToken)
 		auth.DELETE("/auth/tokens/:id", h.RevokeAPIToken)
+
+		// Audit log
+		auth.GET("/audit-logs", h.ListAuditLogs)
+		auth.GET("/activity", h.GetActivityFeed)
+
+		// Webhook delivery log (admin only)
+		auth.GET("/webhook-deliveries", middleware.RequireRole("admin"), h.ListWebhookDeliveries)
 	}
 
 	log.Printf("Vesta API server starting on :%s", port)
