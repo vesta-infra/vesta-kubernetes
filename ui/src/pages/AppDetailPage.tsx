@@ -27,7 +27,8 @@ export default function AppDetailPage() {
   const [deployEnv, setDeployEnv] = useState('')
   const [secretEnv, setSecretEnv] = useState('')
   const [editing, setEditing] = useState(false)
-  const [activeTab, setActiveTab] = useState<'overview' | 'secrets' | 'logs' | 'metrics'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'secrets' | 'logs' | 'terminal' | 'metrics'>('overview')
+  const [showCloneModal, setShowCloneModal] = useState(false)
   const role = useUserRole()
 
   const projectId = app?.project || app?.spec?.project
@@ -81,6 +82,25 @@ export default function AppDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['apps'] })
       navigate('/apps')
     },
+  })
+
+  const cloneMutation = useMutation({
+    mutationFn: (data: { name: string; project?: string }) => api.cloneApp(appId!, data),
+    onSuccess: (res) => {
+      setShowCloneModal(false)
+      queryClient.invalidateQueries({ queryKey: ['apps'] })
+      if (res?.id) navigate(`/apps/${res.id}`)
+    },
+  })
+
+  const wakeMutation = useMutation({
+    mutationFn: () => api.wakeApp(appId!),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['app', appId] }),
+  })
+
+  const sleepMutation = useMutation({
+    mutationFn: () => api.sleepApp(appId!),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['app', appId] }),
   })
 
   const addEnvMutation = useMutation({
@@ -154,6 +174,37 @@ export default function AppDetailPage() {
             </span>
           </button>
           )}
+          {role !== 'viewer' && phase === 'Sleeping' && (
+          <button
+            onClick={() => wakeMutation.mutate()}
+            disabled={wakeMutation.isPending}
+            className="btn-primary text-xs"
+          >
+            {wakeMutation.isPending ? 'Waking...' : 'Wake Up'}
+          </button>
+          )}
+          {role !== 'viewer' && phase === 'Running' && app.spec?.sleep?.enabled && (
+          <button
+            onClick={() => sleepMutation.mutate()}
+            disabled={sleepMutation.isPending}
+            className="btn-ghost text-xs text-status-pending"
+          >
+            {sleepMutation.isPending ? 'Sleeping...' : 'Sleep'}
+          </button>
+          )}
+          {role !== 'viewer' && (
+          <button
+            onClick={() => setShowCloneModal(true)}
+            className="btn-ghost text-xs"
+          >
+            <span className="flex items-center gap-1.5">
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+              Clone
+            </span>
+          </button>
+          )}
           {role !== 'viewer' && (
           <button
             onClick={() => {
@@ -174,12 +225,22 @@ export default function AppDetailPage() {
         </div>
       </div>
 
+      {showCloneModal && (
+        <CloneAppModal
+          appName={app.name}
+          isPending={cloneMutation.isPending}
+          error={cloneMutation.error}
+          onClone={(data) => cloneMutation.mutate(data)}
+          onClose={() => setShowCloneModal(false)}
+        />
+      )}
+
       {editing && (
         <EditAppForm appId={appId!} app={app} onClose={() => setEditing(false)} />
       )}
 
       <div className="flex border-b border-border">
-        {(['overview', ...(role !== 'viewer' ? ['secrets' as const] : []), 'logs', 'metrics'] as const).map((tab) => (
+        {(['overview', ...(role !== 'viewer' ? ['secrets' as const, 'logs' as const, 'terminal' as const] : ['logs' as const]), 'metrics'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -222,6 +283,13 @@ export default function AppDetailPage() {
                       : '—'}
                   </span>
                 </InfoItem>
+                {app.spec?.sleep?.enabled && (
+                  <InfoItem label="Sleep Mode">
+                    <span className="text-xs font-mono text-status-pending">
+                      {phase === 'Sleeping' ? 'Sleeping' : `Active (timeout: ${app.spec.sleep.inactivityTimeout || '30m'})`}
+                    </span>
+                  </InfoItem>
+                )}
               </div>
             </section>
 
@@ -411,6 +479,38 @@ export default function AppDetailPage() {
                   <ConfigItem label="TLS" value={app.spec.ingress.tls ? 'Enabled' : 'Disabled'} accent={app.spec.ingress.tls} />
                 )}
               </div>
+              {app.spec?.cronjobs?.length > 0 && (
+                <div className="mt-5 pt-4 border-t border-border-subtle">
+                  <h4 className="text-[11px] font-mono uppercase tracking-wider text-text-tertiary mb-3">Cron Jobs</h4>
+                  <div className="space-y-2">
+                    {app.spec.cronjobs.map((cj: any) => (
+                      <div key={cj.name} className="px-3 py-2 bg-surface-1 border border-border rounded-lg">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs font-mono text-accent">{cj.name}</span>
+                            <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-2 py-0.5 rounded">{cj.schedule}</span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="text-xs text-text-secondary font-mono truncate max-w-[200px]">{cj.command}</span>
+                            {cj.resources?.size && (
+                              <span className="text-[10px] text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded">{cj.resources.size}</span>
+                            )}
+                          </div>
+                        </div>
+                        {cj.environments?.length > 0 && (
+                          <div className="mt-2 pt-1.5 border-t border-border-subtle flex flex-wrap gap-2">
+                            {cj.environments.map((envOvr: any) => (
+                              <span key={envOvr.name} className={`text-[10px] font-mono px-2 py-0.5 rounded border ${envOvr.enabled === false ? 'bg-status-failed/5 text-status-failed border-status-failed/20 line-through' : 'bg-surface-3 text-text-tertiary border-border/50'}`}>
+                                {envOvr.name}{envOvr.enabled === false ? ' (disabled)' : ''}{envOvr.schedule ? `: ${envOvr.schedule}` : ''}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </section>
           </div>
         </div>
@@ -450,6 +550,18 @@ export default function AppDetailPage() {
         <div>
           {appEnvironments.length > 0 ? (
             <AppLogs appId={appId!} environments={appEnvironments} />
+          ) : (
+            <div className="card p-5">
+              <p className="text-sm text-text-tertiary">No environments configured</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'terminal' && (
+        <div>
+          {appEnvironments.length > 0 ? (
+            <AppTerminal appId={appId!} environments={appEnvironments} />
           ) : (
             <div className="card p-5">
               <p className="text-sm text-text-tertiary">No environments configured</p>
@@ -504,6 +616,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
+  const appEnvironments: string[] = rawEnvs.map((e: any) => typeof e === 'string' ? e : e.name)
   const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
@@ -536,6 +649,25 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     const entries = Object.entries(a)
     return entries.length > 0 ? entries.map(([key, value]) => ({ key, value: value as string })) : []
   })
+
+  // Cron jobs
+  const [cronjobs, setCronjobs] = useState<{ name: string; schedule: string; command: string; size: string; environments: { name: string; enabled: boolean; schedule: string }[] }[]>(() => {
+    return (app.spec?.cronjobs || []).map((cj: any) => ({
+      name: cj.name || '',
+      schedule: cj.schedule || '',
+      command: cj.command || '',
+      size: cj.resources?.size || '',
+      environments: (cj.environments || []).map((e: any) => ({
+        name: e.name || '',
+        enabled: e.enabled !== false,
+        schedule: e.schedule || '',
+      })),
+    }))
+  })
+
+  // Sleep / Scale-to-Zero
+  const [sleepEnabled, setSleepEnabled] = useState(app.spec?.sleep?.enabled || false)
+  const [sleepTimeout, setSleepTimeout] = useState(app.spec?.sleep?.inactivityTimeout || '30m')
 
   const mutation = useMutation({
     mutationFn: (data: any) => api.updateApp(appId, data),
@@ -613,6 +745,29 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         ...(Object.keys(customLabels).length > 0 && { labels: customLabels }),
         ...(Object.keys(customAnnotations).length > 0 && { annotations: customAnnotations }),
       }
+    }
+
+    // Cron jobs
+    const validCronjobs = cronjobs.filter(cj => cj.name && cj.schedule && cj.command)
+    patch.cronjobs = validCronjobs.map(cj => ({
+      name: cj.name,
+      schedule: cj.schedule,
+      command: cj.command,
+      ...(cj.size && { resources: { size: cj.size } }),
+      ...(cj.environments.length > 0 && {
+        environments: cj.environments.filter(e => e.name).map(e => ({
+          name: e.name,
+          ...((!e.enabled) && { enabled: false }),
+          ...(e.schedule && { schedule: e.schedule }),
+        })),
+      }),
+    }))
+
+    // Sleep / Scale-to-Zero
+    if (sleepEnabled) {
+      patch.sleep = { enabled: true, inactivityTimeout: sleepTimeout }
+    } else {
+      patch.sleep = { enabled: false }
     }
 
     mutation.mutate(patch)
@@ -716,6 +871,36 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                 <input type="number" min="1" value={hcFailureThreshold} onChange={(e) => setHcFailureThreshold(e.target.value)} className="input-field w-20 mt-1" />
               </div>
             </div>
+          </div>
+        )}
+      </div>
+
+      <div>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={sleepEnabled}
+            onChange={(e) => setSleepEnabled(e.target.checked)}
+            className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+          />
+          <span className="label mb-0">Scale-to-Zero (Sleep Mode)</span>
+        </label>
+        <p className="text-[11px] text-text-tertiary mt-1 ml-6">
+          Automatically scale down to zero replicas after inactivity. Traffic will wake the app.
+        </p>
+        {sleepEnabled && (
+          <div className="mt-3 ml-6">
+            <label className="text-xs text-text-tertiary">Inactivity Timeout</label>
+            <select value={sleepTimeout} onChange={(e) => setSleepTimeout(e.target.value)} className="input-field w-36 mt-1">
+              <option value="5m">5 minutes</option>
+              <option value="15m">15 minutes</option>
+              <option value="30m">30 minutes</option>
+              <option value="1h">1 hour</option>
+              <option value="2h">2 hours</option>
+              <option value="6h">6 hours</option>
+              <option value="12h">12 hours</option>
+              <option value="24h">24 hours</option>
+            </select>
           </div>
         )}
       </div>
@@ -849,6 +1034,107 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         ))}
       </div>
 
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <label className="label">Cron Jobs</label>
+          <button type="button" onClick={() => setCronjobs(prev => [...prev, { name: '', schedule: '', command: '', size: '', environments: [] }])} className="text-xs text-accent hover:text-accent-glow">+ Add</button>
+        </div>
+        {cronjobs.map((cj, i) => (
+          <div key={i} className="rounded-lg border border-border bg-surface-1 p-3 mb-2">
+            <div className="flex gap-2 mb-2">
+              <div className="flex-1">
+                <label className="text-xs text-text-tertiary">Name</label>
+                <input value={cj.name} onChange={e => { const u = [...cronjobs]; u[i].name = e.target.value; setCronjobs(u) }} placeholder="cleanup" className="input-field font-mono text-xs mt-1" />
+              </div>
+              <div className="flex-1">
+                <label className="text-xs text-text-tertiary">Schedule (cron)</label>
+                <input value={cj.schedule} onChange={e => { const u = [...cronjobs]; u[i].schedule = e.target.value; setCronjobs(u) }} placeholder="0 2 * * *" className="input-field font-mono text-xs mt-1" />
+              </div>
+              <div className="w-24">
+                <label className="text-xs text-text-tertiary">Size</label>
+                <select value={cj.size} onChange={e => { const u = [...cronjobs]; u[i].size = e.target.value; setCronjobs(u) }} className="input-field text-xs mt-1">
+                  <option value="">Default</option>
+                  {podSizes?.items?.map((s: any) => (
+                    <option key={s.name} value={s.name}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-end pb-1">
+                <button type="button" onClick={() => setCronjobs(prev => prev.filter((_, j) => j !== i))} className="text-text-tertiary hover:text-status-failed text-xs px-2">&times;</button>
+              </div>
+            </div>
+            <div className="mb-2">
+              <label className="text-xs text-text-tertiary">Command</label>
+              <input value={cj.command} onChange={e => { const u = [...cronjobs]; u[i].command = e.target.value; setCronjobs(u) }} placeholder="npm run cleanup" className="input-field font-mono text-xs mt-1" />
+            </div>
+            {appEnvironments.length > 0 && (
+              <div className="mt-2 pt-2 border-t border-border-subtle">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] text-text-tertiary font-mono uppercase tracking-wider">Per-Environment Overrides</span>
+                  {appEnvironments.filter(env => !cj.environments.some(e => e.name === env)).length > 0 && (
+                    <select
+                      value=""
+                      onChange={e => {
+                        if (!e.target.value) return
+                        const u = [...cronjobs]
+                        u[i].environments = [...u[i].environments, { name: e.target.value, enabled: true, schedule: '' }]
+                        setCronjobs(u)
+                      }}
+                      className="input-field text-xs w-auto"
+                    >
+                      <option value="">+ Add override</option>
+                      {appEnvironments.filter(env => !cj.environments.some(e => e.name === env)).map(env => (
+                        <option key={env} value={env}>{env}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+                {cj.environments.map((envOvr, ei) => (
+                  <div key={envOvr.name} className="flex items-center gap-3 mb-1.5 pl-2">
+                    <span className="text-xs font-mono text-accent w-24">{envOvr.name}</span>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={envOvr.enabled}
+                        onChange={e => {
+                          const u = [...cronjobs]
+                          u[i].environments[ei].enabled = e.target.checked
+                          setCronjobs(u)
+                        }}
+                        className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                      />
+                      <span className="text-[11px] text-text-tertiary">Enabled</span>
+                    </label>
+                    <div className="flex-1">
+                      <input
+                        value={envOvr.schedule}
+                        onChange={e => {
+                          const u = [...cronjobs]
+                          u[i].environments[ei].schedule = e.target.value
+                          setCronjobs(u)
+                        }}
+                        placeholder={`Override schedule (default: ${cj.schedule || '...'})`}
+                        className="input-field font-mono text-xs w-full"
+                        disabled={!envOvr.enabled}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const u = [...cronjobs]
+                        u[i].environments = u[i].environments.filter((_, j) => j !== ei)
+                        setCronjobs(u)
+                      }}
+                      className="text-text-tertiary hover:text-status-failed text-xs px-1"
+                    >&times;</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
       <div className="flex gap-3 pt-1">
         <button type="submit" disabled={mutation.isPending} className="btn-primary">
           {mutation.isPending ? 'Saving...' : 'Save Changes'}
@@ -862,25 +1148,110 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   )
 }
 
+function CloneAppModal({ appName, isPending, error, onClone, onClose }: {
+  appName: string
+  isPending: boolean
+  error: Error | null
+  onClone: (data: { name: string; project?: string }) => void
+  onClose: () => void
+}) {
+  const [name, setName] = useState(`${appName}-clone`)
+
+  return (
+    <div className="card p-5 animate-slide-up">
+      <h3 className="section-title mb-4">Clone App</h3>
+      <p className="text-xs text-text-tertiary mb-4">
+        Create a copy of <span className="font-mono text-text-secondary">{appName}</span> with the same configuration.
+      </p>
+      <form onSubmit={(e) => { e.preventDefault(); onClone({ name }) }}>
+        <div className="mb-4">
+          <label className="label">New App Name</label>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            className="input-field"
+            placeholder="my-app-clone"
+            required
+          />
+        </div>
+        <div className="flex gap-3">
+          <button type="submit" disabled={isPending || !name} className="btn-primary">
+            {isPending ? 'Cloning...' : 'Clone'}
+          </button>
+          <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
+        </div>
+        {error && <p className="text-status-failed text-xs mt-2">{error.message}</p>}
+      </form>
+    </div>
+  )
+}
+
+const POD_LOG_COLORS = ['#56d4dd', '#e5c07b', '#98c379', '#c678dd', '#d19a66', '#61afef']
+
 function AppLogs({ appId, environments }: { appId: string; environments: string[] }) {
   const [env, setEnv] = useState(environments[0] || '')
   const [tail, setTail] = useState(100)
   const [previous, setPrevious] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(false)
+  const [unified, setUnified] = useState(false)
+  const [liveMode, setLiveMode] = useState(false)
+  const [liveLines, setLiveLines] = useState<{ pod: string; line: string }[]>([])
+  const [wsConnected, setWsConnected] = useState(false)
+  const wsRef = useRef<WebSocket | null>(null)
   const logEndRef = useRef<HTMLDivElement>(null)
 
   const { data, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['appLogs', appId, env, tail, previous],
     queryFn: () => api.getAppLogs(appId, env, { tail, previous }),
-    enabled: !!env,
+    enabled: !!env && !liveMode,
     refetchInterval: autoRefresh ? 5000 : false,
   })
 
+  // WebSocket streaming
   useEffect(() => {
-    if (data && logEndRef.current) {
+    if (!liveMode || !env) {
+      if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+        setWsConnected(false)
+      }
+      return
+    }
+
+    const token = localStorage.getItem('vesta-token')
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const wsUrl = `${proto}//${window.location.host}/api/v1/apps/${appId}/logs/ws?environment=${encodeURIComponent(env)}&tail=${tail}&token=${encodeURIComponent(token || '')}`
+    const ws = new WebSocket(wsUrl)
+    wsRef.current = ws
+    setLiveLines([])
+
+    ws.onopen = () => setWsConnected(true)
+    ws.onclose = () => setWsConnected(false)
+    ws.onerror = () => setWsConnected(false)
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data)
+        if (msg.type === 'log') {
+          setLiveLines(prev => {
+            const next = [...prev, { pod: msg.pod, line: msg.line }]
+            return next.length > 2000 ? next.slice(-1500) : next
+          })
+        }
+      } catch { /* ignore */ }
+    }
+
+    return () => {
+      ws.close()
+      wsRef.current = null
+      setWsConnected(false)
+    }
+  }, [liveMode, env, appId, tail])
+
+  useEffect(() => {
+    if ((data || liveLines.length > 0) && logEndRef.current) {
       logEndRef.current.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [data])
+  }, [data, liveLines])
 
   return (
     <div>
@@ -895,8 +1266,22 @@ function AppLogs({ appId, environments }: { appId: string; environments: string[
                   checked={autoRefresh}
                   onChange={(e) => setAutoRefresh(e.target.checked)}
                   className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                  disabled={liveMode}
                 />
                 <span className="text-[11px] text-text-tertiary">Auto-refresh</span>
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={liveMode}
+                  onChange={(e) => { setLiveMode(e.target.checked); if (e.target.checked) setAutoRefresh(false) }}
+                  className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                />
+                <span className="text-[11px] text-text-tertiary flex items-center gap-1">
+                  Live
+                  {liveMode && wsConnected && <span className="inline-block w-1.5 h-1.5 rounded-full bg-status-running animate-glow-pulse" />}
+                  {liveMode && !wsConnected && <span className="inline-block w-1.5 h-1.5 rounded-full bg-status-failed" />}
+                </span>
               </label>
               <button
                 onClick={() => refetch()}
@@ -944,6 +1329,15 @@ function AppLogs({ appId, environments }: { appId: string; environments: string[
           />
           <span className="text-[11px] text-text-tertiary">Previous</span>
         </label>
+        <label className="flex items-center gap-1.5 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={unified}
+            onChange={(e) => setUnified(e.target.checked)}
+            className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+          />
+          <span className="text-[11px] text-text-tertiary">Unified</span>
+        </label>
       </div>
 
       {!env && (
@@ -964,7 +1358,33 @@ function AppLogs({ appId, environments }: { appId: string; environments: string[
           {data.total === 0 && (
             <p className="text-sm text-text-tertiary">No pods found in this environment</p>
           )}
-          {data.pods?.map((pod: any) => (
+          {unified && data.pods?.length > 0 ? (
+            <div className="border border-border rounded-lg overflow-hidden">
+              <div className="bg-surface-1 px-4 py-2.5 flex items-center gap-4 border-b border-border flex-wrap">
+                {data.pods.map((pod: any, i: number) => (
+                  <div key={pod.pod} className="flex items-center gap-1.5">
+                    <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: POD_LOG_COLORS[i % POD_LOG_COLORS.length] }} />
+                    <span className="text-[11px] font-mono text-text-secondary">{pod.pod.split('-').slice(-2).join('-')}</span>
+                    <span className="text-[10px] text-text-tertiary">({pod.status})</span>
+                  </div>
+                ))}
+              </div>
+              <pre className="bg-[#0d1117] text-[#c9d1d9] text-[11px] leading-relaxed p-4 overflow-x-auto max-h-[600px] overflow-y-auto font-mono whitespace-pre-wrap break-all">
+                {data.pods.flatMap((pod: any, i: number) => {
+                  const color = POD_LOG_COLORS[i % POD_LOG_COLORS.length]
+                  const short = pod.pod.split('-').slice(-2).join('-')
+                  const lines = (pod.logs || '').split('\n')
+                  return lines.map((line: string, li: number) => (
+                    <span key={`${pod.pod}-${li}`}>
+                      <span style={{ color }}>[{short}]</span> {line}{'\n'}
+                    </span>
+                  ))
+                })}
+                <div ref={logEndRef} />
+              </pre>
+            </div>
+          ) : (
+            data.pods?.map((pod: any) => (
             <div key={pod.pod} className="border border-border rounded-lg overflow-hidden">
               <div className="bg-surface-1 px-4 py-2.5 flex items-center justify-between border-b border-border">
                 <div className="flex items-center gap-3">
@@ -987,9 +1407,176 @@ function AppLogs({ appId, environments }: { appId: string; environments: string[
                 <div ref={logEndRef} />
               </pre>
             </div>
-          ))}
+          ))
+          )}
         </div>
       )}
+
+      {env && liveMode && (
+        <div className="border border-border rounded-lg overflow-hidden">
+          <div className="bg-surface-1 px-4 py-2.5 flex items-center justify-between border-b border-border">
+            <div className="flex items-center gap-2">
+              <span className={`inline-block w-2 h-2 rounded-full ${wsConnected ? 'bg-status-running animate-glow-pulse' : 'bg-status-failed'}`} />
+              <span className="text-xs font-mono text-text-primary">Live Stream</span>
+            </div>
+            <span className="text-[11px] text-text-tertiary">{liveLines.length} lines</span>
+          </div>
+          <pre className="bg-[#0d1117] text-[#c9d1d9] text-[11px] leading-relaxed p-4 overflow-x-auto max-h-[600px] overflow-y-auto font-mono whitespace-pre-wrap break-all">
+            {liveLines.length === 0 && <span className="text-text-tertiary">Waiting for logs...</span>}
+            {liveLines.map((entry, i) => {
+              const pods = [...new Set(liveLines.map(l => l.pod))]
+              const podIdx = pods.indexOf(entry.pod)
+              const color = POD_LOG_COLORS[podIdx % POD_LOG_COLORS.length]
+              const short = entry.pod.split('-').slice(-2).join('-')
+              return (
+                <span key={i}>
+                  <span style={{ color }}>[{short}]</span> {entry.line}{'\n'}
+                </span>
+              )
+            })}
+            <div ref={logEndRef} />
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AppTerminal({ appId, environments }: { appId: string; environments: string[] }) {
+  const [env, setEnv] = useState(environments[0] || '')
+  const [connected, setConnected] = useState(false)
+  const termRef = useRef<HTMLDivElement>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const xtermRef = useRef<any>(null)
+
+  const connect = () => {
+    if (!env || !termRef.current) return
+
+    // Dynamically import xterm
+    Promise.all([
+      import('@xterm/xterm'),
+      import('@xterm/addon-fit'),
+    ]).then(([{ Terminal }, { FitAddon }]) => {
+      // Clean up previous
+      if (xtermRef.current) {
+        xtermRef.current.dispose()
+      }
+      if (wsRef.current) {
+        wsRef.current.close()
+      }
+
+      const term = new Terminal({
+        cursorBlink: true,
+        fontSize: 13,
+        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+        theme: {
+          background: '#0d1117',
+          foreground: '#c9d1d9',
+          cursor: '#58a6ff',
+          selectionBackground: '#264f78',
+        },
+      })
+      const fitAddon = new FitAddon()
+      term.loadAddon(fitAddon)
+      term.open(termRef.current!)
+      fitAddon.fit()
+      xtermRef.current = term
+
+      const token = localStorage.getItem('vesta-token')
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsUrl = `${proto}//${window.location.host}/api/v1/apps/${appId}/exec?environment=${encodeURIComponent(env)}&token=${encodeURIComponent(token || '')}`
+      const ws = new WebSocket(wsUrl)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        setConnected(true)
+        term.focus()
+      }
+      ws.onclose = () => {
+        setConnected(false)
+        term.write('\r\n\x1b[31m--- Connection closed ---\x1b[0m\r\n')
+      }
+      ws.onerror = () => {
+        setConnected(false)
+      }
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data)
+          if (msg.type === 'output') {
+            term.write(msg.data)
+          } else if (msg.type === 'error') {
+            term.write(`\r\n\x1b[31m${msg.message}\x1b[0m\r\n`)
+          }
+        } catch {
+          term.write(event.data)
+        }
+      }
+
+      term.onData((data: string) => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'input', data }))
+        }
+      })
+
+      // Handle resize
+      const resizeObserver = new ResizeObserver(() => fitAddon.fit())
+      resizeObserver.observe(termRef.current!)
+
+      return () => {
+        resizeObserver.disconnect()
+      }
+    })
+  }
+
+  useEffect(() => {
+    return () => {
+      if (wsRef.current) wsRef.current.close()
+      if (xtermRef.current) xtermRef.current.dispose()
+    }
+  }, [])
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="section-title">Web Terminal</h3>
+        <div className="flex items-center gap-2">
+          {connected && <span className="inline-block w-2 h-2 rounded-full bg-status-running animate-glow-pulse" />}
+          <span className="text-[11px] text-text-tertiary">{connected ? 'Connected' : 'Disconnected'}</span>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 mb-4">
+        <select value={env} onChange={(e) => setEnv(e.target.value)} className="input-field text-xs">
+          <option value="">Select environment...</option>
+          {environments.map((e) => (
+            <option key={e} value={e}>{e}</option>
+          ))}
+        </select>
+        <button
+          onClick={connect}
+          disabled={!env}
+          className="btn-primary text-xs"
+        >
+          {connected ? 'Reconnect' : 'Connect'}
+        </button>
+        {connected && (
+          <button
+            onClick={() => {
+              if (wsRef.current) wsRef.current.close()
+              setConnected(false)
+            }}
+            className="btn-ghost text-xs text-status-failed"
+          >
+            Disconnect
+          </button>
+        )}
+      </div>
+
+      <div
+        ref={termRef}
+        className="border border-border rounded-lg overflow-hidden bg-[#0d1117]"
+        style={{ minHeight: '400px' }}
+      />
     </div>
   )
 }
@@ -1131,11 +1718,21 @@ function AppMetrics({ appId, environments }: { appId: string; environments: stri
                 <PrometheusChart appId={appId} env={env} metric="network_rx" range={promRange} label="Network Receive" unit="bytes/s" color="#10b981" />
                 <PrometheusChart appId={appId} env={env} metric="network_tx" range={promRange} label="Network Transmit" unit="bytes/s" color="#f59e0b" />
               </div>
-              <div className="grid grid-cols-3 gap-4 mt-4">
-                <PrometheusChart appId={appId} env={env} metric="http_rate" range={promRange} label="Request Rate" unit="req/s" color="#8b5cf6" />
-                <PrometheusChart appId={appId} env={env} metric="http_errors" range={promRange} label="Error Rate" unit="%" color="#ef4444" />
-                <PrometheusChart appId={appId} env={env} metric="http_latency_p95" range={promRange} label="Latency (p95)" unit="s" color="#f97316" />
-              </div>
+              {promStatus?.httpAvailable ? (
+                <div className="grid grid-cols-3 gap-4 mt-4">
+                  <PrometheusChart appId={appId} env={env} metric="http_rate" range={promRange} label="Request Rate" unit="req/s" color="#8b5cf6" />
+                  <PrometheusChart appId={appId} env={env} metric="http_errors" range={promRange} label="Error Rate" unit="%" color="#ef4444" />
+                  <PrometheusChart appId={appId} env={env} metric="http_latency_p95" range={promRange} label="Latency (p95)" unit="s" color="#f97316" />
+                </div>
+              ) : (
+                <div className="mt-4 px-3 py-2 bg-surface-2/50 rounded-lg">
+                  <p className="text-[10px] font-mono text-text-tertiary">
+                    HTTP metrics (request rate, errors, latency) require an ingress controller with Prometheus metrics enabled.
+                    <br />Traefik: <span className="text-text-secondary">--set metrics.prometheus.enabled=true --set metrics.prometheus.serviceMonitor.enabled=true</span>
+                    <br />nginx: <span className="text-text-secondary">--set controller.metrics.enabled=true --set controller.metrics.serviceMonitor.enabled=true</span>
+                  </p>
+                </div>
+              )}
             </div>
           )}
 

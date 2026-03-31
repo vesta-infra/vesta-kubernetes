@@ -173,10 +173,17 @@ type HealthCheckConfig struct {
 }
 
 type CronjobConfig struct {
-	Name      string          `json:"name"`
-	Schedule  string          `json:"schedule"`
-	Command   string          `json:"command"`
-	Resources *ResourceConfig `json:"resources,omitempty"`
+	Name         string                       `json:"name"`
+	Schedule     string                       `json:"schedule"`
+	Command      string                       `json:"command"`
+	Resources    *ResourceConfig              `json:"resources,omitempty"`
+	Environments []CronjobEnvironmentOverride `json:"environments,omitempty"`
+}
+
+type CronjobEnvironmentOverride struct {
+	Name     string `json:"name"`
+	Enabled  *bool  `json:"enabled,omitempty"`
+	Schedule string `json:"schedule,omitempty"`
 }
 
 type AddonConfig struct {

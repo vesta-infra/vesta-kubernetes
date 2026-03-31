@@ -245,7 +245,7 @@ export const api = {
     request<any>(`/apps/${appId}/metrics/prometheus?environment=${encodeURIComponent(environment)}&metric=${encodeURIComponent(metric)}&range=${encodeURIComponent(range)}`),
 
   getPrometheusStatus: () =>
-    request<{ available: boolean; prometheusUrl: string; availableMetrics: string[] }>('/metrics/prometheus/status'),
+    request<{ available: boolean; prometheusUrl: string; availableMetrics: string[]; httpAvailable: boolean }>('/metrics/prometheus/status'),
 
   // API Tokens
   listTokens: () =>
@@ -296,4 +296,87 @@ export const api = {
     const qs = params.toString() ? `?${params}` : ''
     return request<{ items: any[]; total: number }>(`/projects/${projectId}/notifications/history${qs}`)
   },
+
+  // Audit Log
+  listAuditLogs: (params?: { projectId?: string; appId?: string; action?: string; userId?: string; resourceType?: string; from?: string; to?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.projectId) qs.set('projectId', params.projectId)
+    if (params?.appId) qs.set('appId', params.appId)
+    if (params?.action) qs.set('action', params.action)
+    if (params?.userId) qs.set('userId', params.userId)
+    if (params?.resourceType) qs.set('resourceType', params.resourceType)
+    if (params?.from) qs.set('from', params.from)
+    if (params?.to) qs.set('to', params.to)
+    if (params?.limit) qs.set('limit', String(params.limit))
+    if (params?.offset) qs.set('offset', String(params.offset))
+    const q = qs.toString() ? `?${qs}` : ''
+    return request<{ items: any[]; total: number }>(`/audit-logs${q}`)
+  },
+
+  // Activity Feed
+  getActivityFeed: (params?: { projectId?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.projectId) qs.set('projectId', params.projectId)
+    if (params?.limit) qs.set('limit', String(params.limit))
+    if (params?.offset) qs.set('offset', String(params.offset))
+    const q = qs.toString() ? `?${qs}` : ''
+    return request<{ items: any[]; total: number }>(`/activity${q}`)
+  },
+
+  // Webhook Deliveries
+  listWebhookDeliveries: (params?: { provider?: string; status?: string; repository?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.provider) qs.set('provider', params.provider)
+    if (params?.status) qs.set('status', params.status)
+    if (params?.repository) qs.set('repository', params.repository)
+    if (params?.limit) qs.set('limit', String(params.limit))
+    if (params?.offset) qs.set('offset', String(params.offset))
+    const q = qs.toString() ? `?${qs}` : ''
+    return request<{ items: any[]; total: number }>(`/webhook-deliveries${q}`)
+  },
+
+  // App Cloning
+  cloneApp: (appId: string, data: { name: string; project?: string }) =>
+    request<any>(`/apps/${appId}/clone`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  // Sleep / Wake
+  sleepApp: (appId: string) =>
+    request<any>(`/apps/${appId}/sleep`, { method: 'POST' }),
+
+  wakeApp: (appId: string) =>
+    request<any>(`/apps/${appId}/wake`, { method: 'POST' }),
+
+  // Environment Cloning
+  cloneEnvironment: (projectId: string, envName: string, data: { name: string; branch?: string }) =>
+    request<any>(`/projects/${projectId}/environments/${envName}/clone`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  // Health Dashboard
+  getHealthDashboard: (params?: { projectId?: string; teamId?: string }) => {
+    const qs = new URLSearchParams()
+    if (params?.projectId) qs.set('projectId', params.projectId)
+    if (params?.teamId) qs.set('teamId', params.teamId)
+    const q = qs.toString() ? `?${qs}` : ''
+    return request<any>(`/health/dashboard${q}`)
+  },
+
+  // Templates
+  listTemplates: (params?: { category?: string; search?: string }) => {
+    const qs = new URLSearchParams()
+    if (params?.category) qs.set('category', params.category)
+    if (params?.search) qs.set('search', params.search)
+    const q = qs.toString() ? `?${qs}` : ''
+    return request<{ items: any[]; total: number }>(`/templates${q}`)
+  },
+
+  deployTemplate: (templateId: string, data: { project: string; environments: string[]; name?: string; overrides?: Record<string, any> }) =>
+    request<any>(`/templates/${templateId}/deploy`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
 }

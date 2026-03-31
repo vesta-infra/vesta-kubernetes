@@ -1,15 +1,22 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
+import { useUserRole } from '../lib/useRole'
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'general' | 'teams' | 'users' | 'roles'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'teams' | 'users' | 'roles' | 'audit' | 'webhooks'>('general')
+  const role = useUserRole()
+  const isAdmin = role === 'admin'
 
   const tabs = [
     { key: 'general' as const, label: 'General' },
     { key: 'teams' as const, label: 'Teams' },
     { key: 'users' as const, label: 'Users' },
     { key: 'roles' as const, label: 'Roles' },
+    ...(isAdmin ? [
+      { key: 'audit' as const, label: 'Audit Log' },
+      { key: 'webhooks' as const, label: 'Webhooks' },
+    ] : []),
   ]
 
   return (
@@ -55,6 +62,18 @@ export default function SettingsPage() {
       {activeTab === 'roles' && (
         <div className="space-y-8">
           <RolesSection />
+        </div>
+      )}
+
+      {activeTab === 'audit' && isAdmin && (
+        <div className="space-y-8">
+          <AuditLogSection />
+        </div>
+      )}
+
+      {activeTab === 'webhooks' && isAdmin && (
+        <div className="space-y-8">
+          <WebhookDeliveriesSection />
         </div>
       )}
     </div>
@@ -832,5 +851,223 @@ function Spinner() {
         </div>
       </div>
     </div>
+  )
+}
+
+const AUDIT_ACTIONS: Record<string, { label: string; color: string }> = {
+  deploy: { label: 'Deploy', color: 'bg-status-running/10 text-status-running' },
+  redeploy: { label: 'Redeploy', color: 'bg-status-running/10 text-status-running' },
+  rollback: { label: 'Rollback', color: 'bg-status-pending/10 text-status-pending' },
+  restart: { label: 'Restart', color: 'bg-accent/10 text-accent' },
+  scale: { label: 'Scale', color: 'bg-accent/10 text-accent' },
+  create_app: { label: 'Create App', color: 'bg-status-running/10 text-status-running' },
+  update_app: { label: 'Update App', color: 'bg-accent/10 text-accent' },
+  delete_app: { label: 'Delete App', color: 'bg-status-failed/10 text-status-failed' },
+  clone_app: { label: 'Clone App', color: 'bg-accent/10 text-accent' },
+  create_project: { label: 'Create Project', color: 'bg-status-running/10 text-status-running' },
+  update_project: { label: 'Update Project', color: 'bg-accent/10 text-accent' },
+  delete_project: { label: 'Delete Project', color: 'bg-status-failed/10 text-status-failed' },
+  create_env: { label: 'Create Env', color: 'bg-status-running/10 text-status-running' },
+  delete_env: { label: 'Delete Env', color: 'bg-status-failed/10 text-status-failed' },
+  clone_env: { label: 'Clone Env', color: 'bg-accent/10 text-accent' },
+  create_secret: { label: 'Create Secret', color: 'bg-status-running/10 text-status-running' },
+  delete_secret: { label: 'Delete Secret', color: 'bg-status-failed/10 text-status-failed' },
+}
+
+function AuditLogSection() {
+  const [actionFilter, setActionFilter] = useState('')
+  const [page, setPage] = useState(0)
+  const limit = 25
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['auditLogs', actionFilter, page],
+    queryFn: () => api.listAuditLogs({
+      action: actionFilter || undefined,
+      limit,
+      offset: page * limit,
+    }),
+  })
+
+  if (isLoading) return <Spinner />
+
+  const entries = data?.items || []
+  const total = data?.total || 0
+
+  return (
+    <section>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="section-title">Audit Log</h3>
+        <div className="flex items-center gap-2">
+          <select
+            value={actionFilter}
+            onChange={(e) => { setActionFilter(e.target.value); setPage(0) }}
+            className="input-field text-xs"
+          >
+            <option value="">All actions</option>
+            {Object.entries(AUDIT_ACTIONS).map(([key, { label }]) => (
+              <option key={key} value={key}>{label}</option>
+            ))}
+          </select>
+          <span className="text-[11px] text-text-tertiary">{total} entries</span>
+        </div>
+      </div>
+
+      {entries.length === 0 ? (
+        <p className="text-sm text-text-tertiary">No audit log entries found</p>
+      ) : (
+        <div className="border border-border rounded-lg overflow-hidden">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="bg-surface-1 border-b border-border">
+                <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-normal">Time</th>
+                <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-normal">User</th>
+                <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-normal">Action</th>
+                <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-normal">Resource</th>
+                <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-normal">Project</th>
+                <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-normal">Environment</th>
+                <th className="text-left px-4 py-2.5 text-text-tertiary font-mono font-normal">Method</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map((entry: any) => {
+                const actionInfo = AUDIT_ACTIONS[entry.action] || { label: entry.action, color: 'bg-surface-3 text-text-secondary' }
+                return (
+                  <tr key={entry.id} className="border-b border-border/50 hover:bg-surface-1/50 transition-colors">
+                    <td className="px-4 py-2.5 text-text-secondary font-mono">{new Date(entry.createdAt).toLocaleString()}</td>
+                    <td className="px-4 py-2.5 text-text-primary">{entry.username || entry.userId?.slice(0, 8) || '—'}</td>
+                    <td className="px-4 py-2.5">
+                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded ${actionInfo.color}`}>
+                        {actionInfo.label}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 text-text-secondary font-mono">{entry.resourceName || '—'}</td>
+                    <td className="px-4 py-2.5 text-text-secondary">{entry.projectId || '—'}</td>
+                    <td className="px-4 py-2.5 text-text-secondary">{entry.environment || '—'}</td>
+                    <td className="px-4 py-2.5">
+                      <span className="text-[10px] font-mono text-text-tertiary">{entry.authMethod || '—'}</span>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {total > limit && (
+        <div className="flex items-center justify-between mt-3">
+          <button
+            onClick={() => setPage(Math.max(0, page - 1))}
+            disabled={page === 0}
+            className="btn-ghost text-xs disabled:opacity-30"
+          >
+            Previous
+          </button>
+          <span className="text-[11px] text-text-tertiary">
+            {page * limit + 1}–{Math.min((page + 1) * limit, total)} of {total}
+          </span>
+          <button
+            onClick={() => setPage(page + 1)}
+            disabled={(page + 1) * limit >= total}
+            className="btn-ghost text-xs disabled:opacity-30"
+          >
+            Next
+          </button>
+        </div>
+      )}
+    </section>
+  )
+}
+
+const DELIVERY_STATUS_COLORS: Record<string, string> = {
+  received: 'bg-status-pending/10 text-status-pending',
+  processed: 'bg-status-running/10 text-status-running',
+  failed: 'bg-status-failed/10 text-status-failed',
+  ignored: 'bg-surface-3 text-text-tertiary',
+}
+
+function WebhookDeliveriesSection() {
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [page, setPage] = useState(0)
+  const limit = 25
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['webhookDeliveries', page],
+    queryFn: () => api.listWebhookDeliveries({ limit, offset: page * limit }),
+  })
+
+  if (isLoading) return <Spinner />
+
+  const entries = data?.items || []
+  const total = data?.total || 0
+
+  return (
+    <section>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="section-title">Webhook Deliveries</h3>
+        <span className="text-[11px] text-text-tertiary">{total} deliveries</span>
+      </div>
+
+      {entries.length === 0 ? (
+        <p className="text-sm text-text-tertiary">No webhook deliveries recorded</p>
+      ) : (
+        <div className="space-y-2">
+          {entries.map((d: any) => (
+            <div key={d.id} className="border border-border rounded-lg overflow-hidden">
+              <button
+                onClick={() => setExpandedId(expandedId === d.id ? null : d.id)}
+                className="w-full bg-surface-1 px-4 py-2.5 flex items-center justify-between hover:bg-surface-2 transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] font-mono uppercase px-1.5 py-0.5 rounded bg-surface-3 text-text-secondary">{d.provider}</span>
+                  <span className="text-xs font-mono text-text-primary">{d.eventType || '—'}</span>
+                  <span className="text-xs text-text-secondary">{d.repository}</span>
+                  {d.branch && <span className="text-[11px] font-mono text-accent">{d.branch}</span>}
+                </div>
+                <div className="flex items-center gap-3">
+                  {d.appsTriggered?.length > 0 && (
+                    <span className="text-[10px] text-text-tertiary">{d.appsTriggered.length} app{d.appsTriggered.length !== 1 ? 's' : ''}</span>
+                  )}
+                  <span className={`text-[10px] font-mono px-2 py-0.5 rounded ${DELIVERY_STATUS_COLORS[d.status] || 'bg-surface-3 text-text-tertiary'}`}>
+                    {d.status}
+                  </span>
+                  <span className="text-[11px] text-text-tertiary">{d.durationMs}ms</span>
+                  <span className="text-[11px] text-text-tertiary font-mono">{new Date(d.createdAt).toLocaleString()}</span>
+                </div>
+              </button>
+              {expandedId === d.id && (
+                <div className="px-4 py-3 border-t border-border space-y-2">
+                  {d.commitSha && (
+                    <div className="text-xs"><span className="text-text-tertiary">Commit:</span> <span className="font-mono text-text-secondary">{d.commitSha.slice(0, 12)}</span></div>
+                  )}
+                  {d.processingResult && (
+                    <div className="text-xs"><span className="text-text-tertiary">Result:</span> <span className="text-text-secondary">{d.processingResult}</span></div>
+                  )}
+                  {d.appsTriggered?.length > 0 && (
+                    <div className="text-xs"><span className="text-text-tertiary">Apps:</span> <span className="font-mono text-text-secondary">{d.appsTriggered.join(', ')}</span></div>
+                  )}
+                  {d.payload && (
+                    <details className="text-xs">
+                      <summary className="text-text-tertiary cursor-pointer hover:text-text-secondary">Payload</summary>
+                      <pre className="mt-1 bg-[#0d1117] text-[#c9d1d9] text-[11px] p-3 rounded overflow-x-auto max-h-60 overflow-y-auto font-mono">
+                        {JSON.stringify(d.payload, null, 2)}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {total > limit && (
+        <div className="flex items-center justify-between mt-3">
+          <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="btn-ghost text-xs disabled:opacity-30">Previous</button>
+          <span className="text-[11px] text-text-tertiary">{page * limit + 1}–{Math.min((page + 1) * limit, total)} of {total}</span>
+          <button onClick={() => setPage(page + 1)} disabled={(page + 1) * limit >= total} className="btn-ghost text-xs disabled:opacity-30">Next</button>
+        </div>
+      )}
+    </section>
   )
 }

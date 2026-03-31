@@ -1,13 +1,56 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	"kubernetes.getvesta.sh/api/internal/k8s"
+	"kubernetes.getvesta.sh/api/internal/models"
 )
 
+type appTemplate struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Category    string            `json:"category"`
+	Icon        string            `json:"icon"`
+	Image       string            `json:"image"`
+	Port        int               `json:"port"`
+	EnvVars     map[string]string `json:"envVars,omitempty"`
+	HealthPath  string            `json:"healthPath,omitempty"`
+}
+
+var builtinTemplates = []appTemplate{
+	{ID: "nginx", Name: "Nginx", Description: "High-performance web server and reverse proxy", Category: "web", Icon: "🌐", Image: "nginx:alpine", Port: 80, HealthPath: "/"},
+	{ID: "node", Name: "Node.js", Description: "JavaScript runtime for server-side applications", Category: "runtime", Icon: "🟩", Image: "node:20-alpine", Port: 3000},
+	{ID: "python", Name: "Python (Flask)", Description: "Lightweight Python web framework", Category: "runtime", Icon: "🐍", Image: "python:3.12-slim", Port: 5000},
+	{ID: "go", Name: "Go", Description: "Go application with minimal Alpine base", Category: "runtime", Icon: "🔵", Image: "golang:1.22-alpine", Port: 8080},
+	{ID: "postgres", Name: "PostgreSQL", Description: "Advanced open-source relational database", Category: "database", Icon: "🐘", Image: "postgres:16-alpine", Port: 5432, EnvVars: map[string]string{"POSTGRES_DB": "app", "POSTGRES_USER": "postgres", "POSTGRES_PASSWORD": "changeme"}},
+	{ID: "redis", Name: "Redis", Description: "In-memory data store for caching and messaging", Category: "database", Icon: "🔴", Image: "redis:7-alpine", Port: 6379},
+	{ID: "mongo", Name: "MongoDB", Description: "Document-oriented NoSQL database", Category: "database", Icon: "🍃", Image: "mongo:7", Port: 27017},
+	{ID: "mysql", Name: "MySQL", Description: "Popular open-source relational database", Category: "database", Icon: "🐬", Image: "mysql:8", Port: 3306, EnvVars: map[string]string{"MYSQL_ROOT_PASSWORD": "changeme", "MYSQL_DATABASE": "app"}},
+	{ID: "rabbitmq", Name: "RabbitMQ", Description: "Message broker with management UI", Category: "messaging", Icon: "🐰", Image: "rabbitmq:3-management-alpine", Port: 15672},
+	{ID: "minio", Name: "MinIO", Description: "S3-compatible object storage", Category: "storage", Icon: "📦", Image: "minio/minio:latest", Port: 9000, EnvVars: map[string]string{"MINIO_ROOT_USER": "minioadmin", "MINIO_ROOT_PASSWORD": "minioadmin"}},
+}
+
 func (h *Handler) ListTemplates(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"items": []interface{}{}, "total": 0})
+	category := c.Query("category")
+	search := c.Query("search")
+
+	filtered := make([]appTemplate, 0)
+	for _, t := range builtinTemplates {
+		if category != "" && t.Category != category {
+			continue
+		}
+		if search != "" && !strings.Contains(strings.ToLower(t.Name), strings.ToLower(search)) && !strings.Contains(strings.ToLower(t.Description), strings.ToLower(search)) {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"items": filtered, "total": len(filtered)})
 }
 
 func (h *Handler) DeployTemplate(c *gin.Context) {
@@ -23,10 +66,74 @@ func (h *Handler) DeployTemplate(c *gin.Context) {
 		return
 	}
 
+	// Find the template
+	var tmpl *appTemplate
+	for _, t := range builtinTemplates {
+		if t.ID == templateId {
+			tmpl = &t
+			break
+		}
+	}
+	if tmpl == nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "template not found"})
+		return
+	}
+
+	appName := req.Name
+	if appName == "" {
+		appName = tmpl.ID
+	}
+
+	// Build the app spec
+	envs := make([]interface{}, 0)
+	for _, e := range req.Environments {
+		envs = append(envs, map[string]interface{}{"name": e, "replicas": 1})
+	}
+
+	spec := map[string]interface{}{
+		"project": req.Project,
+		"image": map[string]interface{}{
+			"repository": tmpl.Image,
+			"tag":        "latest",
+		},
+		"runtime": map[string]interface{}{
+			"port": tmpl.Port,
+		},
+	}
+	if len(envs) > 0 {
+		spec["environments"] = envs
+	}
+	if tmpl.HealthPath != "" {
+		spec["healthCheck"] = map[string]interface{}{
+			"type": "http",
+			"path": tmpl.HealthPath,
+		}
+	}
+
+	obj := map[string]interface{}{
+		"apiVersion": "kubernetes.getvesta.sh/v1alpha1",
+		"kind":       "VestaApp",
+		"metadata": map[string]interface{}{
+			"name":      appName,
+			"namespace": vestaSystemNS,
+			"labels": map[string]interface{}{
+				"kubernetes.getvesta.sh/project":  req.Project,
+				"kubernetes.getvesta.sh/template": tmpl.ID,
+			},
+		},
+		"spec": spec,
+	}
+
+	created, err := h.K8s.CreateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, obj)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to create app from template: %v", err)})
+		return
+	}
+
 	c.JSON(http.StatusCreated, gin.H{
-		"id":           req.Name,
-		"template":     templateId,
-		"project":      req.Project,
-		"environments": req.Environments,
+		"id":       created.GetName(),
+		"name":     appName,
+		"template": tmpl.ID,
+		"project":  req.Project,
 	})
 }

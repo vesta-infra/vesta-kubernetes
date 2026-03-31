@@ -49,6 +49,7 @@ var (
 type Client struct {
 	Dynamic   dynamic.Interface
 	Clientset kubernetes.Interface
+	Config    *rest.Config
 }
 
 func NewClient() (*Client, error) {
@@ -76,7 +77,7 @@ func NewClient() (*Client, error) {
 		return nil, fmt.Errorf("cannot create clientset: %w", err)
 	}
 
-	return &Client{Dynamic: dyn, Clientset: cs}, nil
+	return &Client{Dynamic: dyn, Clientset: cs, Config: config}, nil
 }
 
 func (c *Client) CreateResource(ctx context.Context, gvr schema.GroupVersionResource, namespace string, obj map[string]interface{}) (*unstructured.Unstructured, error) {
@@ -153,6 +154,18 @@ func (c *Client) GetPodLogs(ctx context.Context, namespace, podName, container s
 		return "", err
 	}
 	return string(data), nil
+}
+
+// StreamPodLogs returns a streaming reader for pod logs (follow mode).
+func (c *Client) StreamPodLogs(ctx context.Context, namespace, podName, container string, tailLines int64) (io.ReadCloser, error) {
+	opts := &corev1.PodLogOptions{
+		Follow:    true,
+		TailLines: &tailLines,
+	}
+	if container != "" {
+		opts.Container = container
+	}
+	return c.Clientset.CoreV1().Pods(namespace).GetLogs(podName, opts).Stream(ctx)
 }
 
 // ContainerMetricsUsage holds live CPU/memory usage for a single container.
@@ -393,4 +406,41 @@ func (c *Client) QueryPrometheusRange(ctx context.Context, prometheusURL, query 
 		result.Results = append(result.Results, pr)
 	}
 	return result, nil
+}
+
+// QueryPrometheusHasData sends an instant query and returns true if results exist.
+func (c *Client) QueryPrometheusHasData(ctx context.Context, prometheusURL, query string) bool {
+	u, err := url.Parse(prometheusURL + "/api/v1/query")
+	if err != nil {
+		return false
+	}
+	q := u.Query()
+	q.Set("query", query)
+	u.RawQuery = q.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return false
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	var promResp struct {
+		Status string `json:"status"`
+		Data   struct {
+			Result []interface{} `json:"result"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&promResp); err != nil {
+		return false
+	}
+	return promResp.Status == "success" && len(promResp.Data.Result) > 0
 }

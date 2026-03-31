@@ -7,6 +7,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -45,6 +46,7 @@ type targetEnv struct {
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=batch,resources=cronjobs;jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
 
 const vestaAppFinalizer = "kubernetes.getvesta.sh/app-cleanup"
@@ -147,6 +149,12 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				return r.updateStatusFailed(ctx, &app, err)
 			}
 		}
+
+		if len(app.Spec.Cronjobs) > 0 {
+			if err := r.reconcileCronJobs(ctx, &app, target, projectLabels, projectAnnotations); err != nil {
+				return r.updateStatusFailed(ctx, &app, err)
+			}
+		}
 	}
 
 	if err := r.updateStatusRunning(ctx, req.NamespacedName); err != nil {
@@ -236,6 +244,18 @@ func (r *VestaAppReconciler) cleanupApp(ctx context.Context, app *vestav1alpha1.
 		}
 		if err := r.Delete(ctx, hpa); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("delete hpa %s/%s: %w", target.Namespace, app.Name, err)
+		}
+
+		// Delete CronJobs
+		var cronJobs batchv1.CronJobList
+		if err := r.List(ctx, &cronJobs, client.InNamespace(target.Namespace), client.MatchingLabels{
+			"kubernetes.getvesta.sh/app": app.Name,
+		}); err == nil {
+			for i := range cronJobs.Items {
+				if err := r.Delete(ctx, &cronJobs.Items[i]); err != nil && !errors.IsNotFound(err) {
+					return fmt.Errorf("delete cronjob %s/%s: %w", target.Namespace, cronJobs.Items[i].Name, err)
+				}
+			}
 		}
 
 		logger.Info("cleaned up resources", "namespace", target.Namespace, "app", app.Name)
@@ -359,6 +379,15 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 	// When autoscaling is enabled, don't override replicas — let the HPA control them.
 	autoscalingEnabled := target.Config.Autoscale != nil && target.Config.Autoscale.Enabled
 
+	// Scale-to-Zero: if sleep is enabled and the app is marked as sleeping, set replicas to 0
+	sleepActive := false
+	if app.Spec.Sleep != nil && app.Spec.Sleep.Enabled {
+		if app.Status.Phase == "Sleeping" {
+			replicas = 0
+			sleepActive = true
+		}
+	}
+
 	// Fetch project for imagePullSecrets
 	var project vestav1alpha1.VestaProject
 	var projectPullSecrets []corev1.LocalObjectReference
@@ -439,7 +468,10 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 
 			// Only set replicas when autoscaling is NOT enabled;
 			// otherwise let the HPA manage the replica count.
-			if !autoscalingEnabled {
+			// When sleep is active, always force replicas to 0.
+			if sleepActive {
+				deploy.Spec.Replicas = &replicas
+			} else if !autoscalingEnabled {
 				deploy.Spec.Replicas = &replicas
 			}
 
@@ -889,6 +921,181 @@ func (r *VestaAppReconciler) reconcileHPA(ctx context.Context, app *vestav1alpha
 		})
 		return err
 	})
+}
+
+func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv, projectLabels, projectAnnotations map[string]string) error {
+	logger := log.FromContext(ctx)
+	labels := r.labelsForApp(app)
+
+	// Build the set of desired cronjob names so we can clean up orphans
+	desiredCronJobs := map[string]bool{}
+	for _, cj := range app.Spec.Cronjobs {
+		if r.isCronjobDisabledForEnv(cj, target.Config.Name) {
+			continue
+		}
+		desiredCronJobs[fmt.Sprintf("%s-%s", app.Name, cj.Name)] = true
+	}
+
+	// Fetch project for imagePullSecrets
+	var project vestav1alpha1.VestaProject
+	var projectPullSecrets []corev1.LocalObjectReference
+	if err := r.Get(ctx, client.ObjectKey{Namespace: app.Namespace, Name: app.Spec.Project}, &project); err == nil {
+		projectPullSecrets = project.Spec.ImagePullSecrets
+	}
+
+	for _, cj := range app.Spec.Cronjobs {
+		cronjobName := fmt.Sprintf("%s-%s", app.Name, cj.Name)
+
+		// Check per-environment override: skip if disabled
+		if r.isCronjobDisabledForEnv(cj, target.Config.Name) {
+			logger.Info("cronjob disabled for environment, skipping", "cronjob", cj.Name, "environment", target.Config.Name)
+			continue
+		}
+
+		// Resolve effective schedule (per-environment override wins)
+		effectiveSchedule := r.resolveCronjobSchedule(cj, target.Config.Name)
+
+		// Build the container: same image, env, secrets, volumes as the main app — only override command
+		container := r.buildContainer(app, cj.Resources)
+		container.Name = "job"
+		container.Command = []string{"/bin/sh", "-c", cj.Command}
+		container.Args = nil
+		container.Ports = nil
+		container.LivenessProbe = nil
+		container.ReadinessProbe = nil
+
+		// Auto-inject per-app secret if it exists in the target namespace
+		appSecretName := app.Name + "-secrets"
+		appSecrets := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: appSecretName}, appSecrets); err == nil {
+			alreadyBound := false
+			for _, sb := range app.Spec.Runtime.Secrets {
+				if sb.SecretRef != nil && sb.SecretRef.Name == appSecretName {
+					alreadyBound = true
+					break
+				}
+			}
+			if !alreadyBound {
+				container.EnvFrom = append(container.EnvFrom, corev1.EnvFromSource{
+					SecretRef: &corev1.SecretEnvSource{
+						LocalObjectReference: corev1.LocalObjectReference{Name: appSecretName},
+					},
+				})
+			}
+		}
+
+		podSpec := r.buildPodSpec(app, container, projectPullSecrets, target.Config.ImagePullSecrets)
+		podSpec.ServiceAccountName = app.Name
+		podSpec.RestartPolicy = corev1.RestartPolicyOnFailure
+
+		cronjobLabels := make(map[string]string)
+		for k, v := range labels {
+			cronjobLabels[k] = v
+		}
+		cronjobLabels["kubernetes.getvesta.sh/cronjob"] = cj.Name
+		for k, v := range projectLabels {
+			cronjobLabels[k] = v
+		}
+		if app.Spec.CustomConfig != nil {
+			for k, v := range app.Spec.CustomConfig.Labels {
+				cronjobLabels[k] = v
+			}
+		}
+
+		cronjobAnnotations := make(map[string]string)
+		for k, v := range projectAnnotations {
+			cronjobAnnotations[k] = v
+		}
+		if app.Spec.CustomConfig != nil {
+			for k, v := range app.Spec.CustomConfig.Annotations {
+				cronjobAnnotations[k] = v
+			}
+		}
+
+		successLimit := int32(3)
+		failedLimit := int32(1)
+
+		err := retry.OnError(retry.DefaultRetry, isRetriable, func() error {
+			cronJob := &batchv1.CronJob{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      cronjobName,
+					Namespace: target.Namespace,
+				},
+			}
+
+			_, createErr := controllerutil.CreateOrUpdate(ctx, r.Client, cronJob, func() error {
+				cronJob.Labels = cronjobLabels
+				cronJob.Annotations = cronjobAnnotations
+				cronJob.Spec = batchv1.CronJobSpec{
+					Schedule:                   effectiveSchedule,
+					ConcurrencyPolicy:          batchv1.ForbidConcurrent,
+					SuccessfulJobsHistoryLimit: &successLimit,
+					FailedJobsHistoryLimit:     &failedLimit,
+					JobTemplate: batchv1.JobTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: cronjobLabels,
+						},
+						Spec: batchv1.JobSpec{
+							Template: corev1.PodTemplateSpec{
+								ObjectMeta: metav1.ObjectMeta{
+									Labels: cronjobLabels,
+								},
+								Spec: podSpec,
+							},
+						},
+					},
+				}
+				return nil
+			})
+			return createErr
+		})
+		if err != nil {
+			return fmt.Errorf("reconcile cronjob %s in %s: %w", cronjobName, target.Namespace, err)
+		}
+
+		logger.Info("cronjob reconciled", "namespace", target.Namespace, "cronjob", cronjobName)
+	}
+
+	// Clean up orphaned CronJobs: CronJobs that belong to this app but are no longer in spec
+	var existingCronJobs batchv1.CronJobList
+	if err := r.List(ctx, &existingCronJobs, client.InNamespace(target.Namespace), client.MatchingLabels{
+		"kubernetes.getvesta.sh/app": app.Name,
+	}); err != nil {
+		return fmt.Errorf("list cronjobs for cleanup in %s: %w", target.Namespace, err)
+	}
+
+	for i := range existingCronJobs.Items {
+		existing := &existingCronJobs.Items[i]
+		if !desiredCronJobs[existing.Name] {
+			if err := r.Delete(ctx, existing); err != nil && !errors.IsNotFound(err) {
+				return fmt.Errorf("delete orphaned cronjob %s/%s: %w", target.Namespace, existing.Name, err)
+			}
+			logger.Info("deleted orphaned cronjob", "namespace", target.Namespace, "cronjob", existing.Name)
+		}
+	}
+
+	return nil
+}
+
+// isCronjobDisabledForEnv checks if a cronjob has been explicitly disabled for a given environment.
+func (r *VestaAppReconciler) isCronjobDisabledForEnv(cj vestav1alpha1.CronjobConfig, envName string) bool {
+	for _, envOverride := range cj.Environments {
+		if envOverride.Name == envName && envOverride.Enabled != nil && !*envOverride.Enabled {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveCronjobSchedule returns the effective schedule for a cronjob in a given environment.
+// If a per-environment schedule override exists, it takes precedence over the default.
+func (r *VestaAppReconciler) resolveCronjobSchedule(cj vestav1alpha1.CronjobConfig, envName string) string {
+	for _, envOverride := range cj.Environments {
+		if envOverride.Name == envName && envOverride.Schedule != "" {
+			return envOverride.Schedule
+		}
+	}
+	return cj.Schedule
 }
 
 func (r *VestaAppReconciler) updateStatusRunning(ctx context.Context, key client.ObjectKey) error {

@@ -5,6 +5,7 @@ import { api } from '../lib/api'
 export default function DashboardPage() {
   const { data: apps } = useQuery({ queryKey: ['apps'], queryFn: () => api.listApps() })
   const { data: projects } = useQuery({ queryKey: ['projects'], queryFn: () => api.listProjects() })
+  const { data: activity } = useQuery({ queryKey: ['activity'], queryFn: () => api.getActivityFeed({ limit: 20 }), refetchInterval: 30000 })
 
   const runningCount = apps?.items?.filter((a: any) => a.status?.phase === 'Running').length ?? 0
 
@@ -66,6 +67,22 @@ export default function DashboardPage() {
           ))}
         </div>
       </section>
+
+      {/* Activity Feed */}
+      <section>
+        <h3 className="section-title mb-5">Activity Feed</h3>
+        {(!activity?.items || activity.items.length === 0) ? (
+          <div className="card px-5 py-8 text-center">
+            <p className="text-sm text-text-tertiary">No recent activity</p>
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {activity.items.map((entry: any) => (
+              <ActivityEntry key={entry.id} entry={entry} />
+            ))}
+          </div>
+        )}
+      </section>
     </div>
   )
 }
@@ -93,6 +110,64 @@ function StatCard({ label, value, href, accent, delay }: { label: string; value:
     </div>
   )
   return href ? <Link to={href}>{inner}</Link> : inner
+}
+
+const ACTION_STYLES: Record<string, string> = {
+  'app.created': 'text-status-running',
+  'app.updated': 'text-accent',
+  'app.deleted': 'text-status-failed',
+  'app.deployed': 'text-status-running',
+  'app.redeployed': 'text-accent',
+  'app.rolled_back': 'text-status-pending',
+  'app.restarted': 'text-accent',
+  'app.scaled': 'text-accent',
+  'app.cloned': 'text-status-running',
+  'project.created': 'text-status-running',
+  'project.updated': 'text-accent',
+  'project.deleted': 'text-status-failed',
+  'environment.created': 'text-status-running',
+  'environment.deleted': 'text-status-failed',
+  'environment.cloned': 'text-status-running',
+  'secret.created': 'text-accent',
+}
+
+function formatTimeAgo(dateStr: string): string {
+  const diff = Date.now() - new Date(dateStr).getTime()
+  const mins = Math.floor(diff / 60000)
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
+}
+
+function ActivityEntry({ entry }: { entry: any }) {
+  const color = ACTION_STYLES[entry.action] || 'text-text-secondary'
+  const actionLabel = entry.action?.replace('.', ' › ') || 'unknown'
+
+  return (
+    <div className="card-hover flex items-center gap-4 px-5 py-3">
+      <div className={`w-2 h-2 rounded-full ${color} bg-current flex-shrink-0`} />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className={`text-xs font-mono ${color}`}>{actionLabel}</span>
+          {entry.resourceName && (
+            <span className="text-xs text-text-primary font-medium truncate">{entry.resourceName}</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2 mt-0.5">
+          {entry.username && (
+            <span className="text-[11px] text-text-tertiary">by {entry.username}</span>
+          )}
+          {entry.environment && (
+            <span className="text-[11px] font-mono bg-surface-3 text-text-tertiary px-1.5 py-0.5 rounded">{entry.environment}</span>
+          )}
+        </div>
+      </div>
+      <span className="text-[11px] text-text-tertiary whitespace-nowrap">{formatTimeAgo(entry.createdAt)}</span>
+    </div>
+  )
 }
 
 function StatusBadge({ phase }: { phase?: string }) {

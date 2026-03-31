@@ -549,6 +549,13 @@ func (in *CronjobConfig) DeepCopyInto(out *CronjobConfig) {
 		*out = new(ResourceConfig)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.Environments != nil {
+		in, out := &in.Environments, &out.Environments
+		*out = make([]CronjobEnvironmentOverride, len(*in))
+		for i := range *in {
+			(*in)[i].DeepCopyInto(&(*out)[i])
+		}
+	}
 }
 
 func (in *CronjobConfig) DeepCopy() *CronjobConfig {
@@ -556,6 +563,26 @@ func (in *CronjobConfig) DeepCopy() *CronjobConfig {
 		return nil
 	}
 	out := new(CronjobConfig)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// --- CronjobEnvironmentOverride ---
+
+func (in *CronjobEnvironmentOverride) DeepCopyInto(out *CronjobEnvironmentOverride) {
+	*out = *in
+	if in.Enabled != nil {
+		in, out := &in.Enabled, &out.Enabled
+		*out = new(bool)
+		**out = **in
+	}
+}
+
+func (in *CronjobEnvironmentOverride) DeepCopy() *CronjobEnvironmentOverride {
+	if in == nil {
+		return nil
+	}
+	out := new(CronjobEnvironmentOverride)
 	in.DeepCopyInto(out)
 	return out
 }

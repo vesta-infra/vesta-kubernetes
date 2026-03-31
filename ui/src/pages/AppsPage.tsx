@@ -267,6 +267,7 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
   const [pullPolicy, setPullPolicy] = useState('IfNotPresent')
   const [port, setPort] = useState('3000')
   const [pullSecrets, setPullSecrets] = useState<string[]>([])
+  const [cronjobs, setCronjobs] = useState<{ name: string; schedule: string; command: string; size: string; environments: { name: string; enabled: boolean; schedule: string }[] }[]>([])
 
   const { data: registrySecrets } = useQuery({
     queryKey: ['registrySecrets'],
@@ -314,6 +315,21 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
         ...(pullSecrets.length > 0 && { imagePullSecrets: pullSecrets.map(n => ({ name: n })) }),
       },
       runtime: { port: Number.parseInt(port) || 3000 },
+      ...(cronjobs.filter(cj => cj.name && cj.schedule && cj.command).length > 0 && {
+        cronjobs: cronjobs.filter(cj => cj.name && cj.schedule && cj.command).map(cj => ({
+          name: cj.name,
+          schedule: cj.schedule,
+          command: cj.command,
+          ...(cj.size && { resources: { size: cj.size } }),
+          ...(cj.environments.filter(e => e.name).length > 0 && {
+            environments: cj.environments.filter(e => e.name).map(e => ({
+              name: e.name,
+              ...((!e.enabled) && { enabled: false }),
+              ...(e.schedule && { schedule: e.schedule }),
+            })),
+          }),
+        })),
+      }),
     })
   }
 
@@ -401,6 +417,107 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
             {registrySecrets?.items?.filter((s: any) => !pullSecrets.includes(s.name)).map((s: any) => (<option key={s.name} value={s.name}>{s.name}</option>))}
           </select>
         )}
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <label className="label">Cron Jobs</label>
+          <button type="button" onClick={() => setCronjobs(prev => [...prev, { name: '', schedule: '', command: '', size: '', environments: [] }])} className="text-xs text-accent hover:text-accent-glow">+ Add</button>
+        </div>
+        {cronjobs.map((cj, i) => (
+          <div key={i} className="rounded-lg border border-border bg-surface-1 p-3 mb-2">
+            <div className="flex gap-2 mb-2">
+              <div className="flex-1">
+                <label className="text-xs text-text-tertiary">Name</label>
+                <input value={cj.name} onChange={e => { const u = [...cronjobs]; u[i].name = e.target.value; setCronjobs(u) }} placeholder="cleanup" className="input-field font-mono text-xs mt-1" />
+              </div>
+              <div className="flex-1">
+                <label className="text-xs text-text-tertiary">Schedule (cron)</label>
+                <input value={cj.schedule} onChange={e => { const u = [...cronjobs]; u[i].schedule = e.target.value; setCronjobs(u) }} placeholder="0 2 * * *" className="input-field font-mono text-xs mt-1" />
+              </div>
+              <div className="w-24">
+                <label className="text-xs text-text-tertiary">Size</label>
+                <select value={cj.size} onChange={e => { const u = [...cronjobs]; u[i].size = e.target.value; setCronjobs(u) }} className="input-field text-xs mt-1">
+                  <option value="">Default</option>
+                  {podSizes?.items?.map((s: any) => (
+                    <option key={s.name} value={s.name}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-end pb-1">
+                <button type="button" onClick={() => setCronjobs(prev => prev.filter((_, j) => j !== i))} className="text-text-tertiary hover:text-status-failed text-xs px-2">&times;</button>
+              </div>
+            </div>
+            <div className="mb-2">
+              <label className="text-xs text-text-tertiary">Command</label>
+              <input value={cj.command} onChange={e => { const u = [...cronjobs]; u[i].command = e.target.value; setCronjobs(u) }} placeholder="npm run cleanup" className="input-field font-mono text-xs mt-1" />
+            </div>
+            {environments.length > 0 && (
+              <div className="mt-2 pt-2 border-t border-border-subtle">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[11px] text-text-tertiary font-mono uppercase tracking-wider">Per-Environment Overrides</span>
+                  {environments.filter((env: any) => !cj.environments.some(e => e.name === env.name)).length > 0 && (
+                    <select
+                      value=""
+                      onChange={e => {
+                        if (!e.target.value) return
+                        const u = [...cronjobs]
+                        u[i].environments = [...u[i].environments, { name: e.target.value, enabled: true, schedule: '' }]
+                        setCronjobs(u)
+                      }}
+                      className="input-field text-xs w-auto"
+                    >
+                      <option value="">+ Add override</option>
+                      {environments.filter((env: any) => !cj.environments.some(e => e.name === env.name)).map((env: any) => (
+                        <option key={env.name} value={env.name}>{env.name}</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+                {cj.environments.map((envOvr, ei) => (
+                  <div key={envOvr.name} className="flex items-center gap-3 mb-1.5 pl-2">
+                    <span className="text-xs font-mono text-accent w-24">{envOvr.name}</span>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={envOvr.enabled}
+                        onChange={e => {
+                          const u = [...cronjobs]
+                          u[i].environments[ei].enabled = e.target.checked
+                          setCronjobs(u)
+                        }}
+                        className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                      />
+                      <span className="text-[11px] text-text-tertiary">Enabled</span>
+                    </label>
+                    <div className="flex-1">
+                      <input
+                        value={envOvr.schedule}
+                        onChange={e => {
+                          const u = [...cronjobs]
+                          u[i].environments[ei].schedule = e.target.value
+                          setCronjobs(u)
+                        }}
+                        placeholder={`Override schedule (default: ${cj.schedule || '...'})`}
+                        className="input-field font-mono text-xs w-full"
+                        disabled={!envOvr.enabled}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const u = [...cronjobs]
+                        u[i].environments = u[i].environments.filter((_, j) => j !== ei)
+                        setCronjobs(u)
+                      }}
+                      className="text-text-tertiary hover:text-status-failed text-xs px-1"
+                    >&times;</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
       </div>
 
       <div className="flex gap-3 pt-1">

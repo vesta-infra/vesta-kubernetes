@@ -145,6 +145,13 @@ func (h *Handler) CreateApp(c *gin.Context) {
 	if req.Ingress != nil {
 		spec["ingress"] = req.Ingress
 	}
+	if req.Cronjobs != nil {
+		cronjobs := make([]interface{}, len(req.Cronjobs))
+		for i, cj := range req.Cronjobs {
+			cronjobs[i] = cj
+		}
+		spec["cronjobs"] = cronjobs
+	}
 	if req.Addons != nil {
 		addons := make([]interface{}, len(req.Addons))
 		for i, a := range req.Addons {
@@ -189,6 +196,8 @@ func (h *Handler) CreateApp(c *gin.Context) {
 		TriggeredBy: c.GetString("userId"),
 		Message:     fmt.Sprintf("App %s created in project %s", result.GetName(), projectID),
 	})
+
+	h.auditLog(c, "create_app", "app", result.GetName(), result.GetName(), projectID, "", nil)
 }
 
 func (h *Handler) ListApps(c *gin.Context) {
@@ -306,6 +315,8 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"id": result.GetName(), "name": result.GetName()})
+
+	h.auditLog(c, "update_app", "app", appID, appID, "", "", nil)
 }
 
 func (h *Handler) DeleteApp(c *gin.Context) {
@@ -333,7 +344,71 @@ func (h *Handler) DeleteApp(c *gin.Context) {
 		})
 	}
 
+	h.auditLog(c, "delete_app", "app", appID, appID, projectID, "", nil)
+
 	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) CloneApp(c *gin.Context) {
+	appID := c.Param("appId")
+
+	var req struct {
+		Name    string `json:"name" binding:"required"`
+		Project string `json:"project,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
+	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
+		return
+	}
+
+	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+	project := getNestedString(spec, "project")
+	if req.Project != "" {
+		project = req.Project
+	}
+
+	// Deep copy spec for the new app
+	newSpec := make(map[string]interface{})
+	for k, v := range spec {
+		newSpec[k] = v
+	}
+	newSpec["project"] = project
+
+	obj := map[string]interface{}{
+		"apiVersion": "kubernetes.getvesta.sh/v1alpha1",
+		"kind":       "VestaApp",
+		"metadata": map[string]interface{}{
+			"name":      req.Name,
+			"namespace": vestaSystemNS,
+			"labels": map[string]interface{}{
+				"kubernetes.getvesta.sh/project": project,
+			},
+		},
+		"spec": newSpec,
+	}
+
+	result, err := h.K8s.CreateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, obj)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"id":        result.GetName(),
+		"name":      result.GetName(),
+		"project":   project,
+		"clonedFrom": appID,
+		"createdAt": result.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
+	})
+
+	h.auditLog(c, "clone_app", "app", result.GetName(), result.GetName(), project, "",
+		map[string]interface{}{"clonedFrom": appID})
 }
 
 func getNestedString(m map[string]interface{}, key string) string {

@@ -1,16 +1,29 @@
 package handlers
 
 import (
+	"bufio"
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
 )
+
+var wsUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+}
 
 func (h *Handler) StreamLogs(c *gin.Context) {
 	appId := c.Param("appId")
@@ -462,13 +475,25 @@ func (h *Handler) GetPrometheusMetrics(c *gin.Context) {
 	case "restarts":
 		query = fmt.Sprintf(`sum(increase(kube_pod_container_status_restarts_total{namespace="%s",pod=~"%s-.*"}[1h])) by (pod)`, targetNS, appId)
 	case "http_rate":
-		query = fmt.Sprintf(`sum(rate(nginx_ingress_controller_requests{namespace="%s",service="%s"}[5m]))`, targetNS, appId)
+		trafikSvc := fmt.Sprintf(`%s-%s-.*@kubernetes`, targetNS, appId)
+		traefik := fmt.Sprintf(`sum(rate(traefik_service_requests_total{exported_service=~"%s"}[5m])) or sum(rate(traefik_service_requests_total{service=~"%s"}[5m]))`, trafikSvc, trafikSvc)
+		nginx := fmt.Sprintf(`sum(rate(nginx_ingress_controller_requests{exported_namespace="%s",ingress="%s"}[5m])) or sum(rate(nginx_ingress_controller_requests{namespace="%s",ingress="%s"}[5m]))`, targetNS, appId, targetNS, appId)
+		query = fmt.Sprintf(`%s or %s`, traefik, nginx)
 	case "http_errors":
-		query = fmt.Sprintf(`sum(rate(nginx_ingress_controller_requests{namespace="%s",service="%s",status=~"[45].."}[5m])) / sum(rate(nginx_ingress_controller_requests{namespace="%s",service="%s"}[5m])) * 100`, targetNS, appId, targetNS, appId)
+		trafikSvc := fmt.Sprintf(`%s-%s-.*@kubernetes`, targetNS, appId)
+		traefik := fmt.Sprintf(`(sum(rate(traefik_service_requests_total{exported_service=~"%s",code=~"[45].."}[5m])) or sum(rate(traefik_service_requests_total{service=~"%s",code=~"[45].."}[5m]))) / (sum(rate(traefik_service_requests_total{exported_service=~"%s"}[5m])) or sum(rate(traefik_service_requests_total{service=~"%s"}[5m]))) * 100`, trafikSvc, trafikSvc, trafikSvc, trafikSvc)
+		nginx := fmt.Sprintf(`(sum(rate(nginx_ingress_controller_requests{exported_namespace="%s",ingress="%s",status=~"[45].."}[5m])) or sum(rate(nginx_ingress_controller_requests{namespace="%s",ingress="%s",status=~"[45].."}[5m]))) / (sum(rate(nginx_ingress_controller_requests{exported_namespace="%s",ingress="%s"}[5m])) or sum(rate(nginx_ingress_controller_requests{namespace="%s",ingress="%s"}[5m]))) * 100`, targetNS, appId, targetNS, appId, targetNS, appId, targetNS, appId)
+		query = fmt.Sprintf(`%s or %s`, traefik, nginx)
 	case "http_latency_p95":
-		query = fmt.Sprintf(`histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",service="%s"}[5m])) by (le))`, targetNS, appId)
+		trafikSvc := fmt.Sprintf(`%s-%s-.*@kubernetes`, targetNS, appId)
+		traefik := fmt.Sprintf(`histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket{exported_service=~"%s"}[5m])) by (le)) or histogram_quantile(0.95, sum(rate(traefik_service_request_duration_seconds_bucket{service=~"%s"}[5m])) by (le))`, trafikSvc, trafikSvc)
+		nginx := fmt.Sprintf(`histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{exported_namespace="%s",ingress="%s"}[5m])) by (le)) or histogram_quantile(0.95, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",ingress="%s"}[5m])) by (le))`, targetNS, appId, targetNS, appId)
+		query = fmt.Sprintf(`%s or %s`, traefik, nginx)
 	case "http_latency_p99":
-		query = fmt.Sprintf(`histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",service="%s"}[5m])) by (le))`, targetNS, appId)
+		trafikSvc := fmt.Sprintf(`%s-%s-.*@kubernetes`, targetNS, appId)
+		traefik := fmt.Sprintf(`histogram_quantile(0.99, sum(rate(traefik_service_request_duration_seconds_bucket{exported_service=~"%s"}[5m])) by (le)) or histogram_quantile(0.99, sum(rate(traefik_service_request_duration_seconds_bucket{service=~"%s"}[5m])) by (le))`, trafikSvc, trafikSvc)
+		nginx := fmt.Sprintf(`histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{exported_namespace="%s",ingress="%s"}[5m])) by (le)) or histogram_quantile(0.99, sum(rate(nginx_ingress_controller_request_duration_seconds_bucket{namespace="%s",ingress="%s"}[5m])) by (le))`, targetNS, appId, targetNS, appId)
+		query = fmt.Sprintf(`%s or %s`, traefik, nginx)
 	default:
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Code:    400,
@@ -510,13 +535,121 @@ func (h *Handler) GetPrometheusStatus(c *gin.Context) {
 
 	available := prometheusURL != ""
 	metrics := []string{}
+	httpAvailable := false
 	if available {
-		metrics = []string{"cpu", "memory", "network_rx", "network_tx", "restarts", "http_rate", "http_errors", "http_latency_p95", "http_latency_p99"}
+		metrics = []string{"cpu", "memory", "network_rx", "network_tx", "restarts"}
+		// Probe Prometheus to check if ingress metrics exist (Traefik or nginx)
+		if h.K8s.QueryPrometheusHasData(c.Request.Context(), prometheusURL, `count(nginx_ingress_controller_requests)`) || h.K8s.QueryPrometheusHasData(c.Request.Context(), prometheusURL, `count(traefik_service_requests_total)`) {
+			metrics = append(metrics, "http_rate", "http_errors", "http_latency_p95", "http_latency_p99")
+			httpAvailable = true
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"available":      available,
-		"prometheusUrl":  prometheusURL,
+		"available":        available,
+		"prometheusUrl":    prometheusURL,
 		"availableMetrics": metrics,
+		"httpAvailable":    httpAvailable,
 	})
+}
+
+// StreamLogsWS upgrades to WebSocket and streams live pod logs.
+func (h *Handler) StreamLogsWS(c *gin.Context) {
+	appId := c.Param("appId")
+	env := c.Query("environment")
+	if env == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "environment query param is required"})
+		return
+	}
+
+	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
+		return
+	}
+	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+	project := getNestedString(spec, "project")
+	targetNS := fmt.Sprintf("%s-%s", project, env)
+
+	tailLines := int64(100)
+	if tl := c.Query("tail"); tl != "" {
+		if n, err := strconv.ParseInt(tl, 10, 64); err == nil && n > 0 {
+			tailLines = n
+		}
+	}
+	container := c.Query("container")
+
+	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	// List pods for the app
+	labelSelector := fmt.Sprintf("kubernetes.getvesta.sh/app=%s", appId)
+	pods, err := h.K8s.ListPods(c.Request.Context(), targetNS, labelSelector)
+	if err != nil {
+		msg, _ := json.Marshal(map[string]string{"type": "error", "message": fmt.Sprintf("failed to list pods: %v", err)})
+		conn.WriteMessage(websocket.TextMessage, msg)
+		return
+	}
+
+	if len(pods) == 0 {
+		msg, _ := json.Marshal(map[string]string{"type": "error", "message": "no pods found"})
+		conn.WriteMessage(websocket.TextMessage, msg)
+		return
+	}
+
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
+
+	// Read pump: detect client disconnect
+	go func() {
+		defer cancel()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	var writeMu sync.Mutex
+
+	for _, pod := range pods {
+		targetContainer := container
+		if targetContainer == "" && len(pod.Spec.Containers) > 0 {
+			targetContainer = pod.Spec.Containers[0].Name
+		}
+
+		stream, err := h.K8s.StreamPodLogs(ctx, targetNS, pod.Name, targetContainer, tailLines)
+		if err != nil {
+			continue
+		}
+
+		wg.Add(1)
+		podName := pod.Name
+		go func() {
+			defer wg.Done()
+			defer stream.Close()
+			scanner := bufio.NewScanner(stream)
+			scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+			for scanner.Scan() {
+				line := scanner.Text()
+				msg, _ := json.Marshal(map[string]string{
+					"type": "log",
+					"pod":  podName,
+					"line": line,
+				})
+				writeMu.Lock()
+				err := conn.WriteMessage(websocket.TextMessage, msg)
+				writeMu.Unlock()
+				if err != nil {
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
 }

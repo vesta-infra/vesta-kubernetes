@@ -121,4 +121,45 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
 );
 
 CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens(token_hash);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_id TEXT NOT NULL DEFAULT '',
+    resource_name TEXT NOT NULL DEFAULT '',
+    project_id TEXT NOT NULL DEFAULT '',
+    environment TEXT NOT NULL DEFAULT '',
+    metadata JSONB NOT NULL DEFAULT '{}',
+    ip_address TEXT NOT NULL DEFAULT '',
+    auth_method TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_log_project ON audit_log(project_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_user ON audit_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_resource ON audit_log(resource_type, resource_id);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider TEXT NOT NULL,
+    event_type TEXT NOT NULL DEFAULT '',
+    delivery_id TEXT NOT NULL DEFAULT '',
+    repository TEXT NOT NULL DEFAULT '',
+    branch TEXT NOT NULL DEFAULT '',
+    commit_sha TEXT NOT NULL DEFAULT '',
+    payload JSONB NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'received',
+    processing_result TEXT NOT NULL DEFAULT '',
+    apps_triggered TEXT[] NOT NULL DEFAULT '{}',
+    duration_ms INT NOT NULL DEFAULT 0,
+    ip_address TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_created ON webhook_deliveries(created_at);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_provider ON webhook_deliveries(provider);
 `

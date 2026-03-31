@@ -61,6 +61,8 @@ func (h *Handler) CreateProject(c *gin.Context) {
 		"spec":      spec,
 		"createdAt": result.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
 	})
+
+	h.auditLog(c, "create_project", "project", result.GetName(), result.GetName(), result.GetName(), "", nil)
 }
 
 func (h *Handler) ListProjects(c *gin.Context) {
@@ -150,6 +152,8 @@ func (h *Handler) UpdateProject(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"id": result.GetName(), "name": result.GetName()})
+
+	h.auditLog(c, "update_project", "project", projectID, projectID, projectID, "", nil)
 }
 
 func (h *Handler) DeleteProject(c *gin.Context) {
@@ -159,5 +163,8 @@ func (h *Handler) DeleteProject(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
 	}
+
+	h.auditLog(c, "delete_project", "project", projectID, projectID, projectID, "", nil)
+
 	c.Status(http.StatusNoContent)
 }
