@@ -682,11 +682,11 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
                           <select
                             value={config.podSize || ''}
                             onChange={(e) => setEnvConfigs(prev => ({ ...prev, [env.name]: { ...prev[env.name], podSize: e.target.value } }))}
-                            className="input-field w-28 mt-1"
+                            className="input-field w-64 mt-1"
                           >
                             <option value="">Default</option>
                             {podSizes?.items?.map((s: any) => (
-                              <option key={s.name} value={s.name}>{s.name}</option>
+                              <option key={s.name} value={s.name}>{s.name} ({s.cpu}/{s.memory} → {s.cpuLimit}/{s.memoryLimit})</option>
                             ))}
                           </select>
                         </div>

@@ -87,9 +87,9 @@ To pin specific image versions:
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
   --set api.database.existingSecret=vesta-db-secret \
-  --set operator.image.tag=0.3.2 \
-  --set api.image.tag=0.3.2 \
-  --set ui.image.tag=0.3.2 
+  --set operator.image.tag=0.3.3 \
+  --set api.image.tag=0.3.3 \
+  --set ui.image.tag=0.3.3 
 ```
 
 ```bash

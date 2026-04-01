@@ -1141,11 +1141,11 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                     <select
                       value={cfg.podSize}
                       onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], podSize: e.target.value } }))}
-                      className="input-field w-28 mt-1"
+                      className="input-field w-64 mt-1"
                     >
                       <option value="">Default</option>
                       {podSizes?.items?.map((s: any) => (
-                        <option key={s.name} value={s.name}>{s.name}</option>
+                        <option key={s.name} value={s.name}>{s.name} ({s.cpu}/{s.memory} → {s.cpuLimit}/{s.memoryLimit})</option>
                       ))}
                     </select>
                   </div>
@@ -1355,12 +1355,12 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                 <label className="text-xs text-text-tertiary">Schedule (cron)</label>
                 <input value={cj.schedule} onChange={e => { const u = [...cronjobs]; u[i].schedule = e.target.value; setCronjobs(u) }} placeholder="0 2 * * *" className="input-field font-mono text-xs mt-1" />
               </div>
-              <div className="w-24">
+              <div className="w-64">
                 <label className="text-xs text-text-tertiary">Size</label>
                 <select value={cj.size} onChange={e => { const u = [...cronjobs]; u[i].size = e.target.value; setCronjobs(u) }} className="input-field text-xs mt-1">
                   <option value="">Default</option>
                   {podSizes?.items?.map((s: any) => (
-                    <option key={s.name} value={s.name}>{s.name}</option>
+                    <option key={s.name} value={s.name}>{s.name} ({s.cpu}/{s.memory} → {s.cpuLimit}/{s.memoryLimit})</option>
                   ))}
                 </select>
               </div>

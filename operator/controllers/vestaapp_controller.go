@@ -2,6 +2,8 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -463,9 +465,17 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 			deploy.Spec.Selector = &metav1.LabelSelector{
 				MatchLabels: labels,
 			}
+
+			// Compute a hash of the pod spec so that any change (e.g. pod size,
+			// env vars, image) forces Kubernetes to trigger a rolling update.
+			specHash := computePodSpecHash(podSpec)
+
 			deploy.Spec.Template = corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
+					Annotations: map[string]string{
+						"kubernetes.getvesta.sh/spec-hash": specHash,
+					},
 				},
 				Spec: podSpec,
 			}
@@ -1278,4 +1288,13 @@ func (r *VestaAppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&vestav1alpha1.VestaApp{}).
 		Complete(r)
+}
+
+// computePodSpecHash returns a short SHA-256 hex digest of the serialised PodSpec.
+// This is used as a PodTemplate annotation so that any spec change (resources,
+// env vars, image, volumes, etc.) forces a Deployment rollout.
+func computePodSpecHash(spec corev1.PodSpec) string {
+	data, _ := json.Marshal(spec)
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum[:8])
 }
