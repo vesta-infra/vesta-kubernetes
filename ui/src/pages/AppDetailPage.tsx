@@ -748,6 +748,19 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   })
   const branches: string[] = branchesData?.branches || []
 
+  const { data: accessibleRepos } = useQuery({
+    queryKey: ['accessibleRepos'],
+    queryFn: () => api.listAccessibleRepos(),
+    staleTime: 60_000,
+  })
+  const repos = accessibleRepos?.repos || []
+
+  const { data: ghStatus } = useQuery({
+    queryKey: ['github-app-status'],
+    queryFn: () => api.getGitHubAppStatus(),
+    staleTime: 60_000,
+  })
+
   // Build config
   const [buildStrategy, setBuildStrategy] = useState(app.spec?.build?.strategy || '')
   const [buildDockerfile, setBuildDockerfile] = useState(app.spec?.build?.dockerfile || 'Dockerfile')
@@ -1262,10 +1275,46 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
               </div>
               <div className="col-span-2">
                 <label className="text-xs text-text-tertiary mb-1 block">Repository</label>
-                <input value={gitRepo} onChange={e => setGitRepo(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="org/repo-name" />
+                {repos.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <select
+                      value={gitRepo}
+                      onChange={e => { setGitRepo(e.target.value); setGitBranch('') }}
+                      className="input-field font-mono text-xs w-full"
+                    >
+                      <option value="">Select repository</option>
+                      {repos.map(r => (
+                        <option key={r.full_name} value={r.full_name}>
+                          {r.full_name}{r.private ? ' 🔒' : ''}
+                        </option>
+                      ))}
+                      {gitRepo && !repos.find(r => r.full_name === gitRepo) && (
+                        <option value={gitRepo}>{gitRepo}</option>
+                      )}
+                    </select>
+                    {ghStatus?.configured && ghStatus.appSlug && (
+                      <a
+                        href={ghStatus.ownerType === 'Organization'
+                          ? `https://github.com/organizations/${ghStatus.ownerLogin}/settings/installations`
+                          : `https://github.com/settings/installations`
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[10px] text-accent hover:underline"
+                      >
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                        </svg>
+                        Add more repositories
+                      </a>
+                    )}
+                  </div>
+                ) : (
+                  <input value={gitRepo} onChange={e => setGitRepo(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="org/repo-name" />
+                )}
               </div>
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className={`grid ${ghStatus?.configured ? 'grid-cols-2' : 'grid-cols-3'} gap-3`}>
               <div>
                 <label className="text-xs text-text-tertiary mb-1 block">Branch</label>
                 {branches.length > 0 ? (
@@ -1279,11 +1328,13 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                   <input value={gitBranch} onChange={e => setGitBranch(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="main" />
                 )}
               </div>
-              <div>
-                <label className="text-xs text-text-tertiary mb-1 block">Token Secret</label>
-                <input value={gitTokenSecret} onChange={e => setGitTokenSecret(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="github-token" />
-                <p className="text-[10px] text-text-tertiary mt-0.5">K8s secret name with key &quot;token&quot;</p>
-              </div>
+              {!ghStatus?.configured && (
+                <div>
+                  <label className="text-xs text-text-tertiary mb-1 block">Token Secret</label>
+                  <input value={gitTokenSecret} onChange={e => setGitTokenSecret(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="github-token" />
+                  <p className="text-[10px] text-text-tertiary mt-0.5">K8s secret name with key &quot;token&quot;</p>
+                </div>
+              )}
               <div className="flex items-end pb-1">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input type="checkbox" checked={gitAutoDeploy} onChange={e => setGitAutoDeploy(e.target.checked)} className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20" />

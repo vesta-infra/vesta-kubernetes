@@ -188,6 +188,7 @@ func main() {
 
 		// Git helpers
 		auth.GET("/git/branches", dv, h.ListRepoBranches)
+		auth.GET("/git/repos", dv, h.ListAccessibleRepos)
 	}
 
 	log.Printf("Vesta API server starting on :%s", port)

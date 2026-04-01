@@ -247,3 +247,21 @@ func (h *Handler) ListRepoBranches(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"branches": branches})
 }
+
+// ListAccessibleRepos lists all repositories accessible via the GitHub App.
+// GET /api/v1/git/repos
+func (h *Handler) ListAccessibleRepos(c *gin.Context) {
+	if h.GitHubApp == nil || !h.GitHubApp.IsConfigured() {
+		c.JSON(http.StatusOK, gin.H{"repos": []interface{}{}})
+		return
+	}
+
+	repos, err := h.GitHubApp.ListAccessibleRepos(c.Request.Context())
+	if err != nil {
+		log.Printf("[github-app] list accessible repos: %v", err)
+		c.JSON(http.StatusOK, gin.H{"repos": []interface{}{}})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"repos": repos})
+}

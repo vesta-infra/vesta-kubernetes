@@ -456,4 +456,7 @@ export const api = {
   // Git helpers
   listRepoBranches: (repo: string) =>
     request<{ branches: string[] }>(`/git/branches?repo=${encodeURIComponent(repo)}`),
+
+  listAccessibleRepos: () =>
+    request<{ repos: { full_name: string; private: boolean }[] }>('/git/repos'),
 }

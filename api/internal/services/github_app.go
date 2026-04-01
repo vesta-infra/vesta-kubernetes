@@ -302,6 +302,59 @@ func (s *GitHubAppService) ListInstallations(ctx context.Context) ([]GitHubInsta
 	return installations, nil
 }
 
+// ListAccessibleRepos returns all repositories accessible across all installations.
+func (s *GitHubAppService) ListAccessibleRepos(ctx context.Context) ([]GitHubRepo, error) {
+	installations, err := s.ListInstallations(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var allRepos []GitHubRepo
+	for _, inst := range installations {
+		token, err := s.GetInstallationToken(ctx, inst.ID)
+		if err != nil {
+			log.Printf("[github-app] skip installation %d: %v", inst.ID, err)
+			continue
+		}
+
+		page := 1
+		for {
+			url := fmt.Sprintf("https://api.github.com/installation/repositories?per_page=100&page=%d", page)
+			req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+			if err != nil {
+				break
+			}
+			req.Header.Set("Authorization", "token "+token)
+			req.Header.Set("Accept", "application/vnd.github+json")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				break
+			}
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				break
+			}
+
+			var result struct {
+				Repositories []GitHubRepo `json:"repositories"`
+			}
+			if err := json.Unmarshal(body, &result); err != nil || len(result.Repositories) == 0 {
+				break
+			}
+			allRepos = append(allRepos, result.Repositories...)
+			if len(result.Repositories) < 100 {
+				break
+			}
+			page++
+		}
+	}
+
+	return allRepos, nil
+}
+
 // ListRepoBranches lists branches for a repository using an installation token.
 func (s *GitHubAppService) ListRepoBranches(ctx context.Context, fullRepo string) ([]string, error) {
 	token, err := s.GetTokenForRepo(ctx, fullRepo)
