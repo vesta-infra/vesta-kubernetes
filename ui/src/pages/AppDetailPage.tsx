@@ -27,7 +27,7 @@ export default function AppDetailPage() {
   const [deployEnv, setDeployEnv] = useState('')
   const [secretEnv, setSecretEnv] = useState('')
   const [editing, setEditing] = useState(false)
-  const [activeTab, setActiveTab] = useState<'overview' | 'secrets' | 'logs' | 'terminal' | 'metrics'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'builds' | 'secrets' | 'logs' | 'terminal' | 'metrics'>('overview')
   const [showCloneModal, setShowCloneModal] = useState(false)
   const role = useUserRole()
 
@@ -240,7 +240,7 @@ export default function AppDetailPage() {
       )}
 
       <div className="flex border-b border-border">
-        {(['overview', ...(role !== 'viewer' ? ['secrets' as const, 'logs' as const, 'terminal' as const] : ['logs' as const]), 'metrics'] as const).map((tab) => (
+        {(['overview', 'builds', ...(role !== 'viewer' ? ['secrets' as const, 'logs' as const, 'terminal' as const] : ['logs' as const]), 'metrics'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -464,8 +464,42 @@ export default function AppDetailPage() {
             <section className="card p-5">
               <h3 className="section-title mb-4">Configuration</h3>
               <div className="space-y-3">
+                {app.spec?.git?.repository && (
+                  <>
+                    <div className="flex items-center gap-2 mb-1">
+                      <svg className="w-4 h-4 text-text-tertiary" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                      <span className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary">Git Source</span>
+                    </div>
+                    <ConfigItem label="Repository" value={app.spec.git.repository} mono />
+                    <ConfigItem label="Branch" value={app.spec.git.branch || 'main'} mono />
+                    <ConfigItem label="Auto-deploy" value={app.spec.git.autoDeployOnPush ? 'Enabled' : 'Disabled'} accent={app.spec.git.autoDeployOnPush} />
+                    {app.spec?.build?.strategy && (
+                      <ConfigItem label="Build Strategy" value={app.spec.build.strategy} mono />
+                    )}
+                    {app.status?.lastCommitSHA && (
+                      <ConfigItem label="Last Commit" value={app.status.lastCommitSHA.slice(0, 8)} mono />
+                    )}
+                    <div className="border-t border-border-subtle my-3" />
+                  </>
+                )}
                 <ConfigItem label="Image Repository" value={app.spec?.image?.repository} mono />
-                <ConfigItem label="Port" value={app.spec?.runtime?.port} />
+                {app.spec?.service?.ports?.length > 0 ? (
+                  <>
+                    <ConfigItem label="Service Type" value={app.spec.service.type || 'ClusterIP'} />
+                    <div>
+                      <dt className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1">Ports</dt>
+                      <dd className="flex flex-wrap gap-1.5">
+                        {app.spec.service.ports.map((p: any) => (
+                          <span key={p.name} className="px-2 py-0.5 bg-surface-1 border border-border rounded text-xs font-mono">
+                            {p.name}: {p.port}→{p.targetPort || p.port}{p.nodePort ? ` (node:${p.nodePort})` : ''} {p.protocol !== 'TCP' ? p.protocol : ''}
+                          </span>
+                        ))}
+                      </dd>
+                    </div>
+                  </>
+                ) : (
+                  <ConfigItem label="Port" value={app.spec?.runtime?.port} />
+                )}
                 <ConfigItem label="Replicas" value={app.spec?.scaling?.replicas || app.status?.scaling?.currentReplicas || 1} />
                 <ConfigItem
                   label="Autoscale"
@@ -581,6 +615,10 @@ export default function AppDetailPage() {
           )}
         </div>
       )}
+
+      {activeTab === 'builds' && (
+        <AppBuilds appId={appId!} environments={appEnvironments} />
+      )}
     </div>
   )
 }
@@ -593,6 +631,23 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const [port, setPort] = useState(String(app.spec?.runtime?.port || 3000))
   const [domain, setDomain] = useState(app.spec?.ingress?.domain || '')
   const [tls, setTls] = useState(app.spec?.ingress?.tls || false)
+
+  // Service config (multi-port + service type)
+  const [serviceType, setServiceType] = useState<string>(app.spec?.service?.type || 'ClusterIP')
+  const [servicePorts, setServicePorts] = useState<{ name: string; port: string; targetPort: string; protocol: string; nodePort: string }[]>(() => {
+    const ports = app.spec?.service?.ports
+    if (ports && ports.length > 0) {
+      return ports.map((p: any) => ({
+        name: p.name || '',
+        port: String(p.port || ''),
+        targetPort: String(p.targetPort || ''),
+        protocol: p.protocol || 'TCP',
+        nodePort: String(p.nodePort || ''),
+      }))
+    }
+    return []
+  })
+  const useServiceConfig = servicePorts.length > 0
 
   // Health check config
   const [hcEnabled, setHcEnabled] = useState(!!app.spec?.healthCheck)
@@ -665,6 +720,26 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     }))
   })
 
+  // Volumes (PVC mounts)
+  const [volumes, setVolumes] = useState<{ name: string; mountPath: string; claimName: string }[]>(() => {
+    return (app.spec?.runtime?.volumes || []).map((v: any) => ({
+      name: v.name || '',
+      mountPath: v.mountPath || '',
+      claimName: v.persistentVolumeClaim?.claimName || '',
+    }))
+  })
+
+  // Git source
+  const [gitProvider, setGitProvider] = useState(app.spec?.git?.provider || 'github')
+  const [gitRepo, setGitRepo] = useState(app.spec?.git?.repository || '')
+  const [gitBranch, setGitBranch] = useState(app.spec?.git?.branch || '')
+  const [gitAutoDeploy, setGitAutoDeploy] = useState(app.spec?.git?.autoDeployOnPush || false)
+  const [gitTokenSecret, setGitTokenSecret] = useState(app.spec?.git?.tokenSecret || '')
+
+  // Build config
+  const [buildStrategy, setBuildStrategy] = useState(app.spec?.build?.strategy || '')
+  const [buildDockerfile, setBuildDockerfile] = useState(app.spec?.build?.dockerfile || 'Dockerfile')
+
   // Sleep / Scale-to-Zero
   const [sleepEnabled, setSleepEnabled] = useState(app.spec?.sleep?.enabled || false)
   const [sleepTimeout, setSleepTimeout] = useState(app.spec?.sleep?.inactivityTimeout || '30m')
@@ -691,8 +766,30 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       }
     }
 
-    // Runtime
-    patch.runtime = { port: Number.parseInt(port) || 3000 }
+    // Volumes
+    const validVolumes = volumes.filter(v => v.name && v.mountPath && v.claimName).map(v => ({
+      name: v.name,
+      mountPath: v.mountPath,
+      persistentVolumeClaim: { claimName: v.claimName },
+    }))
+
+    // Runtime & Service
+    if (useServiceConfig) {
+      patch.runtime = { port: 0, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
+      patch.service = {
+        type: serviceType,
+        ports: servicePorts.filter(p => p.name && p.port).map(p => ({
+          name: p.name,
+          port: parseInt(p.port),
+          ...(p.targetPort && { targetPort: parseInt(p.targetPort) }),
+          protocol: p.protocol || 'TCP',
+          ...(serviceType === 'NodePort' && p.nodePort && { nodePort: parseInt(p.nodePort) }),
+        })),
+      }
+    } else {
+      patch.runtime = { port: Number.parseInt(port) || 3000, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
+      patch.service = null
+    }
 
     // Ingress
     if (domain) {
@@ -763,6 +860,29 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       }),
     }))
 
+    // Git source
+    if (gitRepo) {
+      patch.git = {
+        provider: gitProvider,
+        repository: gitRepo,
+        branch: gitBranch || 'main',
+        autoDeployOnPush: gitAutoDeploy,
+        ...(gitTokenSecret && { tokenSecret: gitTokenSecret }),
+      }
+    } else {
+      patch.git = null
+    }
+
+    // Build config
+    if (buildStrategy && buildStrategy !== 'image') {
+      patch.build = {
+        strategy: buildStrategy,
+        ...(buildStrategy === 'dockerfile' && buildDockerfile !== 'Dockerfile' && { dockerfile: buildDockerfile }),
+      }
+    } else if (buildStrategy === 'image' || !buildStrategy) {
+      patch.build = null
+    }
+
     // Sleep / Scale-to-Zero
     if (sleepEnabled) {
       patch.sleep = { enabled: true, inactivityTimeout: sleepTimeout }
@@ -796,21 +916,106 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
-        <div>
-          <label className="label">Port</label>
-          <input type="number" value={port} onChange={e => setPort(e.target.value)} className="input-field" />
-        </div>
-        <div>
-          <label className="label">Domain</label>
-          <input value={domain} onChange={e => setDomain(e.target.value)} className="input-field" placeholder="app.example.com" />
-        </div>
-        <div className="flex items-end pb-1">
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="label mb-0">Networking</label>
           <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={tls} onChange={e => setTls(e.target.checked)} className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20" />
-            <span className="text-xs text-text-secondary">TLS</span>
+            <input
+              type="checkbox"
+              checked={useServiceConfig}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  setServicePorts([{ name: 'http', port: port || '80', targetPort: port || '3000', protocol: 'TCP', nodePort: '' }])
+                } else {
+                  setServicePorts([])
+                }
+              }}
+              className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+            />
+            <span className="text-xs text-text-secondary">Multi-port / Service config</span>
           </label>
         </div>
+
+        {!useServiceConfig ? (
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="label">Port</label>
+              <input type="number" value={port} onChange={e => setPort(e.target.value)} className="input-field" />
+            </div>
+            <div>
+              <label className="label">Domain</label>
+              <input value={domain} onChange={e => setDomain(e.target.value)} className="input-field" placeholder="app.example.com" />
+            </div>
+            <div className="flex items-end pb-1">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={tls} onChange={e => setTls(e.target.checked)} className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20" />
+                <span className="text-xs text-text-secondary">TLS</span>
+              </label>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="label">Service Type</label>
+                <select value={serviceType} onChange={e => setServiceType(e.target.value)} className="input-field">
+                  <option value="ClusterIP">ClusterIP</option>
+                  <option value="NodePort">NodePort</option>
+                  <option value="LoadBalancer">LoadBalancer</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">Domain</label>
+                <input value={domain} onChange={e => setDomain(e.target.value)} className="input-field" placeholder="app.example.com" />
+              </div>
+              <div className="flex items-end pb-1">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={tls} onChange={e => setTls(e.target.checked)} className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20" />
+                  <span className="text-xs text-text-secondary">TLS</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="border border-border rounded-lg overflow-hidden">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-surface-1 text-text-tertiary">
+                    <th className="text-left px-3 py-2 font-medium">Name</th>
+                    <th className="text-left px-3 py-2 font-medium">Port</th>
+                    <th className="text-left px-3 py-2 font-medium">Target Port</th>
+                    <th className="text-left px-3 py-2 font-medium">Protocol</th>
+                    {serviceType === 'NodePort' && <th className="text-left px-3 py-2 font-medium">Node Port</th>}
+                    <th className="w-10"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {servicePorts.map((sp, i) => (
+                    <tr key={i} className="border-t border-border">
+                      <td className="px-2 py-1"><input value={sp.name} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, name: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="http" /></td>
+                      <td className="px-2 py-1"><input type="number" value={sp.port} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, port: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="80" /></td>
+                      <td className="px-2 py-1"><input type="number" value={sp.targetPort} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, targetPort: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="3000" /></td>
+                      <td className="px-2 py-1">
+                        <select value={sp.protocol} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, protocol: e.target.value }; setServicePorts(u) }} className="input-field text-xs">
+                          <option value="TCP">TCP</option>
+                          <option value="UDP">UDP</option>
+                        </select>
+                      </td>
+                      {serviceType === 'NodePort' && (
+                        <td className="px-2 py-1"><input type="number" value={sp.nodePort} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, nodePort: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="30000-32767" /></td>
+                      )}
+                      <td className="px-2 py-1">
+                        {servicePorts.length > 1 && (
+                          <button type="button" onClick={() => setServicePorts(servicePorts.filter((_, j) => j !== i))} className="text-text-tertiary hover:text-status-failed transition-colors">×</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <button type="button" onClick={() => setServicePorts([...servicePorts, { name: '', port: '', targetPort: '', protocol: 'TCP', nodePort: '' }])} className="btn-ghost text-xs">+ Add Port</button>
+          </>
+        )}
       </div>
 
       <div>
@@ -903,6 +1108,24 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             </select>
           </div>
         )}
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <label className="label">Volumes</label>
+          <button type="button" onClick={() => setVolumes(prev => [...prev, { name: '', mountPath: '', claimName: '' }])} className="text-xs text-accent hover:text-accent-glow">+ Add</button>
+        </div>
+        <p className="text-[11px] text-text-tertiary mb-2">
+          Mount existing PersistentVolumeClaims into the container.
+        </p>
+        {volumes.map((v, i) => (
+          <div key={i} className="flex gap-2 mb-2">
+            <input value={v.name} onChange={e => { const u = [...volumes]; u[i] = { ...v, name: e.target.value }; setVolumes(u) }} placeholder="volume name" className="input-field flex-1 font-mono text-xs" />
+            <input value={v.mountPath} onChange={e => { const u = [...volumes]; u[i] = { ...v, mountPath: e.target.value }; setVolumes(u) }} placeholder="/data" className="input-field flex-1 font-mono text-xs" />
+            <input value={v.claimName} onChange={e => { const u = [...volumes]; u[i] = { ...v, claimName: e.target.value }; setVolumes(u) }} placeholder="pvc-name" className="input-field flex-1 font-mono text-xs" />
+            <button type="button" onClick={() => setVolumes(prev => prev.filter((_, j) => j !== i))} className="text-text-tertiary hover:text-status-failed text-xs px-2">&times;</button>
+          </div>
+        ))}
       </div>
 
       {Object.keys(envConfigs).length > 0 && (
@@ -1005,6 +1228,88 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           )}
         </div>
       )}
+
+      {/* Git Source */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="label mb-0">Git Source</label>
+          {!gitRepo && (
+            <button type="button" onClick={() => setGitRepo('org/repo')} className="text-xs text-accent hover:text-accent-glow">+ Link Repository</button>
+          )}
+        </div>
+        {gitRepo && (
+          <div className="rounded-lg border border-border bg-surface-1 p-4 space-y-3">
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="text-xs text-text-tertiary mb-1 block">Provider</label>
+                <select value={gitProvider} onChange={e => setGitProvider(e.target.value)} className="input-field text-xs w-full">
+                  <option value="github">GitHub</option>
+                  <option value="gitlab">GitLab</option>
+                  <option value="bitbucket">Bitbucket</option>
+                </select>
+              </div>
+              <div className="col-span-2">
+                <label className="text-xs text-text-tertiary mb-1 block">Repository</label>
+                <input value={gitRepo} onChange={e => setGitRepo(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="org/repo-name" />
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="text-xs text-text-tertiary mb-1 block">Branch</label>
+                <input value={gitBranch} onChange={e => setGitBranch(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="main" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary mb-1 block">Token Secret</label>
+                <input value={gitTokenSecret} onChange={e => setGitTokenSecret(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="github-token" />
+                <p className="text-[10px] text-text-tertiary mt-0.5">K8s secret name with key &quot;token&quot;</p>
+              </div>
+              <div className="flex items-end pb-1">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={gitAutoDeploy} onChange={e => setGitAutoDeploy(e.target.checked)} className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20" />
+                  <span className="text-xs text-text-secondary">Auto-deploy on push</span>
+                </label>
+              </div>
+            </div>
+            <div className="flex items-center justify-between pt-1">
+              <button type="button" onClick={() => { setGitRepo(''); setGitBranch(''); setGitAutoDeploy(false); setGitTokenSecret('') }} className="text-xs text-status-failed hover:text-red-300">Unlink Repository</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Build Strategy */}
+      <div className="space-y-3">
+        <label className="label">Build Strategy</label>
+        <div className="grid grid-cols-5 gap-2">
+          {[
+            { value: '', label: 'None', desc: 'Pre-built image' },
+            { value: 'dockerfile', label: 'Dockerfile', desc: 'Kaniko build' },
+            { value: 'nixpacks', label: 'Nixpacks', desc: 'Auto-detect' },
+            { value: 'buildpacks', label: 'Buildpacks', desc: 'Cloud Native' },
+            { value: 'image', label: 'Image Only', desc: 'No build' },
+          ].map(opt => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setBuildStrategy(opt.value)}
+              className={`p-2.5 rounded-lg border text-center transition-all ${
+                buildStrategy === opt.value
+                  ? 'border-accent bg-accent/10 text-accent'
+                  : 'border-border bg-surface-1 text-text-secondary hover:border-text-tertiary'
+              }`}
+            >
+              <div className="text-xs font-mono font-medium">{opt.label}</div>
+              <div className="text-[10px] text-text-tertiary mt-0.5">{opt.desc}</div>
+            </button>
+          ))}
+        </div>
+        {buildStrategy === 'dockerfile' && (
+          <div>
+            <label className="text-xs text-text-tertiary mb-1 block">Dockerfile Path</label>
+            <input value={buildDockerfile} onChange={e => setBuildDockerfile(e.target.value)} className="input-field font-mono text-xs w-48" placeholder="Dockerfile" />
+          </div>
+        )}
+      </div>
 
       <div>
         <div className="flex items-center justify-between mb-2">
@@ -1577,6 +1882,309 @@ function AppTerminal({ appId, environments }: { appId: string; environments: str
         className="border border-border rounded-lg overflow-hidden bg-[#0d1117]"
         style={{ minHeight: '400px' }}
       />
+    </div>
+  )
+}
+
+function AppBuilds({ appId, environments }: { appId: string; environments: string[] }) {
+  const queryClient = useQueryClient()
+  const [buildEnv, setBuildEnv] = useState(environments[0] || '')
+  const [selectedBuild, setSelectedBuild] = useState<string | null>(null)
+  const [showTrigger, setShowTrigger] = useState(false)
+  const [commitSha, setCommitSha] = useState('')
+  const [branch, setBranch] = useState('')
+  const role = useUserRole()
+
+  const { data: builds, isLoading } = useQuery({
+    queryKey: ['builds', appId],
+    queryFn: () => api.listBuilds(appId, { limit: 30 }),
+    enabled: !!appId,
+    refetchInterval: 5000,
+  })
+
+  const triggerMutation = useMutation({
+    mutationFn: () => api.triggerBuild(appId, {
+      environment: buildEnv,
+      commitSha: commitSha || undefined,
+      branch: branch || undefined,
+    }),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['builds', appId] })
+      setShowTrigger(false)
+      setCommitSha('')
+      setBranch('')
+      if (res?.id) setSelectedBuild(res.id)
+    },
+  })
+
+  const cancelMutation = useMutation({
+    mutationFn: (buildId: string) => api.cancelBuild(appId, buildId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['builds', appId] }),
+  })
+
+  const statusIcon = (status: string) => {
+    switch (status) {
+      case 'success': return '✅'
+      case 'failed': return '❌'
+      case 'running': return '🔨'
+      case 'cancelled': return '🚫'
+      default: return '⏳'
+    }
+  }
+
+  const statusColor = (status: string) => {
+    switch (status) {
+      case 'success': return 'text-green-400'
+      case 'failed': return 'text-red-400'
+      case 'running': return 'text-yellow-400'
+      case 'cancelled': return 'text-text-tertiary'
+      default: return 'text-text-secondary'
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-mono tracking-wider uppercase text-text-secondary">Builds</h3>
+        {role !== 'viewer' && (
+          <button
+            onClick={() => setShowTrigger(!showTrigger)}
+            className="px-3 py-1.5 text-xs font-mono bg-accent text-white rounded hover:bg-accent/80 transition-colors"
+          >
+            Trigger Build
+          </button>
+        )}
+      </div>
+
+      {showTrigger && (
+        <div className="card p-4 space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs text-text-tertiary mb-1">Environment</label>
+              <select
+                value={buildEnv}
+                onChange={(e) => setBuildEnv(e.target.value)}
+                className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm"
+              >
+                {environments.map((env) => (
+                  <option key={env} value={env}>{env}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-text-tertiary mb-1">Branch (optional)</label>
+              <input
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+                placeholder="main"
+                className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-text-tertiary mb-1">Commit SHA (optional)</label>
+              <input
+                value={commitSha}
+                onChange={(e) => setCommitSha(e.target.value)}
+                placeholder="a1b2c3d4..."
+                className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm font-mono"
+              />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => triggerMutation.mutate()}
+              disabled={triggerMutation.isPending || !buildEnv}
+              className="px-4 py-1.5 text-xs font-mono bg-accent text-white rounded hover:bg-accent/80 transition-colors disabled:opacity-50"
+            >
+              {triggerMutation.isPending ? 'Starting...' : 'Start Build'}
+            </button>
+            <button
+              onClick={() => setShowTrigger(false)}
+              className="px-4 py-1.5 text-xs font-mono bg-surface-secondary text-text-secondary rounded hover:bg-surface-tertiary transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+          {triggerMutation.error && (
+            <p className="text-xs text-red-400">{(triggerMutation.error as Error).message}</p>
+          )}
+        </div>
+      )}
+
+      {selectedBuild && (
+        <BuildLogViewer appId={appId} buildId={selectedBuild} onClose={() => setSelectedBuild(null)} />
+      )}
+
+      {isLoading ? (
+        <div className="card p-5 text-center text-text-tertiary text-sm">Loading builds...</div>
+      ) : !builds?.items?.length ? (
+        <div className="card p-5 text-center text-text-tertiary text-sm">
+          No builds yet. Trigger a build or push to a linked repository.
+        </div>
+      ) : (
+        <div className="space-y-1">
+          {builds.items.map((b: any) => (
+            <div
+              key={b.id}
+              onClick={() => setSelectedBuild(selectedBuild === b.id ? null : b.id)}
+              className={`card p-3 cursor-pointer hover:bg-surface-secondary/50 transition-colors ${
+                selectedBuild === b.id ? 'ring-1 ring-accent' : ''
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span title={b.status}>{statusIcon(b.status)}</span>
+                  <div>
+                    <div className="text-sm font-mono">
+                      <span className={statusColor(b.status)}>{b.status}</span>
+                      <span className="text-text-tertiary mx-2">·</span>
+                      <span className="text-text-secondary">{b.strategy}</span>
+                      {b.commitSha && (
+                        <>
+                          <span className="text-text-tertiary mx-2">·</span>
+                          <span className="text-text-tertiary">{b.commitSha.slice(0, 8)}</span>
+                        </>
+                      )}
+                    </div>
+                    <div className="text-xs text-text-tertiary mt-0.5">
+                      {b.branch && <span>{b.branch}</span>}
+                      <span className="mx-1">→</span>
+                      <span>{b.environment}</span>
+                      <span className="mx-2">·</span>
+                      <span>{b.triggeredBy}</span>
+                      <span className="mx-2">·</span>
+                      <span>{new Date(b.createdAt).toLocaleString()}</span>
+                      {b.durationMs > 0 && (
+                        <span className="ml-2">({Math.round(b.durationMs / 1000)}s)</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {(b.status === 'pending' || b.status === 'running') && role !== 'viewer' && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); cancelMutation.mutate(b.id) }}
+                      className="px-2 py-1 text-xs text-red-400 hover:text-red-300 font-mono"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <span className="text-xs text-text-tertiary">
+                    {b.image?.split(':').pop()}
+                  </span>
+                </div>
+              </div>
+              {b.error && (
+                <div className="mt-2 text-xs text-red-400 font-mono bg-red-400/10 rounded px-2 py-1">
+                  {b.error}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BuildLogViewer({ appId, buildId, onClose }: { appId: string; buildId: string; onClose: () => void }) {
+  const logRef = useRef<HTMLPreElement>(null)
+  const [logs, setLogs] = useState<string>('')
+  const [streaming, setStreaming] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const abortController = new AbortController()
+
+    const fetchLogs = async () => {
+      try {
+        // Try streaming first
+        const token = localStorage.getItem('vesta-token')
+        const res = await fetch(`/api/v1/apps/${appId}/builds/${buildId}/logs?follow=true`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          signal: abortController.signal,
+        })
+
+        if (!res.ok) {
+          // Fall back to non-streaming
+          const data = await api.getBuildLogs(appId, buildId)
+          if (!cancelled) {
+            setLogs(data.logs || '(no logs available)')
+          }
+          return
+        }
+
+        setStreaming(true)
+        const reader = res.body?.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (reader) {
+          const { done, value } = await reader.read()
+          if (done || cancelled) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6)
+              setLogs((prev) => prev + data + '\n')
+            } else if (line.startsWith('event: done')) {
+              setStreaming(false)
+            }
+          }
+
+          if (logRef.current) {
+            logRef.current.scrollTop = logRef.current.scrollHeight
+          }
+        }
+      } catch (err: any) {
+        if (err.name === 'AbortError') return
+        // Fallback
+        try {
+          const data = await api.getBuildLogs(appId, buildId)
+          if (!cancelled) {
+            setLogs(data.logs || '(no logs available)')
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    fetchLogs()
+    return () => {
+      cancelled = true
+      abortController.abort()
+    }
+  }, [appId, buildId])
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2 bg-surface-secondary border-b border-border">
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-mono text-text-secondary">Build Logs</span>
+          <span className="text-xs font-mono text-text-tertiary">{buildId.slice(0, 8)}...</span>
+          {streaming && (
+            <span className="flex items-center gap-1 text-xs text-yellow-400">
+              <span className="w-1.5 h-1.5 bg-yellow-400 rounded-full animate-pulse" />
+              streaming
+            </span>
+          )}
+        </div>
+        <button
+          onClick={onClose}
+          className="text-text-tertiary hover:text-text-primary text-sm"
+        >
+          ✕
+        </button>
+      </div>
+      <pre
+        ref={logRef}
+        className="p-4 text-xs font-mono text-text-secondary bg-black/30 overflow-auto max-h-96 whitespace-pre-wrap"
+      >
+        {logs || 'Waiting for logs...'}
+      </pre>
     </div>
   )
 }

@@ -126,6 +126,11 @@ func (in *VestaAppSpec) DeepCopyInto(out *VestaAppSpec) {
 		*out = make([]AddonConfig, len(*in))
 		copy(*out, *in)
 	}
+	if in.Service != nil {
+		in, out := &in.Service, &out.Service
+		*out = new(ServiceConfig)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Sleep != nil {
 		in, out := &in.Sleep, &out.Sleep
 		*out = new(SleepConfig)
@@ -613,6 +618,41 @@ func (in *SleepConfig) DeepCopy() *SleepConfig {
 		return nil
 	}
 	out := new(SleepConfig)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// --- ServiceConfig ---
+
+func (in *ServiceConfig) DeepCopyInto(out *ServiceConfig) {
+	*out = *in
+	if in.Ports != nil {
+		in, out := &in.Ports, &out.Ports
+		*out = make([]ServicePort, len(*in))
+		copy(*out, *in)
+	}
+}
+
+func (in *ServiceConfig) DeepCopy() *ServiceConfig {
+	if in == nil {
+		return nil
+	}
+	out := new(ServiceConfig)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// --- ServicePort ---
+
+func (in *ServicePort) DeepCopyInto(out *ServicePort) {
+	*out = *in
+}
+
+func (in *ServicePort) DeepCopy() *ServicePort {
+	if in == nil {
+		return nil
+	}
+	out := new(ServicePort)
 	in.DeepCopyInto(out)
 	return out
 }

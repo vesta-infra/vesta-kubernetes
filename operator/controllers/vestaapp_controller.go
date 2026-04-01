@@ -130,6 +130,10 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return r.updateStatusFailed(ctx, &app, err)
 		}
 
+		if err := r.reconcilePVCs(ctx, &app, target.Namespace); err != nil {
+			return r.updateStatusFailed(ctx, &app, err)
+		}
+
 		if err := r.reconcileDeployment(ctx, &app, target, projectLabels, projectAnnotations); err != nil {
 			return r.updateStatusFailed(ctx, &app, err)
 		}
@@ -507,7 +511,25 @@ func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envReso
 		container.ImagePullPolicy = app.Spec.Image.PullPolicy
 	}
 
-	if app.Spec.Runtime.Port > 0 {
+	if app.Spec.Service != nil && len(app.Spec.Service.Ports) > 0 {
+		var containerPorts []corev1.ContainerPort
+		for _, p := range app.Spec.Service.Ports {
+			protocol := corev1.ProtocolTCP
+			if p.Protocol != "" {
+				protocol = corev1.Protocol(p.Protocol)
+			}
+			targetPort := p.TargetPort
+			if targetPort == 0 {
+				targetPort = p.Port
+			}
+			containerPorts = append(containerPorts, corev1.ContainerPort{
+				Name:          p.Name,
+				ContainerPort: targetPort,
+				Protocol:      protocol,
+			})
+		}
+		container.Ports = containerPorts
+	} else if app.Spec.Runtime.Port > 0 {
 		container.Ports = []corev1.ContainerPort{
 			{
 				Name:          "http",
@@ -727,8 +749,95 @@ func (r *VestaAppReconciler) buildPodSpec(app *vestav1alpha1.VestaApp, container
 	return podSpec
 }
 
+func (r *VestaAppReconciler) reconcilePVCs(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) error {
+	logger := log.FromContext(ctx)
+	for _, v := range app.Spec.Runtime.Volumes {
+		if v.PersistentVolumeClaim == nil {
+			continue
+		}
+		size := v.PersistentVolumeClaim.Size
+		if size == "" {
+			size = "1Gi"
+		}
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      v.PersistentVolumeClaim.ClaimName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/managed-by":   "vesta",
+					"kubernetes.getvesta.sh/app":     app.Name,
+					"kubernetes.getvesta.sh/project": app.Spec.Project,
+				},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse(size),
+					},
+				},
+			},
+		}
+		existing := &corev1.PersistentVolumeClaim{}
+		err := r.Get(ctx, client.ObjectKeyFromObject(pvc), existing)
+		if errors.IsNotFound(err) {
+			logger.Info("creating PVC", "name", pvc.Name, "namespace", namespace, "size", size)
+			if err := r.Create(ctx, pvc); err != nil {
+				return fmt.Errorf("create PVC %s: %w", pvc.Name, err)
+			}
+		} else if err != nil {
+			return fmt.Errorf("get PVC %s: %w", pvc.Name, err)
+		}
+	}
+	return nil
+}
+
 func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) error {
-	if app.Spec.Runtime.Port == 0 {
+	// Determine service ports: prefer spec.service.ports, fall back to runtime.port
+	var svcPorts []corev1.ServicePort
+	var svcType corev1.ServiceType
+
+	if app.Spec.Service != nil && len(app.Spec.Service.Ports) > 0 {
+		for _, p := range app.Spec.Service.Ports {
+			protocol := corev1.ProtocolTCP
+			if p.Protocol != "" {
+				protocol = corev1.Protocol(p.Protocol)
+			}
+			targetPort := p.TargetPort
+			if targetPort == 0 {
+				targetPort = p.Port
+			}
+			sp := corev1.ServicePort{
+				Name:       p.Name,
+				Port:       p.Port,
+				TargetPort: intstr.FromInt32(targetPort),
+				Protocol:   protocol,
+			}
+			if p.NodePort > 0 {
+				sp.NodePort = p.NodePort
+			}
+			svcPorts = append(svcPorts, sp)
+		}
+		switch app.Spec.Service.Type {
+		case "NodePort":
+			svcType = corev1.ServiceTypeNodePort
+		case "LoadBalancer":
+			svcType = corev1.ServiceTypeLoadBalancer
+		default:
+			svcType = corev1.ServiceTypeClusterIP
+		}
+	} else if app.Spec.Runtime.Port > 0 {
+		// Legacy single-port mode
+		svcPorts = []corev1.ServicePort{
+			{
+				Name:       "http",
+				Port:       80,
+				TargetPort: intstr.FromInt32(app.Spec.Runtime.Port),
+				Protocol:   corev1.ProtocolTCP,
+			},
+		}
+		svcType = corev1.ServiceTypeClusterIP
+	} else {
 		return nil
 	}
 
@@ -744,17 +853,9 @@ func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1a
 
 		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
 			svc.Labels = labels
-			svc.Spec = corev1.ServiceSpec{
-				Selector: labels,
-				Ports: []corev1.ServicePort{
-					{
-						Name:       "http",
-						Port:       80,
-						TargetPort: intstr.FromInt32(app.Spec.Runtime.Port),
-						Protocol:   corev1.ProtocolTCP,
-					},
-				},
-			}
+			svc.Spec.Selector = labels
+			svc.Spec.Ports = svcPorts
+			svc.Spec.Type = svcType
 			return nil
 		})
 		return err
@@ -764,6 +865,19 @@ func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1a
 func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) error {
 	labels := r.labelsForApp(app)
 	pathType := networkingv1.PathTypePrefix
+
+	// Determine the service port for the ingress backend
+	ingressPort := int32(80)
+	if app.Spec.Service != nil && len(app.Spec.Service.Ports) > 0 {
+		// Prefer port named "http", otherwise use the first port
+		ingressPort = app.Spec.Service.Ports[0].Port
+		for _, p := range app.Spec.Service.Ports {
+			if p.Name == "http" {
+				ingressPort = p.Port
+				break
+			}
+		}
+	}
 
 	return retry.OnError(retry.DefaultRetry, isRetriable, func() error {
 		ing := &networkingv1.Ingress{
@@ -798,7 +912,7 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 											Service: &networkingv1.IngressServiceBackend{
 												Name: app.Name,
 												Port: networkingv1.ServiceBackendPort{
-													Number: 80,
+													Number: ingressPort,
 												},
 											},
 										},

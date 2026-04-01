@@ -1,9 +1,12 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
+import { useUserRole } from '../lib/useRole'
 
 export default function SecretsPage() {
   const queryClient = useQueryClient()
+  const role = useUserRole()
+  const isAdmin = role === 'admin'
   const { data, isLoading } = useQuery({ queryKey: ['secrets'], queryFn: () => api.listSecrets() })
   const { data: apps } = useQuery({ queryKey: ['apps'], queryFn: () => api.listApps() })
   const [showCreate, setShowCreate] = useState(false)
@@ -44,7 +47,7 @@ export default function SecretsPage() {
             {data?.total ?? 0} secret{(data?.total ?? 0) !== 1 ? 's' : ''}
           </p>
           <p className="text-xs text-text-tertiary mt-0.5">
-            Values are write-only and cannot be read back after creation.
+            {isAdmin ? 'Admins can reveal values. All access is audit-logged.' : 'Values are write-only and cannot be read back after creation.'}
           </p>
         </div>
         <button onClick={() => setShowCreate(!showCreate)} className="btn-primary">
@@ -82,41 +85,7 @@ export default function SecretsPage() {
           <h3 className="section-title mb-3">{groupKey}</h3>
           <div className="space-y-2">
             {secrets.map((s: any) => (
-              <div key={s.id} className="card-hover flex items-center justify-between px-5 py-4 group">
-                <div className="flex items-center gap-4">
-                  <div className="w-9 h-9 rounded-lg bg-surface-3 flex items-center justify-center">
-                    <svg className="w-4 h-4 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-text-primary">{s.name}</p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-xs text-text-tertiary font-mono">{s.type || 'Opaque'}</span>
-                      {s.environment && (
-                        <span className="text-[11px] font-mono bg-surface-3 text-text-tertiary px-2 py-0.5 rounded">
-                          {s.environment}
-                        </span>
-                      )}
-                    </div>
-                    {s.keys?.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 mt-2">
-                        {s.keys.map((k: string) => (
-                          <span key={k} className="text-[11px] font-mono bg-surface-3 text-text-tertiary px-2 py-0.5 rounded">
-                            {k}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <button
-                  onClick={() => deleteMutation.mutate(s.id)}
-                  className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
-                >
-                  Delete
-                </button>
-              </div>
+              <SecretItem key={s.id} secret={s} isAdmin={isAdmin} onDelete={(id) => deleteMutation.mutate(id)} />
             ))}
           </div>
         </section>
@@ -125,29 +94,141 @@ export default function SecretsPage() {
       {!isLoading && (data?.items?.length ?? 0) > 0 && Object.keys(grouped).length === 0 && (
         <div className="space-y-2">
           {data?.items?.map((s: any) => (
-            <div key={s.id} className="card-hover flex items-center justify-between px-5 py-4 group">
-              <div className="flex items-center gap-4">
-                <div className="w-9 h-9 rounded-lg bg-surface-3 flex items-center justify-center">
-                  <svg className="w-4 h-4 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                  </svg>
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-text-primary">{s.name}</p>
-                  <span className="text-xs text-text-tertiary font-mono">{s.type || 'Opaque'}</span>
-                </div>
-              </div>
-              <button
-                onClick={() => deleteMutation.mutate(s.id)}
-                className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
-              >
-                Delete
-              </button>
-            </div>
+            <SecretItem key={s.id} secret={s} isAdmin={isAdmin} onDelete={(id) => deleteMutation.mutate(id)} />
           ))}
         </div>
       )}
         </>
+      )}
+    </div>
+  )
+}
+
+function SecretItem({ secret: s, isAdmin, onDelete }: { secret: any; isAdmin: boolean; onDelete: (id: string) => void }) {
+  const [revealed, setRevealed] = useState<Record<string, string> | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
+
+  useEffect(() => {
+    if (!revealed) return
+    const timer = setTimeout(() => setRevealed(null), 30000)
+    return () => clearTimeout(timer)
+  }, [revealed])
+
+  const handleReveal = async () => {
+    setConfirmOpen(false)
+    setLoading(true)
+    try {
+      const res = await api.revealSecretValues(s.id)
+      setRevealed(res.values)
+    } catch {
+      setRevealed(null)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="card-hover px-5 py-4 group">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div className="w-9 h-9 rounded-lg bg-surface-3 flex items-center justify-center">
+            <svg className="w-4 h-4 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-medium text-text-primary">{s.name}</p>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="text-xs text-text-tertiary font-mono">{s.type || 'Opaque'}</span>
+              {s.environment && (
+                <span className="text-[11px] font-mono bg-surface-3 text-text-tertiary px-2 py-0.5 rounded">
+                  {s.environment}
+                </span>
+              )}
+            </div>
+            {!revealed && s.keys?.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {s.keys.map((k: string) => (
+                  <span key={k} className="text-[11px] font-mono bg-surface-3 text-text-tertiary px-2 py-0.5 rounded">
+                    {k}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {isAdmin && s.keys?.length > 0 && !revealed && (
+            <button
+              onClick={() => setConfirmOpen(true)}
+              disabled={loading}
+              className="text-xs text-text-tertiary hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
+            >
+              {loading ? 'Loading...' : 'Reveal'}
+            </button>
+          )}
+          {revealed && (
+            <button
+              onClick={() => setRevealed(null)}
+              className="text-xs text-text-tertiary hover:text-accent transition-colors"
+            >
+              Hide
+            </button>
+          )}
+          <button
+            onClick={() => onDelete(s.id)}
+            className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+
+      {revealed && (
+        <div className="mt-3 ml-13 border-t border-border pt-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] font-mono text-yellow-500">Values visible (auto-hides in 30s)</span>
+          </div>
+          <div className="space-y-1">
+            {Object.entries(revealed).map(([k, v]) => (
+              <div key={k} className="flex items-center gap-2 font-mono text-xs">
+                <span className="text-text-tertiary min-w-[140px]">{k}</span>
+                <span className="text-text-primary bg-surface-3 px-2 py-0.5 rounded select-all break-all">{v}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {confirmOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setConfirmOpen(false)}>
+          <div className="card p-6 w-full max-w-sm animate-slide-up" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-yellow-500/10 flex items-center justify-center">
+                <svg className="w-5 h-5 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-text-primary">Reveal secret values</h3>
+                <p className="text-xs text-text-tertiary">This action is audit-logged</p>
+              </div>
+            </div>
+            <p className="text-xs text-text-secondary mb-4">
+              You are about to reveal the values of <span className="font-mono text-text-primary">{s.name}</span>.
+              This will be recorded in the audit log with your user ID and IP address.
+            </p>
+            <div className="flex gap-3">
+              <button onClick={handleReveal} className="btn-primary text-xs">
+                Reveal Values
+              </button>
+              <button onClick={() => setConfirmOpen(false)} className="btn-ghost text-xs">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

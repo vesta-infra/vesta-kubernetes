@@ -7,11 +7,15 @@ import (
 )
 
 type Handler struct {
-	K8s      *k8s.Client
-	DB       *db.DB
-	Notifier *services.Notifier
+	K8s            *k8s.Client
+	DB             *db.DB
+	Notifier       *services.Notifier
+	Builder        *services.Builder
+	GitHubNotifier *services.GitHubStatusNotifier
 }
 
 func New(kc *k8s.Client, database *db.DB, notifier *services.Notifier) *Handler {
-	return &Handler{K8s: kc, DB: database, Notifier: notifier}
+	builder := services.NewBuilder(kc.Clientset, database, notifier)
+	ghNotifier := services.NewGitHubStatusNotifier()
+	return &Handler{K8s: kc, DB: database, Notifier: notifier, Builder: builder, GitHubNotifier: ghNotifier}
 }

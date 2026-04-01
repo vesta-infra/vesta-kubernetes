@@ -381,3 +381,69 @@ func extractSecretKeys(spec map[string]interface{}) []string {
 	}
 	return keys
 }
+
+// RevealSecretValues returns actual secret values. Admin-only with full audit trail.
+func (h *Handler) RevealSecretValues(c *gin.Context) {
+	secretID := c.Param("secretId")
+
+	list, err := h.K8s.ListResources(c.Request.Context(), k8s.VestaSecretGVR, "", "")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	var namespace string
+	var found bool
+	for _, item := range list.Items {
+		if item.GetName() == secretID {
+			namespace = item.GetNamespace()
+			found = true
+			break
+		}
+	}
+	if !found {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "secret not found"})
+		return
+	}
+
+	secret, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, secretID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "secret not found"})
+		return
+	}
+
+	spec, _, _ := unstructuredNestedMap(secret.Object, "spec")
+	labels := secret.GetLabels()
+	keys := extractSecretKeys(spec)
+
+	values := make(map[string]string)
+	if data, ok := spec["data"].(map[string]interface{}); ok {
+		for k, v := range data {
+			if s, ok := v.(string); ok {
+				values[k] = s
+			}
+		}
+	}
+
+	project := labels["kubernetes.getvesta.sh/project"]
+	app := labels["kubernetes.getvesta.sh/app"]
+	env := labels["kubernetes.getvesta.sh/environment"]
+
+	h.auditLog(c, "reveal_secret", "secret", secretID, secretID, project, env,
+		map[string]interface{}{
+			"app":       app,
+			"keys":      keys,
+			"namespace": namespace,
+		})
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":          secretID,
+		"name":        secretID,
+		"namespace":   namespace,
+		"type":        getNestedString(spec, "type"),
+		"project":     project,
+		"app":         app,
+		"environment": env,
+		"values":      values,
+	})
+}

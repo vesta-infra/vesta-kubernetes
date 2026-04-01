@@ -22,6 +22,14 @@ func GetJWTSecret() []byte {
 func AuthRequired(database *db.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
+
+		// WebSocket connections can't send custom headers, so accept token as query param
+		if authHeader == "" {
+			if token := c.Query("token"); token != "" {
+				authHeader = "Bearer " + token
+			}
+		}
+
 		if authHeader == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"code":    401,

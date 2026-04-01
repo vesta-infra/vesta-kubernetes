@@ -1,19 +1,23 @@
 package handlers
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"kubernetes.getvesta.sh/api/internal/db"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
+	"kubernetes.getvesta.sh/api/internal/services"
 )
 
 func (h *Handler) ReceiveWebhook(c *gin.Context) {
@@ -102,6 +106,7 @@ func (h *Handler) handleGitHubWebhook(c *gin.Context, body []byte, payload map[s
 		}
 
 		appsTriggered := []string{}
+		buildsTriggered := []string{}
 		for _, e := range envs.Items {
 			eSpec, _, _ := unstructuredNestedMap(e.Object, "spec")
 			branch, _ := eSpec["branch"].(string)
@@ -129,24 +134,99 @@ func (h *Handler) handleGitHubWebhook(c *gin.Context, body []byte, payload map[s
 					}
 
 					_ = namespace
-					gitSpec["commitSHA"] = commitSHA
-					appSpec["git"] = gitSpec
-					app.Object["spec"] = appSpec
-					h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, &app)
-					appsTriggered = append(appsTriggered, app.GetName())
+					appName := app.GetName()
+
+					// Check if app has a build strategy configured
+					buildSpec, _, _ := unstructuredNestedMap(appSpec, "build")
+					strategy := ""
+					if buildSpec != nil {
+						strategy, _ = buildSpec["strategy"].(string)
+					}
+
+					if strategy != "" && strategy != "image" {
+						// Trigger a build — the builder will auto-deploy on success
+						imageSpec, _, _ := unstructuredNestedMap(appSpec, "image")
+						imageRepo := ""
+						registrySecret := ""
+						dockerfile := "Dockerfile"
+
+						if imageSpec != nil {
+							imageRepo, _ = imageSpec["repository"].(string)
+							if ps, ok := imageSpec["imagePullSecrets"].([]interface{}); ok && len(ps) > 0 {
+								if first, ok := ps[0].(map[string]interface{}); ok {
+									registrySecret, _ = first["name"].(string)
+								}
+							}
+						}
+						if buildSpec != nil {
+							if d, ok := buildSpec["dockerfile"].(string); ok && d != "" {
+								dockerfile = d
+							}
+						}
+
+						shortSHA := commitSHA
+						if len(shortSHA) > 8 {
+							shortSHA = shortSHA[:8]
+						}
+						imageDest := fmt.Sprintf("%s:%s", imageRepo, shortSHA)
+
+						buildReq := services.BuildRequest{
+							AppID:          appName,
+							ProjectID:      project,
+							Environment:    envLabel,
+							Strategy:       strategy,
+							Repository:     fullName,
+							Branch:         branch,
+							CommitSHA:      commitSHA,
+							Dockerfile:     dockerfile,
+							ImageDest:      imageDest,
+							RegistrySecret: registrySecret,
+							TriggeredBy:    "webhook:github",
+						}
+
+						buildID, err := h.Builder.TriggerBuild(c.Request.Context(), buildReq)
+						if err != nil {
+							log.Printf("[webhook] build trigger failed for %s: %v", appName, err)
+						} else {
+							buildsTriggered = append(buildsTriggered, buildID)
+
+							// Notify GitHub with pending status
+							if gitToken := h.getGitToken(c.Request.Context(), appSpec); gitToken != "" {
+								h.GitHubNotifier.NotifyBuildStatus(c.Request.Context(),
+									gitToken, fullName, commitSHA, envLabel,
+									"pending", "", "",
+									fmt.Sprintf("Vesta build started for %s", envLabel))
+							}
+						}
+					} else {
+						// No build strategy — just update commitSHA (pre-built image flow)
+						gitSpec["commitSHA"] = commitSHA
+						appSpec["git"] = gitSpec
+						app.Object["spec"] = appSpec
+						h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, &app)
+					}
+
+					appsTriggered = append(appsTriggered, appName)
 				}
 			}
 		}
 
 		status := "no matching project"
-		if len(appsTriggered) > 0 {
+		if len(buildsTriggered) > 0 {
+			status = fmt.Sprintf("builds triggered: %d", len(buildsTriggered))
+		} else if len(appsTriggered) > 0 {
 			status = "deploy triggered"
 		}
 
 		durationMs := int(time.Since(startTime).Milliseconds())
 		h.DB.UpdateWebhookDelivery(c.Request.Context(), deliveryID, "processed", status, appsTriggered, durationMs)
 
-		c.JSON(http.StatusOK, gin.H{"status": status, "event": event, "appsTriggered": appsTriggered})
+		c.JSON(http.StatusOK, gin.H{
+			"status":          status,
+			"event":           event,
+			"appsTriggered":   appsTriggered,
+			"buildsTriggered": buildsTriggered,
+		})
 
 	case "pull_request":
 		durationMs := int(time.Since(startTime).Milliseconds())
@@ -171,4 +251,24 @@ func verifyGitHubSignature(body []byte, signature string, secret string) bool {
 	mac.Write(body)
 	expected := "sha256=" + hex.EncodeToString(mac.Sum(nil))
 	return hmac.Equal([]byte(expected), []byte(signature))
+}
+
+// getGitToken tries to extract a GitHub token from the app's git secret reference.
+func (h *Handler) getGitToken(ctx context.Context, appSpec map[string]interface{}) string {
+	gitSpec, _, _ := unstructuredNestedMap(appSpec, "git")
+	if gitSpec == nil {
+		return ""
+	}
+	secretName, _ := gitSpec["tokenSecret"].(string)
+	if secretName == "" {
+		return ""
+	}
+	secret, err := h.K8s.Clientset.CoreV1().Secrets(vestaSystemNS).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		return ""
+	}
+	if token, ok := secret.Data["token"]; ok {
+		return string(token)
+	}
+	return ""
 }

@@ -162,4 +162,29 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_created ON webhook_deliveries(created_at);
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_provider ON webhook_deliveries(provider);
+
+CREATE TABLE IF NOT EXISTS builds (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    app_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'success', 'failed', 'cancelled')),
+    strategy TEXT NOT NULL DEFAULT 'dockerfile',
+    commit_sha TEXT NOT NULL DEFAULT '',
+    branch TEXT NOT NULL DEFAULT '',
+    repository TEXT NOT NULL DEFAULT '',
+    image TEXT NOT NULL DEFAULT '',
+    job_name TEXT NOT NULL DEFAULT '',
+    triggered_by TEXT NOT NULL DEFAULT '',
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    duration_ms INT NOT NULL DEFAULT 0,
+    error_message TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_builds_app ON builds(app_id);
+CREATE INDEX IF NOT EXISTS idx_builds_project ON builds(project_id);
+CREATE INDEX IF NOT EXISTS idx_builds_status ON builds(status);
+CREATE INDEX IF NOT EXISTS idx_builds_created ON builds(created_at);
 `

@@ -46,6 +46,12 @@ kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/
 kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/main/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestasecrets.yaml
 ```
 
+
+```bash
+helm install -n vesta-system  vesta oci://ghcr.io/vesta-infra/charts/vesta --create-namespace \
+  -n vesta-system   
+```
+
 ### 2. Create the database secret
 
 ```bash
@@ -59,7 +65,7 @@ kubectl create secret generic vesta-db-secret \
 ### 3. Install with Helm
 
 ```bash
-helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
+helm install -n vesta-system vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system   \
   --set api.database.existingSecret=vesta-db-secret
 ```
@@ -81,9 +87,18 @@ To pin specific image versions:
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
   --set api.database.existingSecret=vesta-db-secret \
-  --set operator.image.tag=0.2.0 \
-  --set api.image.tag=0.2.0 \
-  --set ui.image.tag=0.2.0 
+  --set operator.image.tag=0.3.0 \
+  --set api.image.tag=0.3.0 \
+  --set ui.image.tag=0.3.0 
+```
+
+```bash
+helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system \
+  --set api.database.existingSecret=vesta-db-secret \
+  --set operator.image.tag=0.2.1 \
+  --set api.image.tag=0.2.1 \
+  --set ui.image.tag=0.2.1 
 ```
   
   

@@ -115,11 +115,19 @@ func main() {
 		auth.POST("/apps/:appId/sleep", dv, middleware.RequireScope("deploy", "write"), h.SleepApp)
 		auth.POST("/apps/:appId/wake", dv, middleware.RequireScope("deploy", "write"), h.WakeApp)
 
+		// Builds
+		auth.POST("/apps/:appId/builds", dv, middleware.RequireScope("deploy", "write"), h.TriggerBuild)
+		auth.GET("/apps/:appId/builds", middleware.RequireScope("read"), h.ListBuilds)
+		auth.GET("/apps/:appId/builds/:buildId", middleware.RequireScope("read"), h.GetBuild)
+		auth.GET("/apps/:appId/builds/:buildId/logs", middleware.RequireScope("read"), h.GetBuildLogs)
+		auth.POST("/apps/:appId/builds/:buildId/cancel", dv, middleware.RequireScope("deploy", "write"), h.CancelBuild)
+
 		// Secrets (per app per environment) -- viewers have no access
 		auth.POST("/apps/:appId/envs/:env/secrets", dv, h.CreateAppEnvSecret)
 		auth.GET("/apps/:appId/envs/:env/secrets", dv, h.ListAppEnvSecrets)
 		auth.DELETE("/apps/:appId/envs/:env/secrets/:key", dv, h.DeleteAppEnvSecretKey)
 		auth.GET("/secrets", dv, h.ListSecrets)
+		auth.GET("/secrets/:secretId/reveal", middleware.RequireRole("admin"), h.RevealSecretValues)
 		auth.PUT("/secrets/:secretId", dv, h.UpdateSecret)
 		auth.DELETE("/secrets/:secretId", dv, h.DeleteSecret)
 		auth.POST("/secrets/registry", dv, h.CreateRegistrySecret)
