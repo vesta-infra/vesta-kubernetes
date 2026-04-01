@@ -165,6 +165,15 @@ func (h *Handler) Register(c *gin.Context) {
 		DisplayName: user.DisplayName,
 		Role:        user.Role,
 	})
+
+	// Send invite email asynchronously if an email channel is configured
+	invitedBy := c.GetString("userId")
+	go func() {
+		if err := h.Notifier.SendInviteEmail(user.Email, user.Username, user.Role, invitedBy); err != nil {
+			// Log but don't fail — the user was already created
+			_ = err
+		}
+	}()
 }
 
 func (h *Handler) GetCurrentUser(c *gin.Context) {

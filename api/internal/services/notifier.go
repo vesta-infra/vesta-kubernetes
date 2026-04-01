@@ -422,6 +422,47 @@ func (n *Notifier) SendPasswordResetEmail(toEmail, resetToken string) error {
 	return smtp.SendMail(addr, auth, cfg.From, []string{toEmail}, []byte(msg))
 }
 
+// SendInviteEmail sends a welcome/invite email to a newly created user.
+// It silently returns nil if no email channel is configured.
+func (n *Notifier) SendInviteEmail(toEmail, username, role, invitedBy string) error {
+	ch, err := n.db.GetAnyEmailChannel()
+	if err != nil || ch == nil {
+		return nil // no email channel — skip silently
+	}
+
+	var cfg emailConfig
+	if err := json.Unmarshal(ch.Config, &cfg); err != nil {
+		return fmt.Errorf("invalid email config: %w", err)
+	}
+	if cfg.SMTPHost == "" {
+		return nil
+	}
+
+	subject := "[Vesta] You've been invited"
+	body := fmt.Sprintf(
+		"Hi %s,\n\n"+
+			"You've been invited to Vesta as a %s.\n\n"+
+			"Username: %s\n"+
+			"Email: %s\n\n"+
+			"You can log in with the credentials provided by your administrator.\n",
+		username, role, username, toEmail,
+	)
+	if invitedBy != "" {
+		body += fmt.Sprintf("Invited by: %s\n", invitedBy)
+	}
+
+	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
+		cfg.From, toEmail, subject, body)
+
+	addr := fmt.Sprintf("%s:%s", cfg.SMTPHost, cfg.SMTPPort)
+	var auth smtp.Auth
+	if cfg.Username != "" {
+		auth = smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.SMTPHost)
+	}
+
+	return smtp.SendMail(addr, auth, cfg.From, []string{toEmail}, []byte(msg))
+}
+
 // --- Helpers ---
 
 func (n *Notifier) postJSON(url string, payload interface{}) error {
