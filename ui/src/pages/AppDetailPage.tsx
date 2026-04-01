@@ -465,7 +465,23 @@ export default function AppDetailPage() {
               <h3 className="section-title mb-4">Configuration</h3>
               <div className="space-y-3">
                 <ConfigItem label="Image Repository" value={app.spec?.image?.repository} mono />
-                <ConfigItem label="Port" value={app.spec?.runtime?.port} />
+                {app.spec?.service?.ports?.length > 0 ? (
+                  <>
+                    <ConfigItem label="Service Type" value={app.spec.service.type || 'ClusterIP'} />
+                    <div>
+                      <dt className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1">Ports</dt>
+                      <dd className="flex flex-wrap gap-1.5">
+                        {app.spec.service.ports.map((p: any) => (
+                          <span key={p.name} className="px-2 py-0.5 bg-surface-1 border border-border rounded text-xs font-mono">
+                            {p.name}: {p.port}→{p.targetPort || p.port}{p.nodePort ? ` (node:${p.nodePort})` : ''} {p.protocol !== 'TCP' ? p.protocol : ''}
+                          </span>
+                        ))}
+                      </dd>
+                    </div>
+                  </>
+                ) : (
+                  <ConfigItem label="Port" value={app.spec?.runtime?.port} />
+                )}
                 <ConfigItem label="Replicas" value={app.spec?.scaling?.replicas || app.status?.scaling?.currentReplicas || 1} />
                 <ConfigItem
                   label="Autoscale"
@@ -594,6 +610,23 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const [domain, setDomain] = useState(app.spec?.ingress?.domain || '')
   const [tls, setTls] = useState(app.spec?.ingress?.tls || false)
 
+  // Service config (multi-port + service type)
+  const [serviceType, setServiceType] = useState<string>(app.spec?.service?.type || 'ClusterIP')
+  const [servicePorts, setServicePorts] = useState<{ name: string; port: string; targetPort: string; protocol: string; nodePort: string }[]>(() => {
+    const ports = app.spec?.service?.ports
+    if (ports && ports.length > 0) {
+      return ports.map((p: any) => ({
+        name: p.name || '',
+        port: String(p.port || ''),
+        targetPort: String(p.targetPort || ''),
+        protocol: p.protocol || 'TCP',
+        nodePort: String(p.nodePort || ''),
+      }))
+    }
+    return []
+  })
+  const useServiceConfig = servicePorts.length > 0
+
   // Health check config
   const [hcEnabled, setHcEnabled] = useState(!!app.spec?.healthCheck)
   const [hcType, setHcType] = useState(app.spec?.healthCheck?.type || 'http')
@@ -691,8 +724,23 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       }
     }
 
-    // Runtime
-    patch.runtime = { port: Number.parseInt(port) || 3000 }
+    // Runtime & Service
+    if (useServiceConfig) {
+      patch.runtime = { port: 0 }
+      patch.service = {
+        type: serviceType,
+        ports: servicePorts.filter(p => p.name && p.port).map(p => ({
+          name: p.name,
+          port: parseInt(p.port),
+          ...(p.targetPort && { targetPort: parseInt(p.targetPort) }),
+          protocol: p.protocol || 'TCP',
+          ...(serviceType === 'NodePort' && p.nodePort && { nodePort: parseInt(p.nodePort) }),
+        })),
+      }
+    } else {
+      patch.runtime = { port: Number.parseInt(port) || 3000 }
+      patch.service = null
+    }
 
     // Ingress
     if (domain) {
@@ -796,21 +844,106 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
-        <div>
-          <label className="label">Port</label>
-          <input type="number" value={port} onChange={e => setPort(e.target.value)} className="input-field" />
-        </div>
-        <div>
-          <label className="label">Domain</label>
-          <input value={domain} onChange={e => setDomain(e.target.value)} className="input-field" placeholder="app.example.com" />
-        </div>
-        <div className="flex items-end pb-1">
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="label mb-0">Networking</label>
           <label className="flex items-center gap-2 cursor-pointer">
-            <input type="checkbox" checked={tls} onChange={e => setTls(e.target.checked)} className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20" />
-            <span className="text-xs text-text-secondary">TLS</span>
+            <input
+              type="checkbox"
+              checked={useServiceConfig}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  setServicePorts([{ name: 'http', port: port || '80', targetPort: port || '3000', protocol: 'TCP', nodePort: '' }])
+                } else {
+                  setServicePorts([])
+                }
+              }}
+              className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+            />
+            <span className="text-xs text-text-secondary">Multi-port / Service config</span>
           </label>
         </div>
+
+        {!useServiceConfig ? (
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="label">Port</label>
+              <input type="number" value={port} onChange={e => setPort(e.target.value)} className="input-field" />
+            </div>
+            <div>
+              <label className="label">Domain</label>
+              <input value={domain} onChange={e => setDomain(e.target.value)} className="input-field" placeholder="app.example.com" />
+            </div>
+            <div className="flex items-end pb-1">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={tls} onChange={e => setTls(e.target.checked)} className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20" />
+                <span className="text-xs text-text-secondary">TLS</span>
+              </label>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <label className="label">Service Type</label>
+                <select value={serviceType} onChange={e => setServiceType(e.target.value)} className="input-field">
+                  <option value="ClusterIP">ClusterIP</option>
+                  <option value="NodePort">NodePort</option>
+                  <option value="LoadBalancer">LoadBalancer</option>
+                </select>
+              </div>
+              <div>
+                <label className="label">Domain</label>
+                <input value={domain} onChange={e => setDomain(e.target.value)} className="input-field" placeholder="app.example.com" />
+              </div>
+              <div className="flex items-end pb-1">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={tls} onChange={e => setTls(e.target.checked)} className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20" />
+                  <span className="text-xs text-text-secondary">TLS</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="border border-border rounded-lg overflow-hidden">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="bg-surface-1 text-text-tertiary">
+                    <th className="text-left px-3 py-2 font-medium">Name</th>
+                    <th className="text-left px-3 py-2 font-medium">Port</th>
+                    <th className="text-left px-3 py-2 font-medium">Target Port</th>
+                    <th className="text-left px-3 py-2 font-medium">Protocol</th>
+                    {serviceType === 'NodePort' && <th className="text-left px-3 py-2 font-medium">Node Port</th>}
+                    <th className="w-10"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {servicePorts.map((sp, i) => (
+                    <tr key={i} className="border-t border-border">
+                      <td className="px-2 py-1"><input value={sp.name} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, name: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="http" /></td>
+                      <td className="px-2 py-1"><input type="number" value={sp.port} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, port: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="80" /></td>
+                      <td className="px-2 py-1"><input type="number" value={sp.targetPort} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, targetPort: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="3000" /></td>
+                      <td className="px-2 py-1">
+                        <select value={sp.protocol} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, protocol: e.target.value }; setServicePorts(u) }} className="input-field text-xs">
+                          <option value="TCP">TCP</option>
+                          <option value="UDP">UDP</option>
+                        </select>
+                      </td>
+                      {serviceType === 'NodePort' && (
+                        <td className="px-2 py-1"><input type="number" value={sp.nodePort} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, nodePort: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="30000-32767" /></td>
+                      )}
+                      <td className="px-2 py-1">
+                        {servicePorts.length > 1 && (
+                          <button type="button" onClick={() => setServicePorts(servicePorts.filter((_, j) => j !== i))} className="text-text-tertiary hover:text-status-failed transition-colors">×</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <button type="button" onClick={() => setServicePorts([...servicePorts, { name: '', port: '', targetPort: '', protocol: 'TCP', nodePort: '' }])} className="btn-ghost text-xs">+ Add Port</button>
+          </>
+        )}
       </div>
 
       <div>

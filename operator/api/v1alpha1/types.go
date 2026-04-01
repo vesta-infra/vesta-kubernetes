@@ -35,6 +35,7 @@ type VestaAppSpec struct {
 	Image *ImageConfig `json:"image,omitempty"`
 
 	Runtime      RuntimeConfig    `json:"runtime"`
+	Service      *ServiceConfig   `json:"service,omitempty"`
 	Resources    *ResourceConfig  `json:"resources,omitempty"`
 	HealthCheck  *HealthCheckConfig `json:"healthCheck,omitempty"`
 	Ingress      *IngressConfig   `json:"ingress,omitempty"`
@@ -195,6 +196,21 @@ type AddonConfig struct {
 type SleepConfig struct {
 	Enabled           bool   `json:"enabled"`
 	InactivityTimeout string `json:"inactivityTimeout,omitempty"`
+}
+
+type ServiceConfig struct {
+	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
+	Type  string        `json:"type,omitempty"`
+	Ports []ServicePort `json:"ports,omitempty"`
+}
+
+type ServicePort struct {
+	Name       string `json:"name"`
+	Port       int32  `json:"port"`
+	TargetPort int32  `json:"targetPort,omitempty"`
+	// +kubebuilder:validation:Enum=TCP;UDP;SCTP
+	Protocol string `json:"protocol,omitempty"`
+	NodePort int32  `json:"nodePort,omitempty"`
 }
 
 type CustomConfig struct {
