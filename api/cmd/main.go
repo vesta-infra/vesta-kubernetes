@@ -96,6 +96,7 @@ func main() {
 		// Environments
 		auth.POST("/projects/:projectId/environments", dv, h.CreateEnvironment)
 		auth.GET("/projects/:projectId/environments", h.ListEnvironments)
+		auth.PUT("/projects/:projectId/environments/:env", dv, h.UpdateEnvironment)
 		auth.DELETE("/projects/:projectId/environments/:env", dv, h.DeleteEnvironment)
 		auth.POST("/projects/:projectId/environments/:env/clone", dv, h.CloneEnvironment)
 

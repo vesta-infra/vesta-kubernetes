@@ -197,9 +197,9 @@ func (b *Builder) createBuildJob(req BuildRequest, jobName string) (*batchv1.Job
 			})
 		}
 
-		gitContext := fmt.Sprintf("git://%s#refs/heads/%s", gitURL, req.Branch)
+		gitContext := fmt.Sprintf("git://github.com/%s.git#refs/heads/%s", req.Repository, req.Branch)
 		if req.CommitSHA != "" {
-			gitContext = fmt.Sprintf("git://%s#%s", gitURL, req.CommitSHA)
+			gitContext = fmt.Sprintf("git://github.com/%s.git#%s", req.Repository, req.CommitSHA)
 		}
 
 		args := []string{

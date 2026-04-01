@@ -134,6 +134,12 @@ export const api = {
   deleteEnvironment: (projectId: string, env: string) =>
     request<void>(`/projects/${projectId}/environments/${env}`, { method: 'DELETE' }),
 
+  updateEnvironment: (projectId: string, env: string, data: { branch?: string; autoDeploy?: boolean; requireApproval?: boolean; autoDeployPRs?: boolean }) =>
+    request<any>(`/projects/${projectId}/environments/${env}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
   // Apps
   createApp: (projectId: string, data: any) =>
     request<any>(`/projects/${projectId}/apps`, {

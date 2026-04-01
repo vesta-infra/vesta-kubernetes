@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -76,6 +77,32 @@ func (h *Handler) CreateEnvironment(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
+	}
+
+	// Create VestaEnvironment CR for webhook auto-deploy matching
+	envCR := map[string]interface{}{
+		"apiVersion": "kubernetes.getvesta.sh/v1alpha1",
+		"kind":       "VestaEnvironment",
+		"metadata": map[string]interface{}{
+			"name":      req.Name,
+			"namespace": vestaSystemNS,
+			"labels": map[string]interface{}{
+				"kubernetes.getvesta.sh/project":     projectID,
+				"kubernetes.getvesta.sh/environment": req.Name,
+			},
+		},
+		"spec": map[string]interface{}{
+			"project":         projectID,
+			"displayName":     req.DisplayName,
+			"order":           req.Order,
+			"branch":          req.Branch,
+			"autoDeploy":      req.AutoDeploy,
+			"requireApproval": req.RequireApproval,
+			"autoDeployPRs":   req.AutoDeployPRs,
+		},
+	}
+	if _, err := h.K8s.CreateResource(c.Request.Context(), k8s.VestaEnvironmentGVR, vestaSystemNS, envCR); err != nil {
+		log.Printf("[env] failed to create VestaEnvironment CR %s: %v", req.Name, err)
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
@@ -161,9 +188,154 @@ func (h *Handler) DeleteEnvironment(c *gin.Context) {
 		return
 	}
 
+	// Delete VestaEnvironment CR
+	if err := h.K8s.DeleteResource(c.Request.Context(), k8s.VestaEnvironmentGVR, vestaSystemNS, envName); err != nil {
+		log.Printf("[env] failed to delete VestaEnvironment CR %s: %v", envName, err)
+	}
+
 	h.auditLog(c, "delete_env", "environment", envName, envName, projectID, envName, nil)
 
 	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) UpdateEnvironment(c *gin.Context) {
+	projectID := c.Param("projectId")
+	envName := c.Param("env")
+
+	var req struct {
+		Branch          *string `json:"branch"`
+		AutoDeploy      *bool   `json:"autoDeploy"`
+		RequireApproval *bool   `json:"requireApproval"`
+		AutoDeployPRs   *bool   `json:"autoDeployPRs"`
+		DisplayName     *string `json:"displayName"`
+		Order           *int    `json:"order"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
+	// Update project spec entry
+	project, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaProjectGVR, vestaSystemNS, projectID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "project not found"})
+		return
+	}
+
+	spec, _, _ := unstructuredNestedMap(project.Object, "spec")
+	envs, _ := spec["environments"].([]interface{})
+
+	found := false
+	for i, e := range envs {
+		env, ok := e.(map[string]interface{})
+		if !ok || env["name"] != envName {
+			continue
+		}
+		found = true
+		if req.Branch != nil {
+			env["branch"] = *req.Branch
+		}
+		if req.AutoDeploy != nil {
+			env["autoDeploy"] = *req.AutoDeploy
+		}
+		if req.RequireApproval != nil {
+			env["requireApproval"] = *req.RequireApproval
+		}
+		if req.AutoDeployPRs != nil {
+			env["autoDeployPRs"] = *req.AutoDeployPRs
+		}
+		if req.DisplayName != nil {
+			env["displayName"] = *req.DisplayName
+		}
+		if req.Order != nil {
+			env["order"] = *req.Order
+		}
+		envs[i] = env
+		break
+	}
+
+	if !found {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "environment not found"})
+		return
+	}
+
+	spec["environments"] = envs
+	project.Object["spec"] = spec
+	if _, err := h.K8s.UpdateResource(c.Request.Context(), k8s.VestaProjectGVR, vestaSystemNS, project); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	// Update VestaEnvironment CR
+	envCR, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaEnvironmentGVR, vestaSystemNS, envName)
+	if err == nil {
+		crSpec, _, _ := unstructuredNestedMap(envCR.Object, "spec")
+		if crSpec == nil {
+			crSpec = map[string]interface{}{}
+		}
+		if req.Branch != nil {
+			crSpec["branch"] = *req.Branch
+		}
+		if req.AutoDeploy != nil {
+			crSpec["autoDeploy"] = *req.AutoDeploy
+		}
+		if req.RequireApproval != nil {
+			crSpec["requireApproval"] = *req.RequireApproval
+		}
+		if req.AutoDeployPRs != nil {
+			crSpec["autoDeployPRs"] = *req.AutoDeployPRs
+		}
+		if req.DisplayName != nil {
+			crSpec["displayName"] = *req.DisplayName
+		}
+		if req.Order != nil {
+			crSpec["order"] = *req.Order
+		}
+		envCR.Object["spec"] = crSpec
+		if _, err := h.K8s.UpdateResource(c.Request.Context(), k8s.VestaEnvironmentGVR, vestaSystemNS, envCR); err != nil {
+			log.Printf("[env] failed to update VestaEnvironment CR %s: %v", envName, err)
+		}
+	} else {
+		log.Printf("[env] VestaEnvironment CR %s not found, creating...", envName)
+		// Create if missing (for environments created before this feature)
+		envCRObj := map[string]interface{}{
+			"apiVersion": "kubernetes.getvesta.sh/v1alpha1",
+			"kind":       "VestaEnvironment",
+			"metadata": map[string]interface{}{
+				"name":      envName,
+				"namespace": vestaSystemNS,
+				"labels": map[string]interface{}{
+					"kubernetes.getvesta.sh/project":     projectID,
+					"kubernetes.getvesta.sh/environment": envName,
+				},
+			},
+			"spec": map[string]interface{}{
+				"project": projectID,
+			},
+		}
+		crSpec := envCRObj["spec"].(map[string]interface{})
+		if req.Branch != nil {
+			crSpec["branch"] = *req.Branch
+		}
+		if req.AutoDeploy != nil {
+			crSpec["autoDeploy"] = *req.AutoDeploy
+		}
+		if _, err := h.K8s.CreateResource(c.Request.Context(), k8s.VestaEnvironmentGVR, vestaSystemNS, envCRObj); err != nil {
+			log.Printf("[env] failed to create VestaEnvironment CR %s: %v", envName, err)
+		}
+	}
+
+	// Return updated env
+	for _, e := range envs {
+		env, ok := e.(map[string]interface{})
+		if ok && env["name"] == envName {
+			c.JSON(http.StatusOK, env)
+			break
+		}
+	}
+
+	h.auditLog(c, "update_env", "environment", envName, envName, projectID, envName,
+		map[string]interface{}{"branch": req.Branch, "autoDeploy": req.AutoDeploy})
 }
 
 func (h *Handler) CloneEnvironment(c *gin.Context) {

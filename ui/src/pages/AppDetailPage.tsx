@@ -316,46 +316,25 @@ export default function AppDetailPage() {
                 <p className="text-sm text-text-tertiary">No environments assigned</p>
               ) : (
                 <div className="space-y-2">
-                  {appEnvironments.map((env: string) => (
-                    <div
-                      key={env}
-                      className="flex items-center justify-between px-4 py-3 bg-surface-1 border border-border rounded-lg group"
-                    >
-                      <span className="text-sm font-mono text-text-secondary">{env}</span>
-                      <div className="flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                        {role !== 'viewer' && (
-                        <button
-                          onClick={() => {
-                            if (confirm(`Restart "${app.name}" in "${env}"?`))
-                              restartMutation.mutate(env)
-                          }}
-                          disabled={restartMutation.isPending}
-                          className="text-xs text-text-tertiary hover:text-accent transition-colors flex items-center gap-1"
-                        >
-                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                          </svg>
-                          Restart
-                        </button>
-                        )}
-                        {appEnvironments.length > 1 && role !== 'viewer' && (
-                          <button
-                            onClick={() => {
-                              if (confirm(`Remove "${app.name}" from "${env}"?`))
-                                removeEnvMutation.mutate(env)
-                            }}
-                            disabled={removeEnvMutation.isPending}
-                            className="text-xs text-text-tertiary hover:text-status-failed transition-colors flex items-center gap-1"
-                          >
-                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                            Remove
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+                  {appEnvironments.map((env: string) => {
+                    const envConfig = (projectEnvs?.items || []).find((e: any) => e.name === env)
+                    return (
+                      <EnvironmentRow
+                        key={env}
+                        env={env}
+                        envConfig={envConfig}
+                        projectId={projectId}
+                        appName={app.name}
+                        appGitRepo={app.spec?.git?.repository || ''}
+                        canRemove={appEnvironments.length > 1}
+                        role={role}
+                        onRestart={() => restartMutation.mutate(env)}
+                        onRemove={() => removeEnvMutation.mutate(env)}
+                        restartPending={restartMutation.isPending}
+                        removePending={removeEnvMutation.isPending}
+                      />
+                    )
+                  })}
                 </div>
               )}
             </section>
@@ -622,6 +601,125 @@ export default function AppDetailPage() {
 
       {activeTab === 'builds' && (
         <AppBuilds appId={appId!} environments={appEnvironments} gitRepo={app?.spec?.git?.repository || ''} />
+      )}
+    </div>
+  )
+}
+
+function EnvironmentRow({ env, envConfig, projectId, appName, appGitRepo, canRemove, role, onRestart, onRemove, restartPending, removePending }: {
+  env: string; envConfig: any; projectId: string; appName: string; appGitRepo: string; canRemove: boolean; role: string
+  onRestart: () => void; onRemove: () => void; restartPending: boolean; removePending: boolean
+}) {
+  const queryClient = useQueryClient()
+  const [editing, setEditing] = useState(false)
+  const [branch, setBranch] = useState(envConfig?.branch || '')
+  const [autoDeploy, setAutoDeploy] = useState(envConfig?.autoDeploy || false)
+
+  const { data: branchesData } = useQuery({
+    queryKey: ['repoBranches', appGitRepo],
+    queryFn: () => api.listRepoBranches(appGitRepo),
+    enabled: editing && !!appGitRepo && appGitRepo.includes('/'),
+    staleTime: 60_000,
+  })
+  const branches: string[] = branchesData?.branches || []
+
+  const updateMutation = useMutation({
+    mutationFn: () => api.updateEnvironment(projectId, env, { branch, autoDeploy }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['environments', projectId] })
+      setEditing(false)
+    },
+  })
+
+  return (
+    <div className="bg-surface-1 border border-border rounded-lg group">
+      <div className="flex items-center justify-between px-4 py-3">
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-mono text-text-secondary">{env}</span>
+          {envConfig?.branch && (
+            <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded">
+              {envConfig.branch}
+            </span>
+          )}
+          {envConfig?.autoDeploy && (
+            <span className="text-[11px] font-mono text-accent bg-accent/10 px-1.5 py-0.5 rounded">auto-deploy</span>
+          )}
+        </div>
+        <div className="flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+          {role !== 'viewer' && (
+            <button
+              onClick={() => setEditing(!editing)}
+              className="text-xs text-text-tertiary hover:text-accent transition-colors"
+            >
+              {editing ? 'Cancel' : 'Configure'}
+            </button>
+          )}
+          {role !== 'viewer' && (
+            <button
+              onClick={() => { if (confirm(`Restart "${appName}" in "${env}"?`)) onRestart() }}
+              disabled={restartPending}
+              className="text-xs text-text-tertiary hover:text-accent transition-colors"
+            >
+              Restart
+            </button>
+          )}
+          {canRemove && role !== 'viewer' && (
+            <button
+              onClick={() => { if (confirm(`Remove "${appName}" from "${env}"?`)) onRemove() }}
+              disabled={removePending}
+              className="text-xs text-text-tertiary hover:text-status-failed transition-colors"
+            >
+              Remove
+            </button>
+          )}
+        </div>
+      </div>
+      {editing && (
+        <div className="px-4 pb-3 pt-1 border-t border-border-subtle">
+          <div className="flex items-end gap-3">
+            <div className="flex-1">
+              <label className="text-[11px] text-text-tertiary mb-1 block">Branch</label>
+              {branches.length > 0 ? (
+                <select
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                  className="input-field font-mono text-xs w-full"
+                >
+                  <option value="">No branch</option>
+                  {branches.map(b => (
+                    <option key={b} value={b}>{b}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                  className="input-field font-mono text-xs w-full"
+                  placeholder="main"
+                />
+              )}
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer pb-1.5">
+              <input
+                type="checkbox"
+                checked={autoDeploy}
+                onChange={(e) => setAutoDeploy(e.target.checked)}
+                className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+              />
+              <span className="text-xs text-text-secondary whitespace-nowrap">Auto-deploy on push</span>
+            </label>
+            <button
+              onClick={() => updateMutation.mutate()}
+              disabled={updateMutation.isPending}
+              className="btn-primary text-xs whitespace-nowrap"
+            >
+              {updateMutation.isPending ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+          {updateMutation.isError && (
+            <p className="text-xs text-status-failed mt-2">{(updateMutation.error as Error).message}</p>
+          )}
+        </div>
       )}
     </div>
   )
