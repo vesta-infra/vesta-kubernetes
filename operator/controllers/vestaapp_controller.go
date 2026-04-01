@@ -401,7 +401,7 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 		projectPullSecrets = project.Spec.ImagePullSecrets
 	}
 
-	container := r.buildContainer(app, target.Config.Resources)
+	container := r.buildContainer(app, target.Config.Resources, target.Config.Name)
 
 	// Auto-inject the per-app secret ("{appName}-secrets") as envFrom if it exists in the target namespace.
 	// This secret is created by the API when users add per-environment secrets.
@@ -502,7 +502,7 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 	return nil
 }
 
-func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envResources *vestav1alpha1.ResourceConfig) corev1.Container {
+func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envResources *vestav1alpha1.ResourceConfig, envName string) corev1.Container {
 	image := "placeholder:latest"
 	if app.Spec.Image != nil {
 		tag := "latest"
@@ -559,6 +559,20 @@ func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envReso
 	container.Env = append(container.Env, app.Spec.Runtime.Env...)
 
 	for _, sb := range app.Spec.Runtime.Secrets {
+		// Skip if this binding is scoped to specific environments and the current one isn't in the list
+		if len(sb.Environments) > 0 {
+			match := false
+			for _, e := range sb.Environments {
+				if e == envName {
+					match = true
+					break
+				}
+			}
+			if !match {
+				continue
+			}
+		}
+
 		if sb.SecretRef != nil {
 			if len(sb.Keys) > 0 {
 				for _, km := range sb.Keys {
@@ -1080,7 +1094,7 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 		effectiveSchedule := r.resolveCronjobSchedule(cj, target.Config.Name)
 
 		// Build the container: same image, env, secrets, volumes as the main app — only override command
-		container := r.buildContainer(app, cj.Resources)
+		container := r.buildContainer(app, cj.Resources, target.Config.Name)
 		container.Name = "job"
 		container.Command = []string{"/bin/sh", "-c", cj.Command}
 		container.Args = nil

@@ -302,6 +302,11 @@ func (in *SecretBinding) DeepCopyInto(out *SecretBinding) {
 		*out = make([]SecretKeyMapping, len(*in))
 		copy(*out, *in)
 	}
+	if in.Environments != nil {
+		in, out := &in.Environments, &out.Environments
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 }
 
 func (in *SecretBinding) DeepCopy() *SecretBinding {

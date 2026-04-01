@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	mathrand "math/rand"
 	"net/http"
 	"sync"
 
@@ -17,8 +18,8 @@ import (
 // In production, this could be stored in DB or a short-lived K8s ConfigMap.
 var manifestStates = struct {
 	sync.Mutex
-	m map[string]bool
-}{m: make(map[string]bool)}
+	m map[string]string // state -> uiBaseUrl
+}{m: make(map[string]string)}
 
 func generateState() (string, error) {
 	b := make([]byte, 32)
@@ -45,6 +46,7 @@ func (h *Handler) GetGitHubAppManifest(c *gin.Context) {
 		Organization string `json:"organization"`
 		AppName      string `json:"appName"`
 		APIBaseURL   string `json:"apiBaseUrl"`
+		UIBaseURL    string `json:"uiBaseUrl"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "invalid request"})
@@ -52,7 +54,7 @@ func (h *Handler) GetGitHubAppManifest(c *gin.Context) {
 	}
 
 	if req.AppName == "" {
-		req.AppName = "Vesta"
+		req.AppName = fmt.Sprintf("vesta-%04d", mathrand.Intn(10000))
 	}
 	if req.APIBaseURL == "" {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "apiBaseUrl is required"})
@@ -66,7 +68,7 @@ func (h *Handler) GetGitHubAppManifest(c *gin.Context) {
 	}
 
 	manifestStates.Lock()
-	manifestStates.m[state] = true
+	manifestStates.m[state] = req.UIBaseURL
 	manifestStates.Unlock()
 
 	manifest := h.GitHubApp.BuildManifest(req.APIBaseURL, req.AppName)
@@ -102,7 +104,7 @@ func (h *Handler) GitHubAppCallback(c *gin.Context) {
 
 	// Verify state to prevent CSRF
 	manifestStates.Lock()
-	valid := manifestStates.m[state]
+	uiBaseURL, valid := manifestStates.m[state]
 	if valid {
 		delete(manifestStates.m, state)
 	}
@@ -122,7 +124,7 @@ func (h *Handler) GitHubAppCallback(c *gin.Context) {
 	}
 
 	// Save credentials to K8s Secret
-	if err := h.GitHubApp.SaveToSecret(c.Request.Context(), creds.ID, creds.Name, creds.PEM, creds.WebhookSecret); err != nil {
+	if err := h.GitHubApp.SaveToSecret(c.Request.Context(), creds); err != nil {
 		log.Printf("[github-app] failed to save credentials: %v", err)
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to save credentials"})
 		return
@@ -137,10 +139,9 @@ func (h *Handler) GitHubAppCallback(c *gin.Context) {
 
 	log.Printf("[github-app] successfully created GitHub App: %s (ID: %d)", creds.Name, creds.ID)
 
-	// Check for a UI redirect — if the request came from a browser form
-	uiURL := c.Query("ui_url")
-	if uiURL != "" {
-		c.Redirect(http.StatusFound, uiURL+"?tab=integrations&github=success")
+	// Redirect back to the UI settings page
+	if uiBaseURL != "" {
+		c.Redirect(http.StatusFound, uiBaseURL+"/settings?tab=integrations&github=success")
 		return
 	}
 
@@ -165,8 +166,14 @@ func (h *Handler) GetGitHubAppStatus(c *gin.Context) {
 		c.Request.Context(), "vesta-github-app", metav1.GetOptions{})
 
 	appName := ""
+	appSlug := ""
+	ownerLogin := ""
+	ownerType := ""
 	if err == nil {
 		appName = string(secret.Data["app-name"])
+		appSlug = string(secret.Data["app-slug"])
+		ownerLogin = string(secret.Data["owner-login"])
+		ownerType = string(secret.Data["owner-type"])
 	}
 
 	// List installations to show count
@@ -176,6 +183,9 @@ func (h *Handler) GetGitHubAppStatus(c *gin.Context) {
 		"configured":    true,
 		"appId":         h.GitHubApp.AppID(),
 		"appName":       appName,
+		"appSlug":       appSlug,
+		"ownerLogin":    ownerLogin,
+		"ownerType":     ownerType,
 		"installations": len(installations),
 	})
 }

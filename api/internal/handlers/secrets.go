@@ -632,7 +632,8 @@ func (h *Handler) BindSharedSecret(c *gin.Context) {
 	appID := c.Param("appId")
 
 	var req struct {
-		Name string `json:"name" binding:"required"`
+		Name        string `json:"name" binding:"required"`
+		Environment string `json:"environment" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
@@ -653,12 +654,31 @@ func (h *Handler) BindSharedSecret(c *gin.Context) {
 
 	secrets, _ := runtime["secrets"].([]interface{})
 
-	// Check if already bound
+	// Check if already bound for this environment
 	for _, s := range secrets {
 		if sm, ok := s.(map[string]interface{}); ok {
 			if ref, ok := sm["secretRef"].(map[string]interface{}); ok {
 				if ref["name"] == req.Name {
-					c.JSON(http.StatusConflict, models.ErrorResponse{Code: 409, Message: "shared secret already bound"})
+					envs, _ := sm["environments"].([]interface{})
+					for _, e := range envs {
+						if e == req.Environment {
+							c.JSON(http.StatusConflict, models.ErrorResponse{Code: 409, Message: "shared secret already bound to this environment"})
+							return
+						}
+					}
+					// Same secret exists but for other environments — add this env
+					envs = append(envs, req.Environment)
+					sm["environments"] = envs
+					runtime["secrets"] = secrets
+					spec["runtime"] = runtime
+					existing.Object["spec"] = spec
+					if _, err := h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, existing); err != nil {
+						c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+						return
+					}
+					c.JSON(http.StatusOK, gin.H{"message": "shared secret bound", "name": req.Name, "environment": req.Environment, "app": appID})
+					h.auditLog(c, "bind_shared_secret", "app", appID, appID, getNestedString(spec, "project"), "",
+						map[string]interface{}{"secretName": req.Name, "environment": req.Environment})
 					return
 				}
 			}
@@ -666,7 +686,8 @@ func (h *Handler) BindSharedSecret(c *gin.Context) {
 	}
 
 	secrets = append(secrets, map[string]interface{}{
-		"secretRef": map[string]interface{}{"name": req.Name},
+		"secretRef":    map[string]interface{}{"name": req.Name},
+		"environments": []interface{}{req.Environment},
 	})
 	runtime["secrets"] = secrets
 	spec["runtime"] = runtime
@@ -677,15 +698,16 @@ func (h *Handler) BindSharedSecret(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "shared secret bound", "name": req.Name, "app": appID})
+	c.JSON(http.StatusOK, gin.H{"message": "shared secret bound", "name": req.Name, "environment": req.Environment, "app": appID})
 
 	h.auditLog(c, "bind_shared_secret", "app", appID, appID, getNestedString(spec, "project"), "",
-		map[string]interface{}{"secretName": req.Name})
+		map[string]interface{}{"secretName": req.Name, "environment": req.Environment})
 }
 
 func (h *Handler) UnbindSharedSecret(c *gin.Context) {
 	appID := c.Param("appId")
 	name := c.Param("name")
+	env := c.Query("environment")
 
 	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID)
 	if err != nil {
@@ -708,6 +730,22 @@ func (h *Handler) UnbindSharedSecret(c *gin.Context) {
 			if ref, ok := sm["secretRef"].(map[string]interface{}); ok {
 				if ref["name"] == name {
 					found = true
+					if env != "" {
+						// Remove only the specified environment
+						envs, _ := sm["environments"].([]interface{})
+						newEnvs := make([]interface{}, 0, len(envs))
+						for _, e := range envs {
+							if e != env {
+								newEnvs = append(newEnvs, e)
+							}
+						}
+						if len(newEnvs) > 0 {
+							sm["environments"] = newEnvs
+							filtered = append(filtered, sm)
+						}
+						// If newEnvs is empty, we drop the entire binding
+					}
+					// If env=="", drop the entire binding (remove from all environments)
 					continue
 				}
 			}
@@ -730,7 +768,7 @@ func (h *Handler) UnbindSharedSecret(c *gin.Context) {
 	}
 
 	h.auditLog(c, "unbind_shared_secret", "app", appID, appID, getNestedString(spec, "project"), "",
-		map[string]interface{}{"secretName": name})
+		map[string]interface{}{"secretName": name, "environment": env})
 
 	c.Status(http.StatusNoContent)
 }
@@ -747,17 +785,27 @@ func (h *Handler) ListAppSharedSecrets(c *gin.Context) {
 	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
 	runtime, _, _ := unstructuredNestedMap(spec, "runtime")
 	if runtime == nil {
-		c.JSON(http.StatusOK, models.ListResponse{Items: []string{}, Total: 0})
+		c.JSON(http.StatusOK, models.ListResponse{Items: []interface{}{}, Total: 0})
 		return
 	}
 
 	secrets, _ := runtime["secrets"].([]interface{})
-	bound := make([]string, 0)
+	bound := make([]map[string]interface{}, 0)
 	for _, s := range secrets {
 		if sm, ok := s.(map[string]interface{}); ok {
 			if ref, ok := sm["secretRef"].(map[string]interface{}); ok {
 				if name, ok := ref["name"].(string); ok {
-					bound = append(bound, name)
+					envs, _ := sm["environments"].([]interface{})
+					envStrs := make([]string, 0, len(envs))
+					for _, e := range envs {
+						if es, ok := e.(string); ok {
+							envStrs = append(envStrs, es)
+						}
+					}
+					bound = append(bound, map[string]interface{}{
+						"name":         name,
+						"environments": envStrs,
+					})
 				}
 			}
 		}

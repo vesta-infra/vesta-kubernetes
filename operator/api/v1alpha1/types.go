@@ -91,6 +91,8 @@ type SecretBinding struct {
 	SecretKeyRef *SecretKeyRefBinding `json:"secretKeyRef,omitempty"`
 	SecretMount  *SecretMountBinding  `json:"secretMount,omitempty"`
 	Keys         []SecretKeyMapping   `json:"keys,omitempty"`
+	// Environments limits this binding to specific environments. Empty means all environments.
+	Environments []string `json:"environments,omitempty"`
 }
 
 type SecretRefBinding struct {

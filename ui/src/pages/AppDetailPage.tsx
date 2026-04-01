@@ -579,7 +579,7 @@ export default function AppDetailPage() {
           )}
 
           {projectId && (
-            <SharedSecretBindings appId={appId!} projectId={projectId} />
+            <SharedSecretBindings appId={appId!} projectId={projectId} environments={appEnvironments} />
           )}
         </div>
       )}
@@ -2650,8 +2650,9 @@ function PrometheusChart({ appId, env, metric, range: timeRange, label, unit, co
   )
 }
 
-function SharedSecretBindings({ appId, projectId }: { appId: string; projectId: string }) {
+function SharedSecretBindings({ appId, projectId, environments }: { appId: string; projectId: string; environments: string[] }) {
   const queryClient = useQueryClient()
+  const [bindEnv, setBindEnv] = useState<Record<string, string>>({})
 
   const { data: bound } = useQuery({
     queryKey: ['appSharedSecrets', appId],
@@ -2665,7 +2666,7 @@ function SharedSecretBindings({ appId, projectId }: { appId: string; projectId: 
   })
 
   const bindMutation = useMutation({
-    mutationFn: (name: string) => api.bindSharedSecret(appId, name),
+    mutationFn: ({ name, environment }: { name: string; environment: string }) => api.bindSharedSecret(appId, name, environment),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['appSharedSecrets', appId] })
       queryClient.invalidateQueries({ queryKey: ['app', appId] })
@@ -2673,38 +2674,44 @@ function SharedSecretBindings({ appId, projectId }: { appId: string; projectId: 
   })
 
   const unbindMutation = useMutation({
-    mutationFn: (name: string) => api.unbindSharedSecret(appId, name),
+    mutationFn: ({ name, environment }: { name: string; environment: string }) => api.unbindSharedSecret(appId, name, environment),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['appSharedSecrets', appId] })
       queryClient.invalidateQueries({ queryKey: ['app', appId] })
     },
   })
 
-  const boundNames: string[] = bound?.items || []
+  const boundItems: { name: string; environments: string[] }[] = bound?.items || []
+  const boundNames = boundItems.map((b) => b.name)
   const unbound = (available?.items || []).filter((s: any) => !boundNames.includes(s.name))
+  // Secrets that are bound but not to all environments yet
+  const partiallyBound = (available?.items || []).filter((s: any) => {
+    const b = boundItems.find((bi) => bi.name === s.name)
+    return b && b.environments.length < environments.length
+  })
 
   return (
     <section className="card p-5">
       <h3 className="section-title mb-4">Shared Secrets</h3>
       <p className="text-xs text-text-tertiary mb-4">
-        Bind project-level shared secrets to this app. All keys are injected as environment variables.
+        Bind project-level shared secrets to specific environments of this app.
       </p>
 
-      {boundNames.length > 0 && (
+      {boundItems.length > 0 && (
         <div className="space-y-2 mb-4">
           <label className="text-[11px] text-text-tertiary font-mono uppercase tracking-wider">Bound</label>
-          {boundNames.map((name) => {
-            const secret = available?.items?.find((s: any) => s.name === name)
+          {boundItems.map((binding) => {
+            const secret = available?.items?.find((s: any) => s.name === binding.name)
             return (
-              <div key={name} className="flex items-center justify-between bg-surface-2 rounded-lg px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-7 h-7 rounded bg-status-healthy/10 flex items-center justify-center">
+              <div key={binding.name} className="bg-surface-2 rounded-lg px-4 py-3">
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="w-7 h-7 rounded bg-status-healthy/10 flex items-center justify-center shrink-0">
                     <svg className="w-3.5 h-3.5 text-status-healthy" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                       <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
                     </svg>
                   </div>
-                  <div>
-                    <span className="text-sm font-mono text-text-primary">{name}</span>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-sm font-mono text-text-primary">{binding.name}</span>
                     {secret?.keys && (
                       <div className="flex gap-1.5 mt-0.5">
                         {secret.keys.map((k: string) => (
@@ -2714,54 +2721,80 @@ function SharedSecretBindings({ appId, projectId }: { appId: string; projectId: 
                     )}
                   </div>
                 </div>
-                <button
-                  onClick={() => unbindMutation.mutate(name)}
-                  disabled={unbindMutation.isPending}
-                  className="text-xs text-text-tertiary hover:text-status-failed transition-colors"
-                >
-                  Unbind
-                </button>
+                <div className="flex flex-wrap gap-1.5 ml-10">
+                  {binding.environments.map((env) => (
+                    <span key={env} className="inline-flex items-center gap-1 px-2 py-0.5 bg-accent/10 text-accent rounded text-[11px] font-mono">
+                      {env}
+                      <button
+                        onClick={() => unbindMutation.mutate({ name: binding.name, environment: env })}
+                        disabled={unbindMutation.isPending}
+                        className="hover:text-status-failed transition-colors ml-0.5"
+                        title={`Unbind from ${env}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
               </div>
             )
           })}
         </div>
       )}
 
-      {unbound.length > 0 && (
+      {(unbound.length > 0 || partiallyBound.length > 0) && (
         <div className="space-y-2">
           <label className="text-[11px] text-text-tertiary font-mono uppercase tracking-wider">Available</label>
-          {unbound.map((s: any) => (
-            <div key={s.name} className="flex items-center justify-between bg-surface-1 border border-border-subtle rounded-lg px-4 py-3">
-              <div className="flex items-center gap-3">
-                <div className="w-7 h-7 rounded bg-surface-3 flex items-center justify-center">
-                  <svg className="w-3.5 h-3.5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                  </svg>
-                </div>
-                <div>
-                  <span className="text-sm font-mono text-text-primary">{s.name}</span>
-                  {s.keys && (
-                    <div className="flex gap-1.5 mt-0.5">
-                      {s.keys.map((k: string) => (
-                        <span key={k} className="px-1.5 py-0.5 bg-surface-3 rounded text-[10px] font-mono text-text-tertiary">{k}</span>
-                      ))}
+          {[...unbound, ...partiallyBound]
+            .filter((s: any, i: number, arr: any[]) => arr.findIndex((x: any) => x.name === s.name) === i)
+            .map((s: any) => {
+              const existingBinding = boundItems.find((b) => b.name === s.name)
+              const availableEnvs = environments.filter((e) => !existingBinding?.environments.includes(e))
+              const selectedEnv = bindEnv[s.name] || availableEnvs[0] || ''
+              return (
+                <div key={s.name} className="flex items-center justify-between bg-surface-1 border border-border-subtle rounded-lg px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-7 h-7 rounded bg-surface-3 flex items-center justify-center shrink-0">
+                      <svg className="w-3.5 h-3.5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                      </svg>
                     </div>
-                  )}
+                    <div>
+                      <span className="text-sm font-mono text-text-primary">{s.name}</span>
+                      {s.keys && (
+                        <div className="flex gap-1.5 mt-0.5">
+                          {s.keys.map((k: string) => (
+                            <span key={k} className="px-1.5 py-0.5 bg-surface-3 rounded text-[10px] font-mono text-text-tertiary">{k}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={selectedEnv}
+                      onChange={(e) => setBindEnv({ ...bindEnv, [s.name]: e.target.value })}
+                      className="text-xs bg-surface-2 border border-border-subtle rounded px-2 py-1 text-text-primary"
+                    >
+                      {availableEnvs.map((env) => (
+                        <option key={env} value={env}>{env}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => selectedEnv && bindMutation.mutate({ name: s.name, environment: selectedEnv })}
+                      disabled={bindMutation.isPending || !selectedEnv}
+                      className="text-xs text-accent hover:text-accent-glow transition-colors"
+                    >
+                      Bind
+                    </button>
+                  </div>
                 </div>
-              </div>
-              <button
-                onClick={() => bindMutation.mutate(s.name)}
-                disabled={bindMutation.isPending}
-                className="text-xs text-accent hover:text-accent-glow transition-colors"
-              >
-                Bind
-              </button>
-            </div>
-          ))}
+              )
+            })}
         </div>
       )}
 
-      {boundNames.length === 0 && unbound.length === 0 && (
+      {boundItems.length === 0 && unbound.length === 0 && (
         <p className="text-xs text-text-tertiary">No shared secrets in this project. Create them in Secrets → Shared Secrets.</p>
       )}
 

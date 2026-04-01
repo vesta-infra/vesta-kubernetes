@@ -1088,7 +1088,7 @@ function GitHubAppSection() {
   const queryClient = useQueryClient()
   const [apiBaseUrl, setApiBaseUrl] = useState('')
   const [organization, setOrganization] = useState('')
-  const [appName, setAppName] = useState('Vesta')
+  const [appName, setAppName] = useState('')
   const [showSetup, setShowSetup] = useState(false)
 
   const githubSuccess = new URLSearchParams(window.location.search).get('github') === 'success'
@@ -1113,7 +1113,7 @@ function GitHubAppSection() {
   })
 
   const manifestMutation = useMutation({
-    mutationFn: () => api.getGitHubAppManifest({ appName, apiBaseUrl, organization: organization || undefined }),
+    mutationFn: () => api.getGitHubAppManifest({ appName, apiBaseUrl, organization: organization || undefined, uiBaseUrl: window.location.origin }),
   })
 
   const handleCreateApp = async () => {
@@ -1198,7 +1198,10 @@ function GitHubAppSection() {
 
           <div className="flex items-center gap-3 pt-2 border-t border-border">
             <a
-              href={`https://github.com/settings/installations`}
+              href={status?.ownerType === 'Organization'
+                ? `https://github.com/organizations/${status.ownerLogin}/settings/apps/${status.appSlug}/installations`
+                : `https://github.com/settings/apps/${status?.appSlug}/installations`
+              }
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs text-accent hover:underline"
@@ -1247,7 +1250,7 @@ function GitHubAppSection() {
                   type="text"
                   value={appName}
                   onChange={(e) => setAppName(e.target.value)}
-                  placeholder="Vesta"
+                  placeholder="Leave empty for vesta-XXXX"
                   className="input w-full"
                 />
               </div>

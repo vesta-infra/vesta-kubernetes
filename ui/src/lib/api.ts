@@ -243,17 +243,17 @@ export const api = {
   deleteSharedSecret: (projectId: string, name: string) =>
     request<void>(`/projects/${projectId}/shared-secrets/${name}`, { method: 'DELETE' }),
 
-  bindSharedSecret: (appId: string, name: string) =>
+  bindSharedSecret: (appId: string, name: string, environment: string) =>
     request<any>(`/apps/${appId}/shared-secrets`, {
       method: 'POST',
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, environment }),
     }),
 
-  unbindSharedSecret: (appId: string, name: string) =>
-    request<void>(`/apps/${appId}/shared-secrets/${name}`, { method: 'DELETE' }),
+  unbindSharedSecret: (appId: string, name: string, environment?: string) =>
+    request<void>(`/apps/${appId}/shared-secrets/${name}${environment ? `?environment=${encodeURIComponent(environment)}` : ''}`, { method: 'DELETE' }),
 
   listAppSharedSecrets: (appId: string) =>
-    request<{ items: string[]; total: number }>(`/apps/${appId}/shared-secrets`),
+    request<{ items: { name: string; environments: string[] }[]; total: number }>(`/apps/${appId}/shared-secrets`),
 
   // Logs
   getAppLogs: (appId: string, environment: string, opts?: { tail?: number; pod?: string; container?: string; previous?: boolean }) => {
@@ -439,9 +439,9 @@ export const api = {
 
   // GitHub App
   getGitHubAppStatus: () =>
-    request<{ configured: boolean; appId?: number; appName?: string; installations?: number }>('/settings/github-app'),
+    request<{ configured: boolean; appId?: number; appName?: string; appSlug?: string; ownerLogin?: string; ownerType?: string; installations?: number }>('/settings/github-app'),
 
-  getGitHubAppManifest: (data: { appName?: string; apiBaseUrl: string; organization?: string }) =>
+  getGitHubAppManifest: (data: { appName?: string; apiBaseUrl: string; organization?: string; uiBaseUrl?: string }) =>
     request<{ manifest: any; githubUrl: string; state: string }>('/github/manifest', {
       method: 'POST',
       body: JSON.stringify(data),

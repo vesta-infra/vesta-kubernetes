@@ -46,13 +46,19 @@ type cachedToken struct {
 
 // GitHubAppCredentials holds the result of the manifest code exchange.
 type GitHubAppCredentials struct {
-	ID            int64  `json:"id"`
-	Slug          string `json:"slug"`
-	Name          string `json:"name"`
-	PEM           string `json:"pem"`
-	WebhookSecret string `json:"webhook_secret"`
-	ClientID      string `json:"client_id"`
-	ClientSecret  string `json:"client_secret"`
+	ID            int64            `json:"id"`
+	Slug          string           `json:"slug"`
+	Name          string           `json:"name"`
+	PEM           string           `json:"pem"`
+	WebhookSecret string           `json:"webhook_secret"`
+	ClientID      string           `json:"client_id"`
+	ClientSecret  string           `json:"client_secret"`
+	Owner         GitHubAppOwner   `json:"owner"`
+}
+
+type GitHubAppOwner struct {
+	Login string `json:"login"`
+	Type  string `json:"type"` // "User" or "Organization"
 }
 
 // GitHubInstallation represents a GitHub App installation.
@@ -346,7 +352,7 @@ func (s *GitHubAppService) ExchangeManifestCode(ctx context.Context, code string
 }
 
 // SaveToSecret stores the GitHub App credentials in a K8s Secret.
-func (s *GitHubAppService) SaveToSecret(ctx context.Context, appID int64, appName, pemKey, webhookSecret string) error {
+func (s *GitHubAppService) SaveToSecret(ctx context.Context, creds *GitHubAppCredentials) error {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      githubAppSecretName,
@@ -358,10 +364,13 @@ func (s *GitHubAppService) SaveToSecret(ctx context.Context, appID int64, appNam
 		},
 		Type: corev1.SecretTypeOpaque,
 		StringData: map[string]string{
-			"app-id":         fmt.Sprintf("%d", appID),
-			"app-name":       appName,
-			"private-key":    pemKey,
-			"webhook-secret": webhookSecret,
+			"app-id":         fmt.Sprintf("%d", creds.ID),
+			"app-name":       creds.Name,
+			"app-slug":       creds.Slug,
+			"owner-login":    creds.Owner.Login,
+			"owner-type":     creds.Owner.Type,
+			"private-key":    creds.PEM,
+			"webhook-secret": creds.WebhookSecret,
 		},
 	}
 
