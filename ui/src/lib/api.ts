@@ -365,6 +365,35 @@ export const api = {
     return request<any>(`/health/dashboard${q}`)
   },
 
+  // Builds
+  triggerBuild: (appId: string, data: { environment: string; commitSha?: string; branch?: string; reason?: string }) =>
+    request<any>(`/apps/${appId}/builds`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  listBuilds: (appId: string, params?: { status?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.status) qs.set('status', params.status)
+    if (params?.limit) qs.set('limit', String(params.limit))
+    if (params?.offset) qs.set('offset', String(params.offset))
+    const q = qs.toString() ? `?${qs}` : ''
+    return request<{ items: any[]; total: number }>(`/apps/${appId}/builds${q}`)
+  },
+
+  getBuild: (appId: string, buildId: string) =>
+    request<any>(`/apps/${appId}/builds/${buildId}`),
+
+  getBuildLogs: (appId: string, buildId: string, tail?: number) => {
+    const params = new URLSearchParams()
+    if (tail) params.set('tail', String(tail))
+    const q = params.toString() ? `?${params}` : ''
+    return request<{ buildId: string; status: string; logs: string }>(`/apps/${appId}/builds/${buildId}/logs${q}`)
+  },
+
+  cancelBuild: (appId: string, buildId: string) =>
+    request<any>(`/apps/${appId}/builds/${buildId}/cancel`, { method: 'POST' }),
+
   // Templates
   listTemplates: (params?: { category?: string; search?: string }) => {
     const qs = new URLSearchParams()

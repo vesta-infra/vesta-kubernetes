@@ -27,7 +27,7 @@ export default function AppDetailPage() {
   const [deployEnv, setDeployEnv] = useState('')
   const [secretEnv, setSecretEnv] = useState('')
   const [editing, setEditing] = useState(false)
-  const [activeTab, setActiveTab] = useState<'overview' | 'secrets' | 'logs' | 'terminal' | 'metrics'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'builds' | 'secrets' | 'logs' | 'terminal' | 'metrics'>('overview')
   const [showCloneModal, setShowCloneModal] = useState(false)
   const role = useUserRole()
 
@@ -240,7 +240,7 @@ export default function AppDetailPage() {
       )}
 
       <div className="flex border-b border-border">
-        {(['overview', ...(role !== 'viewer' ? ['secrets' as const, 'logs' as const, 'terminal' as const] : ['logs' as const]), 'metrics'] as const).map((tab) => (
+        {(['overview', 'builds', ...(role !== 'viewer' ? ['secrets' as const, 'logs' as const, 'terminal' as const] : ['logs' as const]), 'metrics'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -596,6 +596,10 @@ export default function AppDetailPage() {
             </div>
           )}
         </div>
+      )}
+
+      {activeTab === 'builds' && (
+        <AppBuilds appId={appId!} environments={appEnvironments} />
       )}
     </div>
   )
@@ -1744,6 +1748,309 @@ function AppTerminal({ appId, environments }: { appId: string; environments: str
         className="border border-border rounded-lg overflow-hidden bg-[#0d1117]"
         style={{ minHeight: '400px' }}
       />
+    </div>
+  )
+}
+
+function AppBuilds({ appId, environments }: { appId: string; environments: string[] }) {
+  const queryClient = useQueryClient()
+  const [buildEnv, setBuildEnv] = useState(environments[0] || '')
+  const [selectedBuild, setSelectedBuild] = useState<string | null>(null)
+  const [showTrigger, setShowTrigger] = useState(false)
+  const [commitSha, setCommitSha] = useState('')
+  const [branch, setBranch] = useState('')
+  const role = useUserRole()
+
+  const { data: builds, isLoading } = useQuery({
+    queryKey: ['builds', appId],
+    queryFn: () => api.listBuilds(appId, { limit: 30 }),
+    enabled: !!appId,
+    refetchInterval: 5000,
+  })
+
+  const triggerMutation = useMutation({
+    mutationFn: () => api.triggerBuild(appId, {
+      environment: buildEnv,
+      commitSha: commitSha || undefined,
+      branch: branch || undefined,
+    }),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['builds', appId] })
+      setShowTrigger(false)
+      setCommitSha('')
+      setBranch('')
+      if (res?.id) setSelectedBuild(res.id)
+    },
+  })
+
+  const cancelMutation = useMutation({
+    mutationFn: (buildId: string) => api.cancelBuild(appId, buildId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['builds', appId] }),
+  })
+
+  const statusIcon = (status: string) => {
+    switch (status) {
+      case 'success': return '✅'
+      case 'failed': return '❌'
+      case 'running': return '🔨'
+      case 'cancelled': return '🚫'
+      default: return '⏳'
+    }
+  }
+
+  const statusColor = (status: string) => {
+    switch (status) {
+      case 'success': return 'text-green-400'
+      case 'failed': return 'text-red-400'
+      case 'running': return 'text-yellow-400'
+      case 'cancelled': return 'text-text-tertiary'
+      default: return 'text-text-secondary'
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-mono tracking-wider uppercase text-text-secondary">Builds</h3>
+        {role !== 'viewer' && (
+          <button
+            onClick={() => setShowTrigger(!showTrigger)}
+            className="px-3 py-1.5 text-xs font-mono bg-accent text-white rounded hover:bg-accent/80 transition-colors"
+          >
+            Trigger Build
+          </button>
+        )}
+      </div>
+
+      {showTrigger && (
+        <div className="card p-4 space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs text-text-tertiary mb-1">Environment</label>
+              <select
+                value={buildEnv}
+                onChange={(e) => setBuildEnv(e.target.value)}
+                className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm"
+              >
+                {environments.map((env) => (
+                  <option key={env} value={env}>{env}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs text-text-tertiary mb-1">Branch (optional)</label>
+              <input
+                value={branch}
+                onChange={(e) => setBranch(e.target.value)}
+                placeholder="main"
+                className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-text-tertiary mb-1">Commit SHA (optional)</label>
+              <input
+                value={commitSha}
+                onChange={(e) => setCommitSha(e.target.value)}
+                placeholder="a1b2c3d4..."
+                className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm font-mono"
+              />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => triggerMutation.mutate()}
+              disabled={triggerMutation.isPending || !buildEnv}
+              className="px-4 py-1.5 text-xs font-mono bg-accent text-white rounded hover:bg-accent/80 transition-colors disabled:opacity-50"
+            >
+              {triggerMutation.isPending ? 'Starting...' : 'Start Build'}
+            </button>
+            <button
+              onClick={() => setShowTrigger(false)}
+              className="px-4 py-1.5 text-xs font-mono bg-surface-secondary text-text-secondary rounded hover:bg-surface-tertiary transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+          {triggerMutation.error && (
+            <p className="text-xs text-red-400">{(triggerMutation.error as Error).message}</p>
+          )}
+        </div>
+      )}
+
+      {selectedBuild && (
+        <BuildLogViewer appId={appId} buildId={selectedBuild} onClose={() => setSelectedBuild(null)} />
+      )}
+
+      {isLoading ? (
+        <div className="card p-5 text-center text-text-tertiary text-sm">Loading builds...</div>
+      ) : !builds?.items?.length ? (
+        <div className="card p-5 text-center text-text-tertiary text-sm">
+          No builds yet. Trigger a build or push to a linked repository.
+        </div>
+      ) : (
+        <div className="space-y-1">
+          {builds.items.map((b: any) => (
+            <div
+              key={b.id}
+              onClick={() => setSelectedBuild(selectedBuild === b.id ? null : b.id)}
+              className={`card p-3 cursor-pointer hover:bg-surface-secondary/50 transition-colors ${
+                selectedBuild === b.id ? 'ring-1 ring-accent' : ''
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <span title={b.status}>{statusIcon(b.status)}</span>
+                  <div>
+                    <div className="text-sm font-mono">
+                      <span className={statusColor(b.status)}>{b.status}</span>
+                      <span className="text-text-tertiary mx-2">·</span>
+                      <span className="text-text-secondary">{b.strategy}</span>
+                      {b.commitSha && (
+                        <>
+                          <span className="text-text-tertiary mx-2">·</span>
+                          <span className="text-text-tertiary">{b.commitSha.slice(0, 8)}</span>
+                        </>
+                      )}
+                    </div>
+                    <div className="text-xs text-text-tertiary mt-0.5">
+                      {b.branch && <span>{b.branch}</span>}
+                      <span className="mx-1">→</span>
+                      <span>{b.environment}</span>
+                      <span className="mx-2">·</span>
+                      <span>{b.triggeredBy}</span>
+                      <span className="mx-2">·</span>
+                      <span>{new Date(b.createdAt).toLocaleString()}</span>
+                      {b.durationMs > 0 && (
+                        <span className="ml-2">({Math.round(b.durationMs / 1000)}s)</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {(b.status === 'pending' || b.status === 'running') && role !== 'viewer' && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); cancelMutation.mutate(b.id) }}
+                      className="px-2 py-1 text-xs text-red-400 hover:text-red-300 font-mono"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  <span className="text-xs text-text-tertiary">
+                    {b.image?.split(':').pop()}
+                  </span>
+                </div>
+              </div>
+              {b.error && (
+                <div className="mt-2 text-xs text-red-400 font-mono bg-red-400/10 rounded px-2 py-1">
+                  {b.error}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BuildLogViewer({ appId, buildId, onClose }: { appId: string; buildId: string; onClose: () => void }) {
+  const logRef = useRef<HTMLPreElement>(null)
+  const [logs, setLogs] = useState<string>('')
+  const [streaming, setStreaming] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    const abortController = new AbortController()
+
+    const fetchLogs = async () => {
+      try {
+        // Try streaming first
+        const token = localStorage.getItem('vesta-token')
+        const res = await fetch(`/api/v1/apps/${appId}/builds/${buildId}/logs?follow=true`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          signal: abortController.signal,
+        })
+
+        if (!res.ok) {
+          // Fall back to non-streaming
+          const data = await api.getBuildLogs(appId, buildId)
+          if (!cancelled) {
+            setLogs(data.logs || '(no logs available)')
+          }
+          return
+        }
+
+        setStreaming(true)
+        const reader = res.body?.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (reader) {
+          const { done, value } = await reader.read()
+          if (done || cancelled) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() || ''
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6)
+              setLogs((prev) => prev + data + '\n')
+            } else if (line.startsWith('event: done')) {
+              setStreaming(false)
+            }
+          }
+
+          if (logRef.current) {
+            logRef.current.scrollTop = logRef.current.scrollHeight
+          }
+        }
+      } catch (err: any) {
+        if (err.name === 'AbortError') return
+        // Fallback
+        try {
+          const data = await api.getBuildLogs(appId, buildId)
+          if (!cancelled) {
+            setLogs(data.logs || '(no logs available)')
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
+    fetchLogs()
+    return () => {
+      cancelled = true
+      abortController.abort()
+    }
+  }, [appId, buildId])
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-2 bg-surface-secondary border-b border-border">
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-mono text-text-secondary">Build Logs</span>
+          <span className="text-xs font-mono text-text-tertiary">{buildId.slice(0, 8)}...</span>
+          {streaming && (
+            <span className="flex items-center gap-1 text-xs text-yellow-400">
+              <span className="w-1.5 h-1.5 bg-yellow-400 rounded-full animate-pulse" />
+              streaming
+            </span>
+          )}
+        </div>
+        <button
+          onClick={onClose}
+          className="text-text-tertiary hover:text-text-primary text-sm"
+        >
+          ✕
+        </button>
+      </div>
+      <pre
+        ref={logRef}
+        className="p-4 text-xs font-mono text-text-secondary bg-black/30 overflow-auto max-h-96 whitespace-pre-wrap"
+      >
+        {logs || 'Waiting for logs...'}
+      </pre>
     </div>
   )
 }

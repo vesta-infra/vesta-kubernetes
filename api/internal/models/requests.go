@@ -162,3 +162,15 @@ type UpdateNotificationChannelRequest struct {
 	Events  []string               `json:"events,omitempty"`
 	Enabled *bool                  `json:"enabled,omitempty"`
 }
+
+// Builds
+type TriggerBuildRequest struct {
+	CommitSHA   string `json:"commitSha,omitempty"`
+	Branch      string `json:"branch,omitempty"`
+	Environment string `json:"environment" binding:"required"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+type CancelBuildRequest struct {
+	Reason string `json:"reason,omitempty"`
+}

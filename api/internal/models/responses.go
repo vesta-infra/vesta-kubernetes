@@ -76,6 +76,26 @@ type ListResponse struct {
 	Total int         `json:"total"`
 }
 
+type BuildResponse struct {
+	ID          string  `json:"id"`
+	AppID       string  `json:"appId"`
+	ProjectID   string  `json:"projectId"`
+	Environment string  `json:"environment"`
+	Status      string  `json:"status"`
+	Strategy    string  `json:"strategy"`
+	CommitSHA   string  `json:"commitSha"`
+	Branch      string  `json:"branch"`
+	Repository  string  `json:"repository"`
+	Image       string  `json:"image"`
+	TriggeredBy string  `json:"triggeredBy"`
+	StartedAt   *string `json:"startedAt,omitempty"`
+	FinishedAt  *string `json:"finishedAt,omitempty"`
+	DurationMs  int     `json:"durationMs"`
+	Error       string  `json:"error,omitempty"`
+	LogsURL     string  `json:"logsUrl"`
+	CreatedAt   string  `json:"createdAt"`
+}
+
 func NowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }

@@ -20,12 +20,16 @@ import (
 type EventType string
 
 const (
-	EventDeployStarted EventType = "deploy.started"
-	EventDeployFailed  EventType = "deploy.failed"
-	EventAppRestarted  EventType = "app.restarted"
-	EventAppScaled     EventType = "app.scaled"
-	EventAppCreated    EventType = "app.created"
-	EventAppDeleted    EventType = "app.deleted"
+	EventDeployStarted  EventType = "deploy.started"
+	EventDeployFailed   EventType = "deploy.failed"
+	EventDeploySucceeded EventType = "deploy.succeeded"
+	EventBuildStarted   EventType = "build.started"
+	EventBuildSucceeded EventType = "build.succeeded"
+	EventBuildFailed    EventType = "build.failed"
+	EventAppRestarted   EventType = "app.restarted"
+	EventAppScaled      EventType = "app.scaled"
+	EventAppCreated     EventType = "app.created"
+	EventAppDeleted     EventType = "app.deleted"
 )
 
 type NotificationEvent struct {
