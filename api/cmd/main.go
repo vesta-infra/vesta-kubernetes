@@ -185,6 +185,9 @@ func main() {
 		auth.GET("/settings/github-app", middleware.RequireRole("admin"), h.GetGitHubAppStatus)
 		auth.GET("/settings/github-app/installations", middleware.RequireRole("admin"), h.ListGitHubAppInstallations)
 		auth.DELETE("/settings/github-app", middleware.RequireRole("admin"), h.DeleteGitHubApp)
+
+		// Git helpers
+		auth.GET("/git/branches", dv, h.ListRepoBranches)
 	}
 
 	log.Printf("Vesta API server starting on :%s", port)

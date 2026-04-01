@@ -223,3 +223,27 @@ func (h *Handler) DeleteGitHubApp(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"status": "removed"})
 }
+
+// ListRepoBranches lists branches for a repository via the GitHub App.
+// GET /api/v1/git/branches?repo=org/repo
+func (h *Handler) ListRepoBranches(c *gin.Context) {
+	repo := c.Query("repo")
+	if repo == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "repo query parameter is required"})
+		return
+	}
+
+	if h.GitHubApp == nil || !h.GitHubApp.IsConfigured() {
+		c.JSON(http.StatusOK, gin.H{"branches": []string{}})
+		return
+	}
+
+	branches, err := h.GitHubApp.ListRepoBranches(c.Request.Context(), repo)
+	if err != nil {
+		log.Printf("[github-app] list branches for %s: %v", repo, err)
+		c.JSON(http.StatusOK, gin.H{"branches": []string{}})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"branches": branches})
+}

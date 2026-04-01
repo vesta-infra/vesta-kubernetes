@@ -621,7 +621,7 @@ export default function AppDetailPage() {
       )}
 
       {activeTab === 'builds' && (
-        <AppBuilds appId={appId!} environments={appEnvironments} />
+        <AppBuilds appId={appId!} environments={appEnvironments} gitRepo={app?.spec?.git?.repository || ''} />
       )}
     </div>
   )
@@ -739,6 +739,14 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const [gitBranch, setGitBranch] = useState(app.spec?.git?.branch || '')
   const [gitAutoDeploy, setGitAutoDeploy] = useState(app.spec?.git?.autoDeployOnPush || false)
   const [gitTokenSecret, setGitTokenSecret] = useState(app.spec?.git?.tokenSecret || '')
+
+  const { data: branchesData } = useQuery({
+    queryKey: ['repoBranches', gitRepo],
+    queryFn: () => api.listRepoBranches(gitRepo),
+    enabled: !!gitRepo && gitRepo.includes('/'),
+    staleTime: 60_000,
+  })
+  const branches: string[] = branchesData?.branches || []
 
   // Build config
   const [buildStrategy, setBuildStrategy] = useState(app.spec?.build?.strategy || '')
@@ -1260,7 +1268,16 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             <div className="grid grid-cols-3 gap-3">
               <div>
                 <label className="text-xs text-text-tertiary mb-1 block">Branch</label>
-                <input value={gitBranch} onChange={e => setGitBranch(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="main" />
+                {branches.length > 0 ? (
+                  <select value={gitBranch} onChange={e => setGitBranch(e.target.value)} className="input-field font-mono text-xs w-full">
+                    <option value="">Select branch</option>
+                    {branches.map(b => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input value={gitBranch} onChange={e => setGitBranch(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="main" />
+                )}
               </div>
               <div>
                 <label className="text-xs text-text-tertiary mb-1 block">Token Secret</label>
@@ -1890,7 +1907,7 @@ function AppTerminal({ appId, environments }: { appId: string; environments: str
   )
 }
 
-function AppBuilds({ appId, environments }: { appId: string; environments: string[] }) {
+function AppBuilds({ appId, environments, gitRepo }: { appId: string; environments: string[]; gitRepo: string }) {
   const queryClient = useQueryClient()
   const [buildEnv, setBuildEnv] = useState(environments[0] || '')
   const [selectedBuild, setSelectedBuild] = useState<string | null>(null)
@@ -1898,6 +1915,14 @@ function AppBuilds({ appId, environments }: { appId: string; environments: strin
   const [commitSha, setCommitSha] = useState('')
   const [branch, setBranch] = useState('')
   const role = useUserRole()
+
+  const { data: branchesData } = useQuery({
+    queryKey: ['repoBranches', gitRepo],
+    queryFn: () => api.listRepoBranches(gitRepo),
+    enabled: !!gitRepo && gitRepo.includes('/'),
+    staleTime: 60_000,
+  })
+  const buildBranches: string[] = branchesData?.branches || []
 
   const { data: builds, isLoading } = useQuery({
     queryKey: ['builds', appId],
@@ -1977,12 +2002,25 @@ function AppBuilds({ appId, environments }: { appId: string; environments: strin
             </div>
             <div>
               <label className="block text-xs text-text-tertiary mb-1">Branch (optional)</label>
-              <input
-                value={branch}
-                onChange={(e) => setBranch(e.target.value)}
-                placeholder="main"
-                className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm"
-              />
+              {buildBranches.length > 0 ? (
+                <select
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                  className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm"
+                >
+                  <option value="">Default branch</option>
+                  {buildBranches.map(b => (
+                    <option key={b} value={b}>{b}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                  placeholder="main"
+                  className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm"
+                />
+              )}
             </div>
             <div>
               <label className="block text-xs text-text-tertiary mb-1">Commit SHA (optional)</label>

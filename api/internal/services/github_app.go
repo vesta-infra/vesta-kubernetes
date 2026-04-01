@@ -302,6 +302,46 @@ func (s *GitHubAppService) ListInstallations(ctx context.Context) ([]GitHubInsta
 	return installations, nil
 }
 
+// ListRepoBranches lists branches for a repository using an installation token.
+func (s *GitHubAppService) ListRepoBranches(ctx context.Context, fullRepo string) ([]string, error) {
+	token, err := s.GetTokenForRepo(ctx, fullRepo)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/branches?per_page=100", fullRepo)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("github list branches: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("github list branches: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var branches []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &branches); err != nil {
+		return nil, err
+	}
+
+	names := make([]string, len(branches))
+	for i, b := range branches {
+		names[i] = b.Name
+	}
+	return names, nil
+}
+
 // BuildManifest generates the GitHub App Manifest JSON for the manifest creation flow.
 func (s *GitHubAppService) BuildManifest(apiBaseURL, appName string) map[string]interface{} {
 	return map[string]interface{}{

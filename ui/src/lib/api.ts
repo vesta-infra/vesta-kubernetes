@@ -452,4 +452,8 @@ export const api = {
 
   deleteGitHubApp: () =>
     request<{ status: string }>('/settings/github-app', { method: 'DELETE' }),
+
+  // Git helpers
+  listRepoBranches: (repo: string) =>
+    request<{ branches: string[] }>(`/git/branches?repo=${encodeURIComponent(repo)}`),
 }
