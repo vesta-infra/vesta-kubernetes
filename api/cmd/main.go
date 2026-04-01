@@ -127,6 +127,7 @@ func main() {
 		auth.GET("/apps/:appId/envs/:env/secrets", dv, h.ListAppEnvSecrets)
 		auth.DELETE("/apps/:appId/envs/:env/secrets/:key", dv, h.DeleteAppEnvSecretKey)
 		auth.GET("/secrets", dv, h.ListSecrets)
+		auth.GET("/secrets/:secretId/reveal", middleware.RequireRole("admin"), h.RevealSecretValues)
 		auth.PUT("/secrets/:secretId", dv, h.UpdateSecret)
 		auth.DELETE("/secrets/:secretId", dv, h.DeleteSecret)
 		auth.POST("/secrets/registry", dv, h.CreateRegistrySecret)

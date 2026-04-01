@@ -98,7 +98,7 @@ export default function TemplatesPage() {
       {deployingId && (
         <DeployTemplateModal
           templateId={deployingId}
-          templateName={templates?.items?.find((t: any) => t.id === deployingId)?.name || deployingId}
+          template={templates?.items?.find((t: any) => t.id === deployingId)}
           onClose={() => setDeployingId(null)}
         />
       )}
@@ -106,17 +106,19 @@ export default function TemplatesPage() {
   )
 }
 
-function DeployTemplateModal({ templateId, templateName, onClose }: {
+function DeployTemplateModal({ templateId, template, onClose }: {
   templateId: string
-  templateName: string
+  template: any
   onClose: () => void
 }) {
+  const templateName = template?.name || templateId
+  const hasStorage = !!template?.dataPath
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [name, setName] = useState(templateId)
   const [project, setProject] = useState('')
   const [selectedEnvs, setSelectedEnvs] = useState<string[]>([])
-
+  const [storageSize, setStorageSize] = useState('1Gi')
   const { data: projects } = useQuery({
     queryKey: ['projects'],
     queryFn: () => api.listProjects(),
@@ -133,6 +135,7 @@ function DeployTemplateModal({ templateId, templateName, onClose }: {
       project,
       name,
       environments: selectedEnvs,
+      ...(hasStorage ? { storageSize } : {}),
     }),
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ['apps'] })
@@ -181,6 +184,19 @@ function DeployTemplateModal({ templateId, templateName, onClose }: {
                   </label>
                 ))}
               </div>
+            </div>
+          )}
+          {hasStorage && (
+            <div>
+              <label className="label">Storage Size</label>
+              <select value={storageSize} onChange={(e) => setStorageSize(e.target.value)} className="input-field">
+                <option value="1Gi">1 GB</option>
+                <option value="5Gi">5 GB</option>
+                <option value="10Gi">10 GB</option>
+                <option value="20Gi">20 GB</option>
+                <option value="50Gi">50 GB</option>
+              </select>
+              <p className="text-[11px] text-text-tertiary mt-1">Persistent volume for {template?.dataPath}</p>
             </div>
           )}
           <div className="flex gap-3 pt-2">

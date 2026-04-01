@@ -1,15 +1,13 @@
 package handlers
 
 import (
-	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/resource"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
 )
@@ -102,16 +100,71 @@ func (h *Handler) DeployTemplate(c *gin.Context) {
 		"port": tmpl.Port,
 	}
 
-	// Inject env vars from template
-	if len(tmpl.EnvVars) > 0 {
-		envVarList := make([]map[string]interface{}, 0, len(tmpl.EnvVars))
-		for k, v := range tmpl.EnvVars {
-			envVarList = append(envVarList, map[string]interface{}{
+	// Separate env vars into sensitive (passwords/tokens) and plain values
+	var plainEnvVars []map[string]interface{}
+	secretData := map[string]string{}
+	for k, v := range tmpl.EnvVars {
+		if isSensitiveEnvVar(k) {
+			secretData[k] = generatePassword()
+		} else {
+			plainEnvVars = append(plainEnvVars, map[string]interface{}{
 				"name":  k,
 				"value": v,
 			})
 		}
-		runtime["env"] = envVarList
+	}
+
+	if len(plainEnvVars) > 0 {
+		runtime["env"] = plainEnvVars
+	}
+
+	// Create VestaSecret for each environment with generated credentials
+	if len(secretData) > 0 {
+		secretName := appName + "-secrets"
+		environments := req.Environments
+		if len(environments) == 0 {
+			environments = []string{"default"}
+		}
+		for _, env := range environments {
+			namespace := fmt.Sprintf("%s-%s", req.Project, env)
+			secretSpec := map[string]interface{}{
+				"type":        "Opaque",
+				"project":     req.Project,
+				"app":         appName,
+				"environment": env,
+			}
+			data := make(map[string]interface{}, len(secretData))
+			for k, v := range secretData {
+				data[k] = v
+			}
+			secretSpec["data"] = data
+
+			secretObj := map[string]interface{}{
+				"apiVersion": "kubernetes.getvesta.sh/v1alpha1",
+				"kind":       "VestaSecret",
+				"metadata": map[string]interface{}{
+					"name":      secretName,
+					"namespace": namespace,
+					"labels": map[string]interface{}{
+						"kubernetes.getvesta.sh/project":     req.Project,
+						"kubernetes.getvesta.sh/app":         appName,
+						"kubernetes.getvesta.sh/environment": env,
+						"kubernetes.getvesta.sh/template":    tmpl.ID,
+					},
+				},
+				"spec": secretSpec,
+			}
+			if _, err := h.K8s.CreateResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, secretObj); err != nil {
+				if !strings.Contains(err.Error(), "already exists") {
+					c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to create secret for env %s: %v", env, err)})
+					return
+				}
+			}
+		}
+		// Bind secret to app so the operator injects it via envFrom
+		runtime["secrets"] = []map[string]interface{}{
+			{"secretRef": map[string]interface{}{"name": secretName}},
+		}
 	}
 
 	// Add command if specified
@@ -119,12 +172,12 @@ func (h *Handler) DeployTemplate(c *gin.Context) {
 		runtime["command"] = tmpl.Command
 	}
 
-	// Create PVC and add volume mount if template needs persistent storage
+	// Add volume mount if template needs persistent storage (operator creates the PVC)
 	if tmpl.DataPath != "" {
 		pvcName := appName + "-data"
-		if err := ensurePVC(c.Request.Context(), h.K8s, pvcName, vestaSystemNS); err != nil {
-			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to create PVC: %v", err)})
-			return
+		storageSize := req.StorageSize
+		if storageSize == "" {
+			storageSize = "1Gi"
 		}
 		runtime["volumes"] = []map[string]interface{}{
 			{
@@ -132,6 +185,7 @@ func (h *Handler) DeployTemplate(c *gin.Context) {
 				"mountPath": tmpl.DataPath,
 				"persistentVolumeClaim": map[string]interface{}{
 					"claimName": pvcName,
+					"size":      storageSize,
 				},
 			},
 		}
@@ -183,24 +237,15 @@ func (h *Handler) DeployTemplate(c *gin.Context) {
 	})
 }
 
-func ensurePVC(ctx context.Context, k *k8s.Client, name, namespace string) error {
-	pvc := &corev1.PersistentVolumeClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: corev1.PersistentVolumeClaimSpec{
-			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{
-					corev1.ResourceStorage: resource.MustParse("1Gi"),
-				},
-			},
-		},
+func isSensitiveEnvVar(key string) bool {
+	upper := strings.ToUpper(key)
+	return strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "TOKEN")
+}
+
+func generatePassword() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "changeme-" + hex.EncodeToString(b[:4])
 	}
-	_, err := k.Clientset.CoreV1().PersistentVolumeClaims(namespace).Create(ctx, pvc, metav1.CreateOptions{})
-	if err != nil && strings.Contains(err.Error(), "already exists") {
-		return nil
-	}
-	return err
+	return hex.EncodeToString(b)
 }

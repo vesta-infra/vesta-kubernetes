@@ -192,6 +192,9 @@ spec:
                             properties:
                               claimName:
                                 type: string
+                              size:
+                                type: string
+                                description: Storage size for the PVC (e.g. 1Gi, 5Gi, 10Gi). Defaults to 1Gi.
                             required: [claimName]
                         required: [name, mountPath]
                 scaling:

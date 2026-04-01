@@ -214,6 +214,9 @@ export const api = {
   deleteSecret: (secretId: string) =>
     request<void>(`/secrets/${secretId}`, { method: 'DELETE' }),
 
+  revealSecretValues: (secretId: string) =>
+    request<{ id: string; name: string; values: Record<string, string> }>(`/secrets/${secretId}/reveal`),
+
   // Registry Secrets (image pull secrets)
   createRegistrySecret: (data: { name: string; registry: string; username: string; password: string }) =>
     request<any>('/secrets/registry', {
@@ -403,7 +406,7 @@ export const api = {
     return request<{ items: any[]; total: number }>(`/templates${q}`)
   },
 
-  deployTemplate: (templateId: string, data: { project: string; environments: string[]; name?: string; overrides?: Record<string, any> }) =>
+  deployTemplate: (templateId: string, data: { project: string; environments: string[]; name?: string; storageSize?: string; overrides?: Record<string, any> }) =>
     request<any>(`/templates/${templateId}/deploy`, {
       method: 'POST',
       body: JSON.stringify(data),
