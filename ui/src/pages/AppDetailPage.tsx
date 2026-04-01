@@ -698,6 +698,15 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     }))
   })
 
+  // Volumes (PVC mounts)
+  const [volumes, setVolumes] = useState<{ name: string; mountPath: string; claimName: string }[]>(() => {
+    return (app.spec?.runtime?.volumes || []).map((v: any) => ({
+      name: v.name || '',
+      mountPath: v.mountPath || '',
+      claimName: v.persistentVolumeClaim?.claimName || '',
+    }))
+  })
+
   // Sleep / Scale-to-Zero
   const [sleepEnabled, setSleepEnabled] = useState(app.spec?.sleep?.enabled || false)
   const [sleepTimeout, setSleepTimeout] = useState(app.spec?.sleep?.inactivityTimeout || '30m')
@@ -724,9 +733,16 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       }
     }
 
+    // Volumes
+    const validVolumes = volumes.filter(v => v.name && v.mountPath && v.claimName).map(v => ({
+      name: v.name,
+      mountPath: v.mountPath,
+      persistentVolumeClaim: { claimName: v.claimName },
+    }))
+
     // Runtime & Service
     if (useServiceConfig) {
-      patch.runtime = { port: 0 }
+      patch.runtime = { port: 0, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
       patch.service = {
         type: serviceType,
         ports: servicePorts.filter(p => p.name && p.port).map(p => ({
@@ -738,7 +754,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         })),
       }
     } else {
-      patch.runtime = { port: Number.parseInt(port) || 3000 }
+      patch.runtime = { port: Number.parseInt(port) || 3000, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
       patch.service = null
     }
 
@@ -1036,6 +1052,24 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             </select>
           </div>
         )}
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <label className="label">Volumes</label>
+          <button type="button" onClick={() => setVolumes(prev => [...prev, { name: '', mountPath: '', claimName: '' }])} className="text-xs text-accent hover:text-accent-glow">+ Add</button>
+        </div>
+        <p className="text-[11px] text-text-tertiary mb-2">
+          Mount existing PersistentVolumeClaims into the container.
+        </p>
+        {volumes.map((v, i) => (
+          <div key={i} className="flex gap-2 mb-2">
+            <input value={v.name} onChange={e => { const u = [...volumes]; u[i] = { ...v, name: e.target.value }; setVolumes(u) }} placeholder="volume name" className="input-field flex-1 font-mono text-xs" />
+            <input value={v.mountPath} onChange={e => { const u = [...volumes]; u[i] = { ...v, mountPath: e.target.value }; setVolumes(u) }} placeholder="/data" className="input-field flex-1 font-mono text-xs" />
+            <input value={v.claimName} onChange={e => { const u = [...volumes]; u[i] = { ...v, claimName: e.target.value }; setVolumes(u) }} placeholder="pvc-name" className="input-field flex-1 font-mono text-xs" />
+            <button type="button" onClick={() => setVolumes(prev => prev.filter((_, j) => j !== i))} className="text-text-tertiary hover:text-status-failed text-xs px-2">&times;</button>
+          </div>
+        ))}
       </div>
 
       {Object.keys(envConfigs).length > 0 && (
