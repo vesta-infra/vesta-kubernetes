@@ -464,6 +464,24 @@ export default function AppDetailPage() {
             <section className="card p-5">
               <h3 className="section-title mb-4">Configuration</h3>
               <div className="space-y-3">
+                {app.spec?.git?.repository && (
+                  <>
+                    <div className="flex items-center gap-2 mb-1">
+                      <svg className="w-4 h-4 text-text-tertiary" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                      <span className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary">Git Source</span>
+                    </div>
+                    <ConfigItem label="Repository" value={app.spec.git.repository} mono />
+                    <ConfigItem label="Branch" value={app.spec.git.branch || 'main'} mono />
+                    <ConfigItem label="Auto-deploy" value={app.spec.git.autoDeployOnPush ? 'Enabled' : 'Disabled'} accent={app.spec.git.autoDeployOnPush} />
+                    {app.spec?.build?.strategy && (
+                      <ConfigItem label="Build Strategy" value={app.spec.build.strategy} mono />
+                    )}
+                    {app.status?.lastCommitSHA && (
+                      <ConfigItem label="Last Commit" value={app.status.lastCommitSHA.slice(0, 8)} mono />
+                    )}
+                    <div className="border-t border-border-subtle my-3" />
+                  </>
+                )}
                 <ConfigItem label="Image Repository" value={app.spec?.image?.repository} mono />
                 {app.spec?.service?.ports?.length > 0 ? (
                   <>
@@ -711,6 +729,17 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     }))
   })
 
+  // Git source
+  const [gitProvider, setGitProvider] = useState(app.spec?.git?.provider || 'github')
+  const [gitRepo, setGitRepo] = useState(app.spec?.git?.repository || '')
+  const [gitBranch, setGitBranch] = useState(app.spec?.git?.branch || '')
+  const [gitAutoDeploy, setGitAutoDeploy] = useState(app.spec?.git?.autoDeployOnPush || false)
+  const [gitTokenSecret, setGitTokenSecret] = useState(app.spec?.git?.tokenSecret || '')
+
+  // Build config
+  const [buildStrategy, setBuildStrategy] = useState(app.spec?.build?.strategy || '')
+  const [buildDockerfile, setBuildDockerfile] = useState(app.spec?.build?.dockerfile || 'Dockerfile')
+
   // Sleep / Scale-to-Zero
   const [sleepEnabled, setSleepEnabled] = useState(app.spec?.sleep?.enabled || false)
   const [sleepTimeout, setSleepTimeout] = useState(app.spec?.sleep?.inactivityTimeout || '30m')
@@ -830,6 +859,29 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         })),
       }),
     }))
+
+    // Git source
+    if (gitRepo) {
+      patch.git = {
+        provider: gitProvider,
+        repository: gitRepo,
+        branch: gitBranch || 'main',
+        autoDeployOnPush: gitAutoDeploy,
+        ...(gitTokenSecret && { tokenSecret: gitTokenSecret }),
+      }
+    } else {
+      patch.git = null
+    }
+
+    // Build config
+    if (buildStrategy && buildStrategy !== 'image') {
+      patch.build = {
+        strategy: buildStrategy,
+        ...(buildStrategy === 'dockerfile' && buildDockerfile !== 'Dockerfile' && { dockerfile: buildDockerfile }),
+      }
+    } else if (buildStrategy === 'image' || !buildStrategy) {
+      patch.build = null
+    }
 
     // Sleep / Scale-to-Zero
     if (sleepEnabled) {
@@ -1176,6 +1228,88 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           )}
         </div>
       )}
+
+      {/* Git Source */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="label mb-0">Git Source</label>
+          {!gitRepo && (
+            <button type="button" onClick={() => setGitRepo('org/repo')} className="text-xs text-accent hover:text-accent-glow">+ Link Repository</button>
+          )}
+        </div>
+        {gitRepo && (
+          <div className="rounded-lg border border-border bg-surface-1 p-4 space-y-3">
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="text-xs text-text-tertiary mb-1 block">Provider</label>
+                <select value={gitProvider} onChange={e => setGitProvider(e.target.value)} className="input-field text-xs w-full">
+                  <option value="github">GitHub</option>
+                  <option value="gitlab">GitLab</option>
+                  <option value="bitbucket">Bitbucket</option>
+                </select>
+              </div>
+              <div className="col-span-2">
+                <label className="text-xs text-text-tertiary mb-1 block">Repository</label>
+                <input value={gitRepo} onChange={e => setGitRepo(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="org/repo-name" />
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="text-xs text-text-tertiary mb-1 block">Branch</label>
+                <input value={gitBranch} onChange={e => setGitBranch(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="main" />
+              </div>
+              <div>
+                <label className="text-xs text-text-tertiary mb-1 block">Token Secret</label>
+                <input value={gitTokenSecret} onChange={e => setGitTokenSecret(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="github-token" />
+                <p className="text-[10px] text-text-tertiary mt-0.5">K8s secret name with key &quot;token&quot;</p>
+              </div>
+              <div className="flex items-end pb-1">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={gitAutoDeploy} onChange={e => setGitAutoDeploy(e.target.checked)} className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20" />
+                  <span className="text-xs text-text-secondary">Auto-deploy on push</span>
+                </label>
+              </div>
+            </div>
+            <div className="flex items-center justify-between pt-1">
+              <button type="button" onClick={() => { setGitRepo(''); setGitBranch(''); setGitAutoDeploy(false); setGitTokenSecret('') }} className="text-xs text-status-failed hover:text-red-300">Unlink Repository</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Build Strategy */}
+      <div className="space-y-3">
+        <label className="label">Build Strategy</label>
+        <div className="grid grid-cols-5 gap-2">
+          {[
+            { value: '', label: 'None', desc: 'Pre-built image' },
+            { value: 'dockerfile', label: 'Dockerfile', desc: 'Kaniko build' },
+            { value: 'nixpacks', label: 'Nixpacks', desc: 'Auto-detect' },
+            { value: 'buildpacks', label: 'Buildpacks', desc: 'Cloud Native' },
+            { value: 'image', label: 'Image Only', desc: 'No build' },
+          ].map(opt => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setBuildStrategy(opt.value)}
+              className={`p-2.5 rounded-lg border text-center transition-all ${
+                buildStrategy === opt.value
+                  ? 'border-accent bg-accent/10 text-accent'
+                  : 'border-border bg-surface-1 text-text-secondary hover:border-text-tertiary'
+              }`}
+            >
+              <div className="text-xs font-mono font-medium">{opt.label}</div>
+              <div className="text-[10px] text-text-tertiary mt-0.5">{opt.desc}</div>
+            </button>
+          ))}
+        </div>
+        {buildStrategy === 'dockerfile' && (
+          <div>
+            <label className="text-xs text-text-tertiary mb-1 block">Dockerfile Path</label>
+            <input value={buildDockerfile} onChange={e => setBuildDockerfile(e.target.value)} className="input-field font-mono text-xs w-48" placeholder="Dockerfile" />
+          </div>
+        )}
+      </div>
 
       <div>
         <div className="flex items-center justify-between mb-2">

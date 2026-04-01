@@ -66,6 +66,7 @@ func (h *Handler) DeployTemplate(c *gin.Context) {
 		Project      string                 `json:"project" binding:"required"`
 		Environments []string               `json:"environments,omitempty"`
 		Name         string                 `json:"name,omitempty"`
+		StorageSize  string                 `json:"storageSize,omitempty"`
 		Overrides    map[string]interface{} `json:"overrides,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {

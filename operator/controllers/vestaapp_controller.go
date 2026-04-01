@@ -130,6 +130,10 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return r.updateStatusFailed(ctx, &app, err)
 		}
 
+		if err := r.reconcilePVCs(ctx, &app, target.Namespace); err != nil {
+			return r.updateStatusFailed(ctx, &app, err)
+		}
+
 		if err := r.reconcileDeployment(ctx, &app, target, projectLabels, projectAnnotations); err != nil {
 			return r.updateStatusFailed(ctx, &app, err)
 		}
@@ -743,6 +747,49 @@ func (r *VestaAppReconciler) buildPodSpec(app *vestav1alpha1.VestaApp, container
 	}
 
 	return podSpec
+}
+
+func (r *VestaAppReconciler) reconcilePVCs(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) error {
+	logger := log.FromContext(ctx)
+	for _, v := range app.Spec.Runtime.Volumes {
+		if v.PersistentVolumeClaim == nil {
+			continue
+		}
+		size := v.PersistentVolumeClaim.Size
+		if size == "" {
+			size = "1Gi"
+		}
+		pvc := &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      v.PersistentVolumeClaim.ClaimName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/managed-by":   "vesta",
+					"kubernetes.getvesta.sh/app":     app.Name,
+					"kubernetes.getvesta.sh/project": app.Spec.Project,
+				},
+			},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{
+					Requests: corev1.ResourceList{
+						corev1.ResourceStorage: resource.MustParse(size),
+					},
+				},
+			},
+		}
+		existing := &corev1.PersistentVolumeClaim{}
+		err := r.Get(ctx, client.ObjectKeyFromObject(pvc), existing)
+		if errors.IsNotFound(err) {
+			logger.Info("creating PVC", "name", pvc.Name, "namespace", namespace, "size", size)
+			if err := r.Create(ctx, pvc); err != nil {
+				return fmt.Errorf("create PVC %s: %w", pvc.Name, err)
+			}
+		} else if err != nil {
+			return fmt.Errorf("get PVC %s: %w", pvc.Name, err)
+		}
+	}
+	return nil
 }
 
 func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) error {

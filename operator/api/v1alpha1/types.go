@@ -122,6 +122,7 @@ type VolumeMount struct {
 
 type PVCRef struct {
 	ClaimName string `json:"claimName"`
+	Size      string `json:"size,omitempty"`
 }
 
 type ScalingConfig struct {
