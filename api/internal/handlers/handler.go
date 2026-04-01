@@ -12,10 +12,13 @@ type Handler struct {
 	Notifier       *services.Notifier
 	Builder        *services.Builder
 	GitHubNotifier *services.GitHubStatusNotifier
+	GitHubApp      *services.GitHubAppService
 }
 
 func New(kc *k8s.Client, database *db.DB, notifier *services.Notifier) *Handler {
 	builder := services.NewBuilder(kc.Clientset, database, notifier)
 	ghNotifier := services.NewGitHubStatusNotifier()
-	return &Handler{K8s: kc, DB: database, Notifier: notifier, Builder: builder, GitHubNotifier: ghNotifier}
+	ghApp := services.NewGitHubAppService(kc.Clientset)
+	builder.SetGitHubApp(ghApp)
+	return &Handler{K8s: kc, DB: database, Notifier: notifier, Builder: builder, GitHubNotifier: ghNotifier, GitHubApp: ghApp}
 }

@@ -4,7 +4,12 @@ import { api } from '../lib/api'
 import { useUserRole } from '../lib/useRole'
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'general' | 'teams' | 'users' | 'roles' | 'audit' | 'webhooks'>('general')
+  const [activeTab, setActiveTab] = useState<'general' | 'teams' | 'users' | 'roles' | 'audit' | 'webhooks' | 'integrations'>(() => {
+    const params = new URLSearchParams(window.location.search)
+    const tab = params.get('tab')
+    if (tab === 'integrations') return 'integrations'
+    return 'general'
+  })
   const role = useUserRole()
   const isAdmin = role === 'admin'
 
@@ -14,6 +19,7 @@ export default function SettingsPage() {
     { key: 'users' as const, label: 'Users' },
     { key: 'roles' as const, label: 'Roles' },
     ...(isAdmin ? [
+      { key: 'integrations' as const, label: 'Integrations' },
       { key: 'audit' as const, label: 'Audit Log' },
       { key: 'webhooks' as const, label: 'Webhooks' },
     ] : []),
@@ -74,6 +80,12 @@ export default function SettingsPage() {
       {activeTab === 'webhooks' && isAdmin && (
         <div className="space-y-8">
           <WebhookDeliveriesSection />
+        </div>
+      )}
+
+      {activeTab === 'integrations' && isAdmin && (
+        <div className="space-y-8">
+          <GitHubAppSection />
         </div>
       )}
     </div>
@@ -1066,6 +1078,210 @@ function WebhookDeliveriesSection() {
           <button onClick={() => setPage(Math.max(0, page - 1))} disabled={page === 0} className="btn-ghost text-xs disabled:opacity-30">Previous</button>
           <span className="text-[11px] text-text-tertiary">{page * limit + 1}–{Math.min((page + 1) * limit, total)} of {total}</span>
           <button onClick={() => setPage(page + 1)} disabled={(page + 1) * limit >= total} className="btn-ghost text-xs disabled:opacity-30">Next</button>
+        </div>
+      )}
+    </section>
+  )
+}
+
+function GitHubAppSection() {
+  const queryClient = useQueryClient()
+  const [apiBaseUrl, setApiBaseUrl] = useState('')
+  const [organization, setOrganization] = useState('')
+  const [appName, setAppName] = useState('Vesta')
+  const [showSetup, setShowSetup] = useState(false)
+
+  const githubSuccess = new URLSearchParams(window.location.search).get('github') === 'success'
+
+  const { data: status, isLoading } = useQuery({
+    queryKey: ['github-app-status'],
+    queryFn: () => api.getGitHubAppStatus(),
+  })
+
+  const { data: installations } = useQuery({
+    queryKey: ['github-app-installations'],
+    queryFn: () => api.listGitHubAppInstallations(),
+    enabled: status?.configured === true,
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: () => api.deleteGitHubApp(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['github-app-status'] })
+      queryClient.invalidateQueries({ queryKey: ['github-app-installations'] })
+    },
+  })
+
+  const manifestMutation = useMutation({
+    mutationFn: () => api.getGitHubAppManifest({ appName, apiBaseUrl, organization: organization || undefined }),
+  })
+
+  const handleCreateApp = async () => {
+    if (!apiBaseUrl) return
+    try {
+      const result = await manifestMutation.mutateAsync()
+      // Create a hidden form and submit it to GitHub
+      const form = document.createElement('form')
+      form.method = 'POST'
+      form.action = `${result.githubUrl}?state=${result.state}`
+      const input = document.createElement('input')
+      input.type = 'hidden'
+      input.name = 'manifest'
+      input.value = JSON.stringify(result.manifest)
+      form.appendChild(input)
+      document.body.appendChild(form)
+      form.submit()
+    } catch {
+      // error handled by react-query
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <section className="bg-surface border border-border rounded-lg p-6">
+        <div className="text-text-tertiary text-sm">Loading...</div>
+      </section>
+    )
+  }
+
+  return (
+    <section className="bg-surface border border-border rounded-lg p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-medium text-text-primary">GitHub App</h3>
+          <p className="text-xs text-text-tertiary mt-1">Connect a GitHub App for automatic webhook delivery, private repo access, and commit status reporting.</p>
+        </div>
+        {status?.configured && (
+          <span className="px-2 py-1 bg-green-500/10 text-green-400 text-[11px] font-mono rounded">Connected</span>
+        )}
+      </div>
+
+      {githubSuccess && (
+        <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-4 text-sm text-green-400">
+          GitHub App created successfully! Install it on your repositories to start using it.
+        </div>
+      )}
+
+      {status?.configured ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <span className="text-[11px] text-text-tertiary uppercase tracking-wider">App Name</span>
+              <p className="text-sm text-text-primary mt-1 font-mono">{status.appName || '—'}</p>
+            </div>
+            <div>
+              <span className="text-[11px] text-text-tertiary uppercase tracking-wider">App ID</span>
+              <p className="text-sm text-text-primary mt-1 font-mono">{status.appId}</p>
+            </div>
+            <div>
+              <span className="text-[11px] text-text-tertiary uppercase tracking-wider">Installations</span>
+              <p className="text-sm text-text-primary mt-1 font-mono">{status.installations ?? 0}</p>
+            </div>
+          </div>
+
+          {installations?.installations && installations.installations.length > 0 && (
+            <div>
+              <h4 className="text-xs text-text-tertiary uppercase tracking-wider mb-2">Installed On</h4>
+              <div className="space-y-2">
+                {installations.installations.map((inst: any) => (
+                  <div key={inst.id} className="flex items-center gap-3 bg-bg-primary rounded-lg px-3 py-2">
+                    {inst.account?.avatar_url && (
+                      <img src={inst.account.avatar_url} alt="" className="w-6 h-6 rounded-full" />
+                    )}
+                    <span className="text-sm text-text-primary font-mono">{inst.account?.login}</span>
+                    <span className="text-[11px] text-text-tertiary">{inst.account?.type}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center gap-3 pt-2 border-t border-border">
+            <a
+              href={`https://github.com/settings/installations`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-accent hover:underline"
+            >
+              Manage installations on GitHub →
+            </a>
+            <div className="flex-1" />
+            <button
+              onClick={() => {
+                if (confirm('Remove GitHub App configuration? This will not delete the app on GitHub.')) {
+                  deleteMutation.mutate()
+                }
+              }}
+              className="btn-ghost text-xs text-red-400 hover:text-red-300"
+              disabled={deleteMutation.isPending}
+            >
+              {deleteMutation.isPending ? 'Removing...' : 'Remove'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {!showSetup ? (
+            <button
+              onClick={() => setShowSetup(true)}
+              className="btn-primary text-xs"
+            >
+              Create GitHub App
+            </button>
+          ) : (
+            <div className="space-y-3 max-w-lg">
+              <div>
+                <label className="block text-xs text-text-secondary mb-1">API Base URL <span className="text-red-400">*</span></label>
+                <input
+                  type="url"
+                  value={apiBaseUrl}
+                  onChange={(e) => setApiBaseUrl(e.target.value)}
+                  placeholder="https://vesta-api.yourdomain.com"
+                  className="input w-full"
+                />
+                <p className="text-[11px] text-text-tertiary mt-1">The publicly accessible URL of your Vesta API server.</p>
+              </div>
+              <div>
+                <label className="block text-xs text-text-secondary mb-1">App Name</label>
+                <input
+                  type="text"
+                  value={appName}
+                  onChange={(e) => setAppName(e.target.value)}
+                  placeholder="Vesta"
+                  className="input w-full"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-text-secondary mb-1">Organization (optional)</label>
+                <input
+                  type="text"
+                  value={organization}
+                  onChange={(e) => setOrganization(e.target.value)}
+                  placeholder="Leave empty for personal account"
+                  className="input w-full"
+                />
+                <p className="text-[11px] text-text-tertiary mt-1">Create the app under an organization instead of your personal account.</p>
+              </div>
+              <div className="flex items-center gap-3 pt-2">
+                <button
+                  onClick={handleCreateApp}
+                  disabled={!apiBaseUrl || manifestMutation.isPending}
+                  className="btn-primary text-xs disabled:opacity-50"
+                >
+                  {manifestMutation.isPending ? 'Redirecting...' : 'Create on GitHub'}
+                </button>
+                <button
+                  onClick={() => setShowSetup(false)}
+                  className="btn-ghost text-xs"
+                >
+                  Cancel
+                </button>
+              </div>
+              {manifestMutation.isError && (
+                <p className="text-xs text-red-400">{(manifestMutation.error as Error).message}</p>
+              )}
+            </div>
+          )}
         </div>
       )}
     </section>

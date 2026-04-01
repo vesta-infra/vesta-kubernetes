@@ -60,6 +60,9 @@ func main() {
 	// Webhooks (unauthenticated, verified by signature)
 	v1.POST("/webhooks/:provider", h.ReceiveWebhook)
 
+	// GitHub App manifest flow (callback is unauthenticated, state-verified)
+	v1.GET("/github/callback", h.GitHubAppCallback)
+
 	// Authenticated routes
 	auth := v1.Group("")
 	auth.Use(middleware.AuthRequired(database))
@@ -176,6 +179,12 @@ func main() {
 
 		// Webhook delivery log (admin only)
 		auth.GET("/webhook-deliveries", middleware.RequireRole("admin"), h.ListWebhookDeliveries)
+
+		// GitHub App settings (admin only)
+		auth.POST("/github/manifest", middleware.RequireRole("admin"), h.GetGitHubAppManifest)
+		auth.GET("/settings/github-app", middleware.RequireRole("admin"), h.GetGitHubAppStatus)
+		auth.GET("/settings/github-app/installations", middleware.RequireRole("admin"), h.ListGitHubAppInstallations)
+		auth.DELETE("/settings/github-app", middleware.RequireRole("admin"), h.DeleteGitHubApp)
 	}
 
 	log.Printf("Vesta API server starting on :%s", port)

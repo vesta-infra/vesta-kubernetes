@@ -78,9 +78,17 @@ func (h *Handler) ReceiveWebhook(c *gin.Context) {
 func (h *Handler) handleGitHubWebhook(c *gin.Context, body []byte, payload map[string]interface{}, deliveryID string, startTime time.Time) {
 	event := c.GetHeader("X-GitHub-Event")
 
-	if secret := c.GetHeader("X-Hub-Secret"); secret != "" {
-		sig := c.GetHeader("X-Hub-Signature-256")
-		if !verifyGitHubSignature(body, sig, secret) {
+	// Verify webhook signature — try per-webhook secret first, then GitHub App webhook secret
+	sig := c.GetHeader("X-Hub-Signature-256")
+	if sig != "" {
+		verified := false
+		if secret := c.GetHeader("X-Hub-Secret"); secret != "" {
+			verified = verifyGitHubSignature(body, sig, secret)
+		}
+		if !verified && h.GitHubApp != nil && h.GitHubApp.IsConfigured() {
+			verified = verifyGitHubSignature(body, sig, h.GitHubApp.WebhookSecret())
+		}
+		if !verified {
 			durationMs := int(time.Since(startTime).Milliseconds())
 			h.DB.UpdateWebhookDelivery(c.Request.Context(), deliveryID, "failed", "invalid signature", nil, durationMs)
 			c.JSON(http.StatusForbidden, models.ErrorResponse{Code: 403, Message: "invalid signature"})
@@ -254,21 +262,36 @@ func verifyGitHubSignature(body []byte, signature string, secret string) bool {
 }
 
 // getGitToken tries to extract a GitHub token from the app's git secret reference.
+// Falls back to the GitHub App installation token if no per-app secret is set.
 func (h *Handler) getGitToken(ctx context.Context, appSpec map[string]interface{}) string {
 	gitSpec, _, _ := unstructuredNestedMap(appSpec, "git")
 	if gitSpec == nil {
 		return ""
 	}
+
+	// Priority 1: per-app token secret
 	secretName, _ := gitSpec["tokenSecret"].(string)
-	if secretName == "" {
-		return ""
+	if secretName != "" {
+		secret, err := h.K8s.Clientset.CoreV1().Secrets(vestaSystemNS).Get(ctx, secretName, metav1.GetOptions{})
+		if err == nil {
+			if token, ok := secret.Data["token"]; ok {
+				return string(token)
+			}
+		}
 	}
-	secret, err := h.K8s.Clientset.CoreV1().Secrets(vestaSystemNS).Get(ctx, secretName, metav1.GetOptions{})
-	if err != nil {
-		return ""
+
+	// Priority 2: GitHub App installation token
+	if h.GitHubApp != nil && h.GitHubApp.IsConfigured() {
+		repo, _ := gitSpec["repository"].(string)
+		if repo != "" {
+			token, err := h.GitHubApp.GetTokenForRepo(ctx, repo)
+			if err != nil {
+				log.Printf("[github-app] failed to get token for %s: %v", repo, err)
+			} else {
+				return token
+			}
+		}
 	}
-	if token, ok := secret.Data["token"]; ok {
-		return string(token)
-	}
+
 	return ""
 }

@@ -436,4 +436,20 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  // GitHub App
+  getGitHubAppStatus: () =>
+    request<{ configured: boolean; appId?: number; appName?: string; installations?: number }>('/settings/github-app'),
+
+  getGitHubAppManifest: (data: { appName?: string; apiBaseUrl: string; organization?: string }) =>
+    request<{ manifest: any; githubUrl: string; state: string }>('/github/manifest', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  listGitHubAppInstallations: () =>
+    request<{ installations: any[] }>('/settings/github-app/installations'),
+
+  deleteGitHubApp: () =>
+    request<{ status: string }>('/settings/github-app', { method: 'DELETE' }),
 }

@@ -45,6 +45,10 @@ api:
     existingSecret: ""
     # -- Key in the existing secret that contains the DATABASE_URL
     secretKey: "DATABASE_URL"
+  # -- GitHub App integration (optional, created via manifest flow in UI)
+  github:
+    # -- Pre-existing K8s Secret with GitHub App credentials (app-id, private-key, webhook-secret)
+    existingSecret: ""
 
 # -- UI configuration
 ui:

@@ -12,408 +12,408 @@ spec:
     plural: vestaapps
     singular: vestaapp
     shortNames:
-      - va
-      - vapp
+    - va
+    - vapp
   scope: Namespaced
   versions:
-    - name: v1alpha1
-      served: true
-      storage: true
-      additionalPrinterColumns:
-        - name: Phase
-          type: string
-          jsonPath: .status.phase
-        - name: URL
-          type: string
-          jsonPath: .status.url
-        - name: Image
-          type: string
-          jsonPath: .status.currentImage
-        - name: Age
-          type: date
-          jsonPath: .metadata.creationTimestamp
-      subresources:
-        status: {}
-      schema:
-        openAPIV3Schema:
-          type: object
-          description: VestaApp is the primary resource representing a deployed application.
-          properties:
-            apiVersion:
-              type: string
-            kind:
-              type: string
-            metadata:
-              type: object
-            spec:
-              type: object
-              required:
-                - project
-                - runtime
-              properties:
-                project:
+  - name: v1alpha1
+    served: true
+    storage: true
+    additionalPrinterColumns:
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    - name: URL
+      type: string
+      jsonPath: .status.url
+    - name: Image
+      type: string
+      jsonPath: .status.currentImage
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp
+    subresources:
+      status: {}
+    schema:
+      openAPIV3Schema:
+        type: object
+        description: VestaApp is the primary resource representing a deployed application.
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            type: object
+            required:
+            - project
+            - runtime
+            properties:
+              project:
+                type: string
+                description: Name of the VestaProject this app belongs to.
+              environments:
+                type: array
+                description: List of VestaEnvironment names this app is deployed to.
+                items:
                   type: string
-                  description: Name of the VestaProject this app belongs to.
-                environments:
-                  type: array
-                  description: List of VestaEnvironment names this app is deployed to.
-                  items:
+              git:
+                type: object
+                description: Git source configuration.
+                properties:
+                  provider:
                     type: string
-                git:
-                  type: object
-                  description: Git source configuration.
-                  properties:
-                    provider:
-                      type: string
-                      enum: [github, gitlab, bitbucket, gitea]
-                    repository:
-                      type: string
-                    branch:
-                      type: string
-                    autoDeployOnPush:
-                      type: boolean
-                      default: false
-                  required: [provider, repository]
-                build:
-                  type: object
-                  description: Build strategy configuration.
-                  properties:
-                    strategy:
-                      type: string
-                      enum: [runpacks, buildpacks, dockerfile, nixpacks, image]
-                    dockerfile:
-                      type: string
-                      description: Path to Dockerfile, only used when strategy=dockerfile.
-                  required: [strategy]
-                image:
-                  type: object
-                  description: Image configuration for deploying from a registry.
-                  properties:
-                    repository:
-                      type: string
-                      description: Full image repository path (e.g. registry.example.com/org/app).
-                    tag:
-                      type: string
-                      description: Image tag. Updated by the deploy endpoint.
-                    pullPolicy:
-                      type: string
-                      enum: [Always, IfNotPresent, Never]
-                      default: IfNotPresent
-                    imagePullSecrets:
-                      type: array
-                      description: References to Secrets of type kubernetes.io/dockerconfigjson.
-                      items:
-                        type: object
-                        properties:
-                          name:
-                            type: string
-                        required: [name]
-                  required: [repository]
-                runtime:
-                  type: object
-                  description: Runtime configuration for the application container.
-                  properties:
-                    port:
-                      type: integer
-                      format: int32
-                      minimum: 0
-                      maximum: 65535
-                    command:
-                      type: string
-                    args:
-                      type: array
-                      items:
-                        type: string
-                    env:
-                      type: array
-                      description: Non-sensitive environment variables only.
-                      items:
-                        type: object
-                        properties:
-                          name:
-                            type: string
-                          value:
-                            type: string
-                        required: [name, value]
-                    secrets:
-                      type: array
-                      description: Secret bindings -- all sensitive config goes here.
-                      items:
-                        type: object
-                        properties:
-                          secretRef:
-                            type: object
-                            properties:
-                              name:
-                                type: string
-                            required: [name]
-                          secretKeyRef:
-                            type: object
-                            properties:
-                              name:
-                                type: string
-                              key:
-                                type: string
-                              envVar:
-                                type: string
-                            required: [name, key, envVar]
-                          secretMount:
-                            type: object
-                            properties:
-                              name:
-                                type: string
-                              mountPath:
-                                type: string
-                              readOnly:
-                                type: boolean
-                                default: true
-                            required: [name, mountPath]
-                          keys:
-                            type: array
-                            items:
-                              type: object
-                              properties:
-                                secretKey:
-                                  type: string
-                                envVar:
-                                  type: string
-                              required: [secretKey, envVar]
-                    volumes:
-                      type: array
-                      items:
-                        type: object
-                        properties:
-                          name:
-                            type: string
-                          mountPath:
-                            type: string
-                          persistentVolumeClaim:
-                            type: object
-                            properties:
-                              claimName:
-                                type: string
-                              size:
-                                type: string
-                                description: Storage size for the PVC (e.g. 1Gi, 5Gi, 10Gi). Defaults to 1Gi.
-                            required: [claimName]
-                        required: [name, mountPath]
-                scaling:
-                  type: object
-                  description: Replica count and autoscaling configuration.
-                  properties:
-                    replicas:
-                      type: integer
-                      format: int32
-                      minimum: 0
-                    autoscale:
+                    enum: [ github, gitlab, bitbucket, gitea ]
+                  repository:
+                    type: string
+                  branch:
+                    type: string
+                  autoDeployOnPush:
+                    type: boolean
+                    default: false
+                required: [ provider, repository ]
+              build:
+                type: object
+                description: Build strategy configuration.
+                properties:
+                  strategy:
+                    type: string
+                    enum: [ runpacks, buildpacks, dockerfile, nixpacks, image ]
+                  dockerfile:
+                    type: string
+                    description: Path to Dockerfile, only used when strategy=dockerfile.
+                required: [ strategy ]
+              image:
+                type: object
+                description: Image configuration for deploying from a registry.
+                properties:
+                  repository:
+                    type: string
+                    description: Full image repository path (e.g. registry.example.com/org/app).
+                  tag:
+                    type: string
+                    description: Image tag. Updated by the deploy endpoint.
+                  pullPolicy:
+                    type: string
+                    enum: [ Always, IfNotPresent, Never ]
+                    default: IfNotPresent
+                  imagePullSecrets:
+                    type: array
+                    description: References to Secrets of type kubernetes.io/dockerconfigjson.
+                    items:
                       type: object
                       properties:
-                        enabled:
-                          type: boolean
-                        minReplicas:
-                          type: integer
-                          format: int32
-                          minimum: 0
-                        maxReplicas:
-                          type: integer
-                          format: int32
-                          minimum: 1
-                        metrics:
-                          type: array
-                          items:
-                            type: object
-                            properties:
-                              type:
-                                type: string
-                                enum: [cpu, memory, custom]
-                              name:
-                                type: string
-                                description: Metric name, required when type=custom.
-                              targetAverageUtilization:
-                                type: integer
-                                format: int32
-                              targetAverageValue:
-                                type: string
-                            required: [type]
-                        behavior:
-                          type: object
-                          x-kubernetes-preserve-unknown-fields: true
-                      required: [enabled, maxReplicas]
-                resources:
-                  type: object
-                  description: Resource requests/limits or a preset size name.
-                  properties:
-                    size:
+                        name:
+                          type: string
+                      required: [ name ]
+                required: [ repository ]
+              runtime:
+                type: object
+                description: Runtime configuration for the application container.
+                properties:
+                  port:
+                    type: integer
+                    format: int32
+                    minimum: 0
+                    maximum: 65535
+                  command:
+                    type: string
+                  args:
+                    type: array
+                    items:
                       type: string
-                      description: Preset name from VestaConfig.podSizeList.
-                    requests:
+                  env:
+                    type: array
+                    description: Non-sensitive environment variables only.
+                    items:
                       type: object
-                      additionalProperties:
-                        anyOf:
-                          - type: integer
-                          - type: string
-                        x-kubernetes-int-or-string: true
-                    limits:
+                      properties:
+                        name:
+                          type: string
+                        value:
+                          type: string
+                      required: [ name, value ]
+                  secrets:
+                    type: array
+                    description: Secret bindings -- all sensitive config goes here.
+                    items:
                       type: object
-                      additionalProperties:
-                        anyOf:
-                          - type: integer
-                          - type: string
-                        x-kubernetes-int-or-string: true
-                ingress:
-                  type: object
-                  properties:
-                    domain:
-                      type: string
-                    tls:
-                      type: boolean
-                      default: true
-                    clusterIssuer:
-                      type: string
-                    basicAuth:
-                      type: boolean
-                      default: false
-                    annotations:
-                      type: object
-                      additionalProperties:
-                        type: string
-                  required: [domain]
-                cronjobs:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      name:
-                        type: string
-                      schedule:
-                        type: string
-                      command:
-                        type: string
-                      resources:
-                        type: object
-                        properties:
-                          size:
-                            type: string
-                      environments:
-                        type: array
-                        description: Per-environment overrides. Omit an environment to use defaults.
-                        items:
+                      properties:
+                        secretRef:
                           type: object
                           properties:
                             name:
                               type: string
-                            enabled:
-                              type: boolean
-                              description: Set to false to skip this cronjob in this environment.
-                            schedule:
+                          required: [ name ]
+                        secretKeyRef:
+                          type: object
+                          properties:
+                            name:
                               type: string
-                              description: Override the cron schedule for this environment.
-                          required: [name]
-                    required: [name, schedule, command]
-                addons:
-                  type: array
-                  items:
+                            key:
+                              type: string
+                            envVar:
+                              type: string
+                          required: [ name, key, envVar ]
+                        secretMount:
+                          type: object
+                          properties:
+                            name:
+                              type: string
+                            mountPath:
+                              type: string
+                            readOnly:
+                              type: boolean
+                              default: true
+                          required: [ name, mountPath ]
+                        keys:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              secretKey:
+                                type: string
+                              envVar:
+                                type: string
+                            required: [ secretKey, envVar ]
+                  volumes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        mountPath:
+                          type: string
+                        persistentVolumeClaim:
+                          type: object
+                          properties:
+                            claimName:
+                              type: string
+                            size:
+                              type: string
+                              description: Storage size for the PVC (e.g. 1Gi, 5Gi, 10Gi). Defaults to 1Gi.
+                          required: [ claimName ]
+                      required: [ name, mountPath ]
+              scaling:
+                type: object
+                description: Replica count and autoscaling configuration.
+                properties:
+                  replicas:
+                    type: integer
+                    format: int32
+                    minimum: 0
+                  autoscale:
                     type: object
                     properties:
-                      type:
-                        type: string
-                      version:
-                        type: string
-                      size:
-                        type: string
-                    required: [type]
-                sleep:
-                  type: object
-                  properties:
-                    enabled:
-                      type: boolean
-                    inactivityTimeout:
-                      type: string
-                      description: Duration string (e.g. 30m, 1h).
-                customConfig:
-                  type: object
-                  description: Arbitrary Kubernetes config merged into generated resources.
-                  properties:
-                    labels:
-                      type: object
-                      additionalProperties:
-                        type: string
-                    annotations:
-                      type: object
-                      additionalProperties:
-                        type: string
-                    podSpec:
-                      type: object
-                      x-kubernetes-preserve-unknown-fields: true
-                      description: Pod-level overrides deep-merged into the Deployment pod spec.
-                    containerSpec:
-                      type: object
-                      x-kubernetes-preserve-unknown-fields: true
-                      description: Container-level overrides deep-merged into the app container.
-                    extraResources:
-                      type: array
-                      description: Additional K8s resources created alongside the app.
-                      items:
+                      enabled:
+                        type: boolean
+                      minReplicas:
+                        type: integer
+                        format: int32
+                        minimum: 0
+                      maxReplicas:
+                        type: integer
+                        format: int32
+                        minimum: 1
+                      metrics:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            type:
+                              type: string
+                              enum: [ cpu, memory, custom ]
+                            name:
+                              type: string
+                              description: Metric name, required when type=custom.
+                            targetAverageUtilization:
+                              type: integer
+                              format: int32
+                            targetAverageValue:
+                              type: string
+                          required: [ type ]
+                      behavior:
                         type: object
                         x-kubernetes-preserve-unknown-fields: true
-            status:
-              type: object
-              properties:
-                phase:
-                  type: string
-                  enum: [Pending, Building, Deploying, Running, Failed, Sleeping]
-                buildStatus:
-                  type: string
-                url:
-                  type: string
-                currentImage:
-                  type: string
-                lastDeployedAt:
-                  type: string
-                  format: date-time
-                lastCommitSHA:
-                  type: string
-                deploymentHistory:
-                  type: array
-                  items:
+                    required: [ enabled, maxReplicas ]
+              resources:
+                type: object
+                description: Resource requests/limits or a preset size name.
+                properties:
+                  size:
+                    type: string
+                    description: Preset name from VestaConfig.podSizeList.
+                  requests:
                     type: object
-                    properties:
-                      version:
-                        type: integer
-                      image:
-                        type: string
-                      commitSHA:
-                        type: string
-                      deployedAt:
-                        type: string
-                        format: date-time
-                      deployedBy:
-                        type: string
-                scaling:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      x-kubernetes-int-or-string: true
+                  limits:
+                    type: object
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      x-kubernetes-int-or-string: true
+              ingress:
+                type: object
+                properties:
+                  domain:
+                    type: string
+                  tls:
+                    type: boolean
+                    default: true
+                  clusterIssuer:
+                    type: string
+                  basicAuth:
+                    type: boolean
+                    default: false
+                  annotations:
+                    type: object
+                    additionalProperties:
+                      type: string
+                required: [ domain ]
+              cronjobs:
+                type: array
+                items:
                   type: object
                   properties:
-                    currentReplicas:
-                      type: integer
-                      format: int32
-                    desiredReplicas:
-                      type: integer
-                      format: int32
-                    autoscalerActive:
-                      type: boolean
-                conditions:
-                  type: array
-                  items:
+                    name:
+                      type: string
+                    schedule:
+                      type: string
+                    command:
+                      type: string
+                    resources:
+                      type: object
+                      properties:
+                        size:
+                          type: string
+                    environments:
+                      type: array
+                      description: Per-environment overrides. Omit an environment to use defaults.
+                      items:
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                          enabled:
+                            type: boolean
+                            description: Set to false to skip this cronjob in this environment.
+                          schedule:
+                            type: string
+                            description: Override the cron schedule for this environment.
+                        required: [ name ]
+                  required: [ name, schedule, command ]
+              addons:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    version:
+                      type: string
+                    size:
+                      type: string
+                  required: [ type ]
+              sleep:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  inactivityTimeout:
+                    type: string
+                    description: Duration string (e.g. 30m, 1h).
+              customConfig:
+                type: object
+                description: Arbitrary Kubernetes config merged into generated resources.
+                properties:
+                  labels:
                     type: object
-                    properties:
-                      type:
-                        type: string
-                      status:
-                        type: string
-                      lastTransitionTime:
-                        type: string
-                        format: date-time
-                      reason:
-                        type: string
-                      message:
-                        type: string
-                    required: [type, status]
+                    additionalProperties:
+                      type: string
+                  annotations:
+                    type: object
+                    additionalProperties:
+                      type: string
+                  podSpec:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                    description: Pod-level overrides deep-merged into the Deployment pod spec.
+                  containerSpec:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                    description: Container-level overrides deep-merged into the app container.
+                  extraResources:
+                    type: array
+                    description: Additional K8s resources created alongside the app.
+                    items:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+          status:
+            type: object
+            properties:
+              phase:
+                type: string
+                enum: [ Pending, Building, Deploying, Running, Failed, Sleeping ]
+              buildStatus:
+                type: string
+              url:
+                type: string
+              currentImage:
+                type: string
+              lastDeployedAt:
+                type: string
+                format: date-time
+              lastCommitSHA:
+                type: string
+              deploymentHistory:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    version:
+                      type: integer
+                    image:
+                      type: string
+                    commitSHA:
+                      type: string
+                    deployedAt:
+                      type: string
+                      format: date-time
+                    deployedBy:
+                      type: string
+              scaling:
+                type: object
+                properties:
+                  currentReplicas:
+                    type: integer
+                    format: int32
+                  desiredReplicas:
+                    type: integer
+                    format: int32
+                  autoscalerActive:
+                    type: boolean
+              conditions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    status:
+                      type: string
+                    lastTransitionTime:
+                      type: string
+                      format: date-time
+                    reason:
+                      type: string
+                    message:
+                      type: string
+                  required: [ type, status ]
