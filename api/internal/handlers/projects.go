@@ -78,16 +78,38 @@ func (h *Handler) ListProjects(c *gin.Context) {
 		return
 	}
 
+	// Fetch all apps once to count per project
+	allApps, _ := h.K8s.ListResources(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, "")
+	appCountByProject := map[string]int{}
+	if allApps != nil {
+		for _, app := range allApps.Items {
+			if labels := app.GetLabels(); labels != nil {
+				appCountByProject[labels["kubernetes.getvesta.sh/project"]]++
+			}
+		}
+	}
+
 	items := make([]map[string]interface{}, len(list.Items))
 	for i, item := range list.Items {
 		spec, _, _ := unstructuredNestedMap(item.Object, "spec")
 		status, _, _ := unstructuredNestedMap(item.Object, "status")
+
+		envCount := 0
+		if spec != nil {
+			if envs, ok := spec["environments"].([]interface{}); ok {
+				envCount = len(envs)
+			}
+		}
+
+		projectName := item.GetName()
 		items[i] = map[string]interface{}{
-			"id":        item.GetName(),
-			"name":      item.GetName(),
-			"spec":      spec,
-			"status":    status,
-			"createdAt": item.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
+			"id":               projectName,
+			"name":             projectName,
+			"spec":             spec,
+			"status":           status,
+			"appCount":         appCountByProject[projectName],
+			"environmentCount": envCount,
+			"createdAt":        item.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
 		}
 	}
 
