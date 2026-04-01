@@ -12,6 +12,7 @@ import (
 
 // Default pod size presets used when no VestaConfig is found
 var defaultPodSizes = []map[string]interface{}{
+	{"name": "xsmall", "cpu": "100m", "memory": "128Mi", "cpuLimit": "250m", "memoryLimit": "256Mi"},
 	{"name": "small", "cpu": "250m", "memory": "256Mi", "cpuLimit": "500m", "memoryLimit": "512Mi"},
 	{"name": "medium", "cpu": "500m", "memory": "512Mi", "cpuLimit": "1", "memoryLimit": "1Gi"},
 	{"name": "large", "cpu": "1", "memory": "1Gi", "cpuLimit": "2", "memoryLimit": "2Gi"},

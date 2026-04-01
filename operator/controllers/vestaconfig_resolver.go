@@ -123,14 +123,14 @@ func (cr *ConfigResolver) GetClusterIssuer() string {
 
 func defaultRequests() corev1.ResourceList {
 	return corev1.ResourceList{
-		corev1.ResourceCPU:    resource.MustParse("250m"),
-		corev1.ResourceMemory: resource.MustParse("256Mi"),
+		corev1.ResourceCPU:    resource.MustParse("100m"),
+		corev1.ResourceMemory: resource.MustParse("128Mi"),
 	}
 }
 
 func defaultLimits() corev1.ResourceList {
 	return corev1.ResourceList{
-		corev1.ResourceCPU:    resource.MustParse("500m"),
-		corev1.ResourceMemory: resource.MustParse("512Mi"),
+		corev1.ResourceCPU:    resource.MustParse("250m"),
+		corev1.ResourceMemory: resource.MustParse("256Mi"),
 	}
 }
