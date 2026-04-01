@@ -188,7 +188,7 @@ spec:
                     port:
                       type: integer
                       format: int32
-                      minimum: 1
+                      minimum: 0
                       maximum: 65535
                     command:
                       type: string
