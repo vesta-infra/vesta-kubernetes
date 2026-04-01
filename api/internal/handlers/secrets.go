@@ -447,3 +447,321 @@ func (h *Handler) RevealSecretValues(c *gin.Context) {
 		"values":      values,
 	})
 }
+
+// ─── Shared Secrets ──────────────────────────────────────────────────────────
+
+func (h *Handler) CreateSharedSecret(c *gin.Context) {
+	projectID := c.Param("projectId")
+
+	var req struct {
+		Name         string            `json:"name" binding:"required"`
+		Data         map[string]string `json:"data" binding:"required"`
+		Environments []string          `json:"environments,omitempty"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
+	// Resolve environments from the project if not specified
+	environments := req.Environments
+	if len(environments) == 0 {
+		project, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaProjectGVR, vestaSystemNS, projectID)
+		if err != nil {
+			c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "project not found"})
+			return
+		}
+		spec, _, _ := unstructuredNestedMap(project.Object, "spec")
+		if envs, ok := spec["environments"].([]interface{}); ok {
+			for _, e := range envs {
+				if em, ok := e.(map[string]interface{}); ok {
+					if name, ok := em["name"].(string); ok {
+						environments = append(environments, name)
+					}
+				}
+			}
+		}
+		if len(environments) == 0 {
+			environments = []string{"default"}
+		}
+	}
+
+	data := make(map[string]interface{}, len(req.Data))
+	for k, v := range req.Data {
+		data[k] = v
+	}
+
+	var lastErr error
+	for _, env := range environments {
+		namespace := fmt.Sprintf("%s-%s", projectID, env)
+		obj := map[string]interface{}{
+			"apiVersion": "kubernetes.getvesta.sh/v1alpha1",
+			"kind":       "VestaSecret",
+			"metadata": map[string]interface{}{
+				"name":      req.Name,
+				"namespace": namespace,
+				"labels": map[string]interface{}{
+					"kubernetes.getvesta.sh/project": projectID,
+					"kubernetes.getvesta.sh/shared":  "true",
+				},
+			},
+			"spec": map[string]interface{}{
+				"type":    "Opaque",
+				"project": projectID,
+				"data":    data,
+			},
+		}
+
+		existing, _ := h.K8s.GetResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, req.Name)
+		if existing != nil {
+			existingSpec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+			existingSpec["data"] = data
+			existing.Object["spec"] = existingSpec
+			_, lastErr = h.K8s.UpdateResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, existing)
+		} else {
+			_, lastErr = h.K8s.CreateResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, obj)
+		}
+	}
+
+	if lastErr != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: lastErr.Error()})
+		return
+	}
+
+	keys := make([]string, 0, len(req.Data))
+	for k := range req.Data {
+		keys = append(keys, k)
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"name":         req.Name,
+		"project":      projectID,
+		"keys":         keys,
+		"environments": environments,
+		"shared":       true,
+	})
+
+	h.auditLog(c, "create_shared_secret", "secret", req.Name, req.Name, projectID, "",
+		map[string]interface{}{"keys": keys, "environments": environments})
+}
+
+func (h *Handler) ListSharedSecrets(c *gin.Context) {
+	projectID := c.Param("projectId")
+
+	list, err := h.K8s.ListResources(c.Request.Context(), k8s.VestaSecretGVR, "",
+		"kubernetes.getvesta.sh/project="+projectID+",kubernetes.getvesta.sh/shared=true")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	// Group by name, collect environments
+	type sharedEntry struct {
+		Name         string   `json:"name"`
+		Keys         []string `json:"keys"`
+		Environments []string `json:"environments"`
+		CreatedAt    string   `json:"createdAt"`
+	}
+	grouped := map[string]*sharedEntry{}
+	for _, item := range list.Items {
+		name := item.GetName()
+		spec, _, _ := unstructuredNestedMap(item.Object, "spec")
+		labels := item.GetLabels()
+		env := labels["kubernetes.getvesta.sh/environment"]
+		if env == "" {
+			// Derive env from namespace: {project}-{env}
+			ns := item.GetNamespace()
+			prefix := projectID + "-"
+			if len(ns) > len(prefix) {
+				env = ns[len(prefix):]
+			}
+		}
+
+		if _, ok := grouped[name]; !ok {
+			grouped[name] = &sharedEntry{
+				Name:      name,
+				Keys:      extractSecretKeys(spec),
+				CreatedAt: item.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
+			}
+		}
+		if env != "" {
+			grouped[name].Environments = append(grouped[name].Environments, env)
+		}
+	}
+
+	items := make([]sharedEntry, 0, len(grouped))
+	for _, v := range grouped {
+		items = append(items, *v)
+	}
+
+	c.JSON(http.StatusOK, models.ListResponse{Items: items, Total: len(items)})
+}
+
+func (h *Handler) DeleteSharedSecret(c *gin.Context) {
+	projectID := c.Param("projectId")
+	name := c.Param("name")
+
+	list, err := h.K8s.ListResources(c.Request.Context(), k8s.VestaSecretGVR, "",
+		"kubernetes.getvesta.sh/project="+projectID+",kubernetes.getvesta.sh/shared=true")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	deleted := 0
+	for _, item := range list.Items {
+		if item.GetName() == name {
+			if err := h.K8s.DeleteResource(c.Request.Context(), k8s.VestaSecretGVR, item.GetNamespace(), name); err == nil {
+				deleted++
+			}
+		}
+	}
+
+	if deleted == 0 {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "shared secret not found"})
+		return
+	}
+
+	h.auditLog(c, "delete_shared_secret", "secret", name, name, projectID, "", nil)
+	c.Status(http.StatusNoContent)
+}
+
+// ─── Bind / Unbind Shared Secrets ────────────────────────────────────────────
+
+func (h *Handler) BindSharedSecret(c *gin.Context) {
+	appID := c.Param("appId")
+
+	var req struct {
+		Name string `json:"name" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
+	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
+		return
+	}
+
+	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+	runtime, _, _ := unstructuredNestedMap(spec, "runtime")
+	if runtime == nil {
+		runtime = map[string]interface{}{}
+	}
+
+	secrets, _ := runtime["secrets"].([]interface{})
+
+	// Check if already bound
+	for _, s := range secrets {
+		if sm, ok := s.(map[string]interface{}); ok {
+			if ref, ok := sm["secretRef"].(map[string]interface{}); ok {
+				if ref["name"] == req.Name {
+					c.JSON(http.StatusConflict, models.ErrorResponse{Code: 409, Message: "shared secret already bound"})
+					return
+				}
+			}
+		}
+	}
+
+	secrets = append(secrets, map[string]interface{}{
+		"secretRef": map[string]interface{}{"name": req.Name},
+	})
+	runtime["secrets"] = secrets
+	spec["runtime"] = runtime
+	existing.Object["spec"] = spec
+
+	if _, err := h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, existing); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "shared secret bound", "name": req.Name, "app": appID})
+
+	h.auditLog(c, "bind_shared_secret", "app", appID, appID, getNestedString(spec, "project"), "",
+		map[string]interface{}{"secretName": req.Name})
+}
+
+func (h *Handler) UnbindSharedSecret(c *gin.Context) {
+	appID := c.Param("appId")
+	name := c.Param("name")
+
+	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
+		return
+	}
+
+	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+	runtime, _, _ := unstructuredNestedMap(spec, "runtime")
+	if runtime == nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "secret not bound"})
+		return
+	}
+
+	secrets, _ := runtime["secrets"].([]interface{})
+	found := false
+	filtered := make([]interface{}, 0, len(secrets))
+	for _, s := range secrets {
+		if sm, ok := s.(map[string]interface{}); ok {
+			if ref, ok := sm["secretRef"].(map[string]interface{}); ok {
+				if ref["name"] == name {
+					found = true
+					continue
+				}
+			}
+		}
+		filtered = append(filtered, s)
+	}
+
+	if !found {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "secret not bound"})
+		return
+	}
+
+	runtime["secrets"] = filtered
+	spec["runtime"] = runtime
+	existing.Object["spec"] = spec
+
+	if _, err := h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, existing); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	h.auditLog(c, "unbind_shared_secret", "app", appID, appID, getNestedString(spec, "project"), "",
+		map[string]interface{}{"secretName": name})
+
+	c.Status(http.StatusNoContent)
+}
+
+func (h *Handler) ListAppSharedSecrets(c *gin.Context) {
+	appID := c.Param("appId")
+
+	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
+		return
+	}
+
+	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+	runtime, _, _ := unstructuredNestedMap(spec, "runtime")
+	if runtime == nil {
+		c.JSON(http.StatusOK, models.ListResponse{Items: []string{}, Total: 0})
+		return
+	}
+
+	secrets, _ := runtime["secrets"].([]interface{})
+	bound := make([]string, 0)
+	for _, s := range secrets {
+		if sm, ok := s.(map[string]interface{}); ok {
+			if ref, ok := sm["secretRef"].(map[string]interface{}); ok {
+				if name, ok := ref["name"].(string); ok {
+					bound = append(bound, name)
+				}
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, models.ListResponse{Items: bound, Total: len(bound)})
+}

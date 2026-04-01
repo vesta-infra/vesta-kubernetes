@@ -230,6 +230,31 @@ export const api = {
   deleteRegistrySecret: (name: string) =>
     request<void>(`/secrets/registry/${name}`, { method: 'DELETE' }),
 
+  // Shared Secrets (project-scoped)
+  createSharedSecret: (projectId: string, data: { name: string; data: Record<string, string>; environments?: string[] }) =>
+    request<any>(`/projects/${projectId}/shared-secrets`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  listSharedSecrets: (projectId: string) =>
+    request<{ items: any[]; total: number }>(`/projects/${projectId}/shared-secrets`),
+
+  deleteSharedSecret: (projectId: string, name: string) =>
+    request<void>(`/projects/${projectId}/shared-secrets/${name}`, { method: 'DELETE' }),
+
+  bindSharedSecret: (appId: string, name: string) =>
+    request<any>(`/apps/${appId}/shared-secrets`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  unbindSharedSecret: (appId: string, name: string) =>
+    request<void>(`/apps/${appId}/shared-secrets/${name}`, { method: 'DELETE' }),
+
+  listAppSharedSecrets: (appId: string) =>
+    request<{ items: string[]; total: number }>(`/apps/${appId}/shared-secrets`),
+
   // Logs
   getAppLogs: (appId: string, environment: string, opts?: { tail?: number; pod?: string; container?: string; previous?: boolean }) => {
     const params = new URLSearchParams({ environment })

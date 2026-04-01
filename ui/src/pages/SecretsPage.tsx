@@ -10,7 +10,7 @@ export default function SecretsPage() {
   const { data, isLoading } = useQuery({ queryKey: ['secrets'], queryFn: () => api.listSecrets() })
   const { data: apps } = useQuery({ queryKey: ['apps'], queryFn: () => api.listApps() })
   const [showCreate, setShowCreate] = useState(false)
-  const [activeTab, setActiveTab] = useState<'app' | 'registry'>('registry')
+  const [activeTab, setActiveTab] = useState<'app' | 'registry' | 'shared'>('registry')
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteSecret(id),
@@ -22,7 +22,7 @@ export default function SecretsPage() {
   return (
     <div className="space-y-6">
       <div className="flex border-b border-border mb-2">
-        {(['registry', 'app'] as const).map((tab) => (
+        {(['registry', 'shared', 'app'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -32,12 +32,14 @@ export default function SecretsPage() {
                 : 'text-text-tertiary hover:text-text-secondary'
             }`}
           >
-            {tab === 'registry' ? 'Registry Credentials' : 'App Secrets'}
+            {tab === 'registry' ? 'Registry Credentials' : tab === 'shared' ? 'Shared Secrets' : 'App Secrets'}
           </button>
         ))}
       </div>
 
       {activeTab === 'registry' && <RegistrySecretsSection />}
+
+      {activeTab === 'shared' && <SharedSecretsSection />}
 
       {activeTab === 'app' && (
         <>
@@ -230,6 +232,178 @@ function SecretItem({ secret: s, isAdmin, onDelete }: { secret: any; isAdmin: bo
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function SharedSecretsSection() {
+  const queryClient = useQueryClient()
+  const { data: projects } = useQuery({ queryKey: ['projects'], queryFn: () => api.listProjects() })
+  const [selectedProject, setSelectedProject] = useState('')
+  const [showCreate, setShowCreate] = useState(false)
+  const [name, setName] = useState('')
+  const [keys, setKeys] = useState([{ key: '', value: '' }])
+
+  const projectId = selectedProject || projects?.items?.[0]?.name || ''
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['sharedSecrets', projectId],
+    queryFn: () => api.listSharedSecrets(projectId),
+    enabled: !!projectId,
+  })
+
+  const createMutation = useMutation({
+    mutationFn: () => {
+      const secretData: Record<string, string> = {}
+      keys.forEach(kv => { if (kv.key) secretData[kv.key] = kv.value })
+      return api.createSharedSecret(projectId, { name, data: secretData })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sharedSecrets'] })
+      setShowCreate(false)
+      setName('')
+      setKeys([{ key: '', value: '' }])
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (n: string) => api.deleteSharedSecret(projectId, n),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['sharedSecrets'] }),
+  })
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm text-text-secondary">
+            Project-scoped secrets shared across multiple apps.
+          </p>
+          <p className="text-xs text-text-tertiary mt-0.5">
+            Bind shared secrets to any app in the same project — all keys injected as env vars.
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          {(projects?.items?.length ?? 0) > 0 && (
+            <select
+              value={projectId}
+              onChange={(e) => setSelectedProject(e.target.value)}
+              className="input-field text-xs"
+            >
+              {projects?.items?.map((p: any) => (
+                <option key={p.name} value={p.name}>{p.name}</option>
+              ))}
+            </select>
+          )}
+          <button onClick={() => setShowCreate(!showCreate)} className="btn-primary" disabled={!projectId}>
+            <span className="flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              New Shared Secret
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {showCreate && (
+        <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate() }} className="card p-5 space-y-4 animate-slide-up">
+          <h3 className="section-title">Create Shared Secret</h3>
+          <div>
+            <label className="label">Secret Name</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} className="input-field" placeholder="redis-config" required />
+            <p className="text-[11px] text-text-tertiary mt-1">Apps will reference this name when binding</p>
+          </div>
+          <div>
+            <label className="label mb-2">Key-Value Pairs</label>
+            <div className="space-y-2">
+              {keys.map((kv, i) => (
+                <div key={i} className="flex gap-2">
+                  <input
+                    value={kv.key}
+                    onChange={(e) => { const u = [...keys]; u[i].key = e.target.value; setKeys(u) }}
+                    placeholder="REDIS_URL"
+                    className="input-field flex-1 font-mono text-xs"
+                  />
+                  <input
+                    value={kv.value}
+                    onChange={(e) => { const u = [...keys]; u[i].value = e.target.value; setKeys(u) }}
+                    placeholder="redis://redis:6379"
+                    type="password"
+                    className="input-field flex-1"
+                  />
+                  {keys.length > 1 && (
+                    <button type="button" onClick={() => setKeys(keys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
+                      &times;
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={() => setKeys([...keys, { key: '', value: '' }])} className="text-xs text-accent hover:text-accent-glow transition-colors mt-2 font-mono">
+              + Add key
+            </button>
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button type="submit" disabled={!name || !keys.some(k => k.key) || createMutation.isPending} className="btn-primary">
+              {createMutation.isPending ? 'Creating...' : 'Create'}
+            </button>
+            <button type="button" onClick={() => setShowCreate(false)} className="btn-ghost">Cancel</button>
+          </div>
+          {createMutation.isError && (
+            <p className="text-status-failed text-xs">{(createMutation.error as Error).message}</p>
+          )}
+        </form>
+      )}
+
+      {isLoading && <Spinner />}
+
+      {!isLoading && (!data?.items || data.items.length === 0) && projectId && (
+        <div className="card px-6 py-12 text-center">
+          <div className="w-10 h-10 rounded-xl bg-surface-3 flex items-center justify-center mx-auto mb-3">
+            <svg className="w-5 h-5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+          </div>
+          <p className="text-sm text-text-secondary">No shared secrets in {projectId}</p>
+          <p className="text-xs text-text-tertiary mt-1">Create a shared secret and bind it to apps that need it</p>
+        </div>
+      )}
+
+      {data?.items?.map((s: any) => (
+        <div key={s.name} className="card-hover px-5 py-4 group">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center">
+                <svg className="w-4 h-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                </svg>
+              </div>
+              <div>
+                <p className="text-sm font-medium text-text-primary font-mono">{s.name}</p>
+                <div className="flex items-center gap-3 mt-1 flex-wrap">
+                  {s.keys?.map((k: string) => (
+                    <span key={k} className="px-2 py-0.5 bg-surface-3 rounded text-[11px] font-mono text-text-secondary">{k}</span>
+                  ))}
+                </div>
+                {s.environments?.length > 0 && (
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-[11px] text-text-tertiary">Environments:</span>
+                    {s.environments.map((env: string) => (
+                      <span key={env} className="text-[11px] font-mono text-text-secondary">{env}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={() => { if (confirm(`Delete shared secret "${s.name}" from all environments?`)) deleteMutation.mutate(s.name) }}
+              className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

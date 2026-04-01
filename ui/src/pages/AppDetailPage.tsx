@@ -577,6 +577,10 @@ export default function AppDetailPage() {
               <p className="text-sm text-text-tertiary">No environments configured</p>
             </div>
           )}
+
+          {projectId && (
+            <SharedSecretBindings appId={appId!} projectId={projectId} />
+          )}
         </div>
       )}
 
@@ -2643,6 +2647,128 @@ function PrometheusChart({ appId, env, metric, range: timeRange, label, unit, co
         </ResponsiveContainer>
       )}
     </div>
+  )
+}
+
+function SharedSecretBindings({ appId, projectId }: { appId: string; projectId: string }) {
+  const queryClient = useQueryClient()
+
+  const { data: bound } = useQuery({
+    queryKey: ['appSharedSecrets', appId],
+    queryFn: () => api.listAppSharedSecrets(appId),
+  })
+
+  const { data: available } = useQuery({
+    queryKey: ['sharedSecrets', projectId],
+    queryFn: () => api.listSharedSecrets(projectId),
+    enabled: !!projectId,
+  })
+
+  const bindMutation = useMutation({
+    mutationFn: (name: string) => api.bindSharedSecret(appId, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['appSharedSecrets', appId] })
+      queryClient.invalidateQueries({ queryKey: ['app', appId] })
+    },
+  })
+
+  const unbindMutation = useMutation({
+    mutationFn: (name: string) => api.unbindSharedSecret(appId, name),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['appSharedSecrets', appId] })
+      queryClient.invalidateQueries({ queryKey: ['app', appId] })
+    },
+  })
+
+  const boundNames: string[] = bound?.items || []
+  const unbound = (available?.items || []).filter((s: any) => !boundNames.includes(s.name))
+
+  return (
+    <section className="card p-5">
+      <h3 className="section-title mb-4">Shared Secrets</h3>
+      <p className="text-xs text-text-tertiary mb-4">
+        Bind project-level shared secrets to this app. All keys are injected as environment variables.
+      </p>
+
+      {boundNames.length > 0 && (
+        <div className="space-y-2 mb-4">
+          <label className="text-[11px] text-text-tertiary font-mono uppercase tracking-wider">Bound</label>
+          {boundNames.map((name) => {
+            const secret = available?.items?.find((s: any) => s.name === name)
+            return (
+              <div key={name} className="flex items-center justify-between bg-surface-2 rounded-lg px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-7 h-7 rounded bg-status-healthy/10 flex items-center justify-center">
+                    <svg className="w-3.5 h-3.5 text-status-healthy" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                    </svg>
+                  </div>
+                  <div>
+                    <span className="text-sm font-mono text-text-primary">{name}</span>
+                    {secret?.keys && (
+                      <div className="flex gap-1.5 mt-0.5">
+                        {secret.keys.map((k: string) => (
+                          <span key={k} className="px-1.5 py-0.5 bg-surface-3 rounded text-[10px] font-mono text-text-tertiary">{k}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => unbindMutation.mutate(name)}
+                  disabled={unbindMutation.isPending}
+                  className="text-xs text-text-tertiary hover:text-status-failed transition-colors"
+                >
+                  Unbind
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {unbound.length > 0 && (
+        <div className="space-y-2">
+          <label className="text-[11px] text-text-tertiary font-mono uppercase tracking-wider">Available</label>
+          {unbound.map((s: any) => (
+            <div key={s.name} className="flex items-center justify-between bg-surface-1 border border-border-subtle rounded-lg px-4 py-3">
+              <div className="flex items-center gap-3">
+                <div className="w-7 h-7 rounded bg-surface-3 flex items-center justify-center">
+                  <svg className="w-3.5 h-3.5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                  </svg>
+                </div>
+                <div>
+                  <span className="text-sm font-mono text-text-primary">{s.name}</span>
+                  {s.keys && (
+                    <div className="flex gap-1.5 mt-0.5">
+                      {s.keys.map((k: string) => (
+                        <span key={k} className="px-1.5 py-0.5 bg-surface-3 rounded text-[10px] font-mono text-text-tertiary">{k}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => bindMutation.mutate(s.name)}
+                disabled={bindMutation.isPending}
+                className="text-xs text-accent hover:text-accent-glow transition-colors"
+              >
+                Bind
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {boundNames.length === 0 && unbound.length === 0 && (
+        <p className="text-xs text-text-tertiary">No shared secrets in this project. Create them in Secrets → Shared Secrets.</p>
+      )}
+
+      {(bindMutation.isError || unbindMutation.isError) && (
+        <p className="text-status-failed text-xs mt-2">{((bindMutation.error || unbindMutation.error) as Error)?.message}</p>
+      )}
+    </section>
   )
 }
 
