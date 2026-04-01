@@ -83,7 +83,7 @@ export default function TemplatesPage() {
             </div>
             <p className="text-xs text-text-secondary mb-3 line-clamp-2">{tmpl.description}</p>
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-mono text-text-tertiary truncate">{tmpl.image}</span>
+              <span className="text-[11px] font-mono text-text-tertiary truncate">{tmpl.image}:{tmpl.tag}</span>
               <button
                 onClick={() => setDeployingId(tmpl.id)}
                 className="btn-primary text-[11px] px-3 py-1"
