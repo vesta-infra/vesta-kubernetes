@@ -21,10 +21,16 @@ type appTemplate struct {
 	Image       string            `json:"image"`
 	Tag         string            `json:"tag"`
 	Port        int               `json:"port"`
+	ExtraPorts  []extraPort       `json:"extraPorts,omitempty"`
 	EnvVars     map[string]string `json:"envVars,omitempty"`
 	HealthPath  string            `json:"healthPath,omitempty"`
 	DataPath    string            `json:"dataPath,omitempty"`
 	Command     string            `json:"command,omitempty"`
+}
+
+type extraPort struct {
+	Name string `json:"name"`
+	Port int    `json:"port"`
 }
 
 var builtinTemplates = []appTemplate{
@@ -36,7 +42,7 @@ var builtinTemplates = []appTemplate{
 	{ID: "redis", Name: "Redis", Description: "In-memory data store for caching and messaging", Category: "database", Icon: "🔴", Image: "redis", Tag: "7-alpine", Port: 6379, EnvVars: map[string]string{"REDIS_PASSWORD": "changeme"}, DataPath: "/data", Command: "redis-server --requirepass $(REDIS_PASSWORD)"},
 	{ID: "mongo", Name: "MongoDB", Description: "Document-oriented NoSQL database", Category: "database", Icon: "🍃", Image: "mongo", Tag: "7", Port: 27017, EnvVars: map[string]string{"MONGO_INITDB_ROOT_USERNAME": "admin", "MONGO_INITDB_ROOT_PASSWORD": "changeme"}, DataPath: "/data/db"},
 	{ID: "mysql", Name: "MySQL", Description: "Popular open-source relational database", Category: "database", Icon: "🐬", Image: "mysql", Tag: "8", Port: 3306, EnvVars: map[string]string{"MYSQL_ROOT_PASSWORD": "changeme", "MYSQL_DATABASE": "app"}, DataPath: "/var/lib/mysql"},
-	{ID: "rabbitmq", Name: "RabbitMQ", Description: "Message broker with management UI", Category: "messaging", Icon: "🐰", Image: "rabbitmq", Tag: "3-management-alpine", Port: 15672, EnvVars: map[string]string{"RABBITMQ_DEFAULT_USER": "admin", "RABBITMQ_DEFAULT_PASS": "changeme"}, DataPath: "/var/lib/rabbitmq"},
+	{ID: "rabbitmq", Name: "RabbitMQ", Description: "Message broker with management UI", Category: "messaging", Icon: "🐰", Image: "rabbitmq", Tag: "3-management-alpine", Port: 5672, ExtraPorts: []extraPort{{Name: "management", Port: 15672}}, EnvVars: map[string]string{"RABBITMQ_DEFAULT_USER": "admin", "RABBITMQ_DEFAULT_PASS": "changeme"}, DataPath: "/var/lib/rabbitmq"},
 	{ID: "minio", Name: "MinIO", Description: "S3-compatible object storage", Category: "storage", Icon: "📦", Image: "minio/minio", Tag: "latest", Port: 9000, EnvVars: map[string]string{"MINIO_ROOT_USER": "minioadmin", "MINIO_ROOT_PASSWORD": "minioadmin"}, DataPath: "/data", Command: "server /data"},
 }
 
@@ -198,6 +204,17 @@ func (h *Handler) DeployTemplate(c *gin.Context) {
 			"tag":        tmpl.Tag,
 		},
 		"runtime": runtime,
+	}
+
+	// Wire multi-port service when the template declares extra ports
+	if len(tmpl.ExtraPorts) > 0 {
+		ports := []map[string]interface{}{
+			{"name": "default", "port": tmpl.Port},
+		}
+		for _, ep := range tmpl.ExtraPorts {
+			ports = append(ports, map[string]interface{}{"name": ep.Name, "port": ep.Port})
+		}
+		spec["service"] = map[string]interface{}{"ports": ports}
 	}
 	if len(envs) > 0 {
 		spec["environments"] = envs
