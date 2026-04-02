@@ -202,6 +202,9 @@ export const api = {
   listAppEnvSecrets: (appId: string, env: string) =>
     request<{ items: any[]; total: number }>(`/apps/${appId}/envs/${env}/secrets`),
 
+  revealAppEnvSecretValues: (appId: string, env: string) =>
+    request<{ id: string; name: string; values: Record<string, string> }>(`/apps/${appId}/envs/${env}/secrets/reveal`),
+
   deleteAppEnvSecretKey: (appId: string, env: string, key: string) =>
     request<void>(`/apps/${appId}/envs/${env}/secrets/${encodeURIComponent(key)}`, { method: 'DELETE' }),
 

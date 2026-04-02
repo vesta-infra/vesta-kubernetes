@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
 import { api } from '../lib/api'
 import { useUserRole } from '../lib/useRole'
+import RevealableInput from '../components/RevealableInput'
 
 export default function AppDetailPage() {
   const { appId } = useParams<{ appId: string }>()
@@ -2999,12 +3000,16 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
     queryFn: () => api.listAppEnvSecrets(appId, env),
   })
 
+  const role = useUserRole()
+  const isAdmin = role === 'admin'
   const [showAdd, setShowAdd] = useState(false)
   const [newKeys, setNewKeys] = useState([{ key: '', value: '' }])
   const [editMode, setEditMode] = useState(false)
   const [editKeys, setEditKeys] = useState<{ key: string; value: string }[]>([])
   const [envInput, setEnvInput] = useState('')
   const [showEnvImport, setShowEnvImport] = useState(false)
+  const [revealed, setRevealed] = useState<Record<string, string> | null>(null)
+  const [revealLoading, setRevealLoading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const addMutation = useMutation({
@@ -3019,6 +3024,7 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
       setEditKeys([])
       setShowEnvImport(false)
       setEnvInput('')
+      setRevealed(null)
     },
   })
 
@@ -3070,6 +3076,27 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
     addMutation.mutate(secretData)
   }
 
+  useEffect(() => {
+    if (!revealed) return
+    const timer = setTimeout(() => setRevealed(null), 30000)
+    return () => clearTimeout(timer)
+  }, [revealed])
+
+  const handleReveal = async () => {
+    setRevealLoading(true)
+    try {
+      const res = await api.revealAppEnvSecretValues(appId, env)
+      setRevealed(res.values)
+      setEditMode(false)
+      setShowAdd(false)
+      setShowEnvImport(false)
+    } catch {
+      setRevealed(null)
+    } finally {
+      setRevealLoading(false)
+    }
+  }
+
   if (isLoading) return <p className="text-xs text-text-tertiary">Loading secrets...</p>
 
   const existingKeys: string[] = data?.items?.[0]?.keys || []
@@ -3086,6 +3113,7 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
                 setEditKeys(existingKeys.map(k => ({ key: k, value: '' })))
                 setShowAdd(false)
                 setShowEnvImport(false)
+                setRevealed(null)
               }}
               className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
             >
@@ -3097,6 +3125,7 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
               setShowEnvImport(!showEnvImport)
               setShowAdd(false)
               setEditMode(false)
+              setRevealed(null)
             }}
             className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
           >
@@ -3107,13 +3136,47 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
               setShowAdd(!showAdd)
               setEditMode(false)
               setShowEnvImport(false)
+              setRevealed(null)
             }}
             className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
           >
             + Add Keys
           </button>
+          {isAdmin && existingKeys.length > 0 && !revealed && (
+            <button
+              onClick={handleReveal}
+              disabled={revealLoading}
+              className="text-xs text-accent hover:text-accent-glow transition-colors font-mono disabled:opacity-60"
+            >
+              {revealLoading ? 'Loading...' : 'Reveal'}
+            </button>
+          )}
+          {revealed && (
+            <button
+              onClick={() => setRevealed(null)}
+              className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
+            >
+              Hide
+            </button>
+          )}
         </div>
       </div>
+
+      {revealed && (
+        <div className="bg-surface-1 border border-border rounded-lg p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] font-mono text-yellow-500">Values visible (auto-hides in 30s)</span>
+          </div>
+          <div className="space-y-1">
+            {Object.entries(revealed).map(([k, v]) => (
+              <div key={k} className="flex items-center gap-2 font-mono text-xs">
+                <span className="text-text-tertiary min-w-[140px]">{k}</span>
+                <span className="text-text-primary bg-surface-3 px-2 py-0.5 rounded select-all break-all">{v}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {existingKeys.length > 0 && !editMode && (
         <div className="space-y-1">
@@ -3143,7 +3206,7 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
               {editKeys.map((kv, i) => (
                 <div key={kv.key} className="flex gap-2 items-center">
                   <span className="font-mono text-xs text-text-secondary w-40 truncate flex-shrink-0">{kv.key}</span>
-                  <input
+                  <RevealableInput
                     value={kv.value}
                     onChange={(e) => { const u = [...editKeys]; u[i].value = e.target.value; setEditKeys(u) }}
                     placeholder="new value"
@@ -3238,7 +3301,7 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
                     placeholder="KEY"
                     className="input-field flex-1 font-mono text-xs"
                   />
-                  <input
+                  <RevealableInput
                     value={kv.value}
                     onChange={(e) => { const u = [...newKeys]; u[i].value = e.target.value; setNewKeys(u) }}
                     placeholder="value"

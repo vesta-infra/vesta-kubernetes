@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { useUserRole } from '../lib/useRole'
+import RevealableInput from '../components/RevealableInput'
 
 export default function ProjectDetailPage() {
   const { projectId } = useParams<{ projectId: string }>()
@@ -1211,13 +1212,23 @@ function AddNotificationForm({ projectId, onClose }: { projectId: string; onClos
       {typeDef.configFields.map(f => (
         <div key={f.key}>
           <label className="label">{f.label}</label>
-          <input
-            value={config[f.key] || ''}
-            onChange={e => setConfig(prev => ({ ...prev, [f.key]: e.target.value }))}
-            className="input-field text-xs font-mono"
-            placeholder={f.placeholder}
-            type={f.key === 'password' || f.key === 'secret' ? 'password' : 'text'}
-          />
+          {(f.key === 'password' || f.key === 'secret') ? (
+            <RevealableInput
+              value={config[f.key] || ''}
+              onChange={e => setConfig(prev => ({ ...prev, [f.key]: e.target.value }))}
+              className="input-field text-xs font-mono"
+              placeholder={f.placeholder}
+              type="password"
+            />
+          ) : (
+            <input
+              value={config[f.key] || ''}
+              onChange={e => setConfig(prev => ({ ...prev, [f.key]: e.target.value }))}
+              className="input-field text-xs font-mono"
+              placeholder={f.placeholder}
+              type="text"
+            />
+          )}
         </div>
       ))}
 

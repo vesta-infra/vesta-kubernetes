@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { useUserRole } from '../lib/useRole'
+import RevealableInput from '../components/RevealableInput'
 
 export default function SecretsPage() {
   const queryClient = useQueryClient()
@@ -324,7 +325,7 @@ function SharedSecretsSection() {
                     placeholder="REDIS_URL"
                     className="input-field flex-1 font-mono text-xs"
                   />
-                  <input
+                  <RevealableInput
                     value={kv.value}
                     onChange={(e) => { const u = [...keys]; u[i].value = e.target.value; setKeys(u) }}
                     placeholder="redis://redis:6379"
@@ -475,7 +476,7 @@ function RegistrySecretsSection() {
             </div>
             <div>
               <label className="label">Password / Token</label>
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="input-field" placeholder="••••••••" required />
+              <RevealableInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="input-field" placeholder="••••••••" required />
             </div>
           </div>
           <div className="flex gap-3 pt-1">
@@ -711,7 +712,7 @@ function CreateSecretForm({ apps, onClose }: { apps: any[]; onClose: () => void 
                     placeholder="KEY"
                     className="input-field flex-1 font-mono text-xs"
                   />
-                  <input
+                  <RevealableInput
                     value={kv.value}
                     onChange={(e) => { const u = [...keys]; u[i].value = e.target.value; setKeys(u) }}
                     placeholder="value"

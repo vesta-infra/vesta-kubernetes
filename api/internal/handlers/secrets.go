@@ -184,6 +184,58 @@ func (h *Handler) ListAppEnvSecrets(c *gin.Context) {
 	c.JSON(http.StatusOK, models.ListResponse{Items: items, Total: 1})
 }
 
+// RevealAppEnvSecretValues reveals values for an app/environment secret deterministically.
+func (h *Handler) RevealAppEnvSecretValues(c *gin.Context) {
+	appID := c.Param("appId")
+	env := c.Param("env")
+
+	app, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
+		return
+	}
+
+	appSpec, _, _ := unstructuredNestedMap(app.Object, "spec")
+	project := getNestedString(appSpec, "project")
+	namespace := fmt.Sprintf("%s-%s", project, env)
+	secretName := fmt.Sprintf("%s-secrets", appID)
+
+	secret, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, secretName)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "secret not found"})
+		return
+	}
+
+	spec, _, _ := unstructuredNestedMap(secret.Object, "spec")
+	keys := extractSecretKeys(spec)
+	values := make(map[string]string)
+	if data, ok := spec["data"].(map[string]interface{}); ok {
+		for k, v := range data {
+			if s, ok := v.(string); ok {
+				values[k] = s
+			}
+		}
+	}
+
+	h.auditLog(c, "reveal_secret", "secret", secretName, secretName, project, env,
+		map[string]interface{}{
+			"app":       appID,
+			"keys":      keys,
+			"namespace": namespace,
+		})
+
+	c.JSON(http.StatusOK, gin.H{
+		"id":          secretName,
+		"name":        secretName,
+		"namespace":   namespace,
+		"type":        getNestedString(spec, "type"),
+		"project":     project,
+		"app":         appID,
+		"environment": env,
+		"values":      values,
+	})
+}
+
 func (h *Handler) ListSecrets(c *gin.Context) {
 	project := c.Query("project")
 	labelSelector := ""

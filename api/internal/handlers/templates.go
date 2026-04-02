@@ -36,7 +36,7 @@ var builtinTemplates = []appTemplate{
 	{ID: "redis", Name: "Redis", Description: "In-memory data store for caching and messaging", Category: "database", Icon: "🔴", Image: "redis", Tag: "7-alpine", Port: 6379, DataPath: "/data"},
 	{ID: "mongo", Name: "MongoDB", Description: "Document-oriented NoSQL database", Category: "database", Icon: "🍃", Image: "mongo", Tag: "7", Port: 27017, EnvVars: map[string]string{"MONGO_INITDB_ROOT_USERNAME": "admin", "MONGO_INITDB_ROOT_PASSWORD": "changeme"}, DataPath: "/data/db"},
 	{ID: "mysql", Name: "MySQL", Description: "Popular open-source relational database", Category: "database", Icon: "🐬", Image: "mysql", Tag: "8", Port: 3306, EnvVars: map[string]string{"MYSQL_ROOT_PASSWORD": "changeme", "MYSQL_DATABASE": "app"}, DataPath: "/var/lib/mysql"},
-	{ID: "rabbitmq", Name: "RabbitMQ", Description: "Message broker with management UI", Category: "messaging", Icon: "🐰", Image: "rabbitmq", Tag: "3-management-alpine", Port: 15672, DataPath: "/var/lib/rabbitmq"},
+	{ID: "rabbitmq", Name: "RabbitMQ", Description: "Message broker with management UI", Category: "messaging", Icon: "🐰", Image: "rabbitmq", Tag: "3-management-alpine", Port: 15672, EnvVars: map[string]string{"RABBITMQ_DEFAULT_USER": "admin", "RABBITMQ_DEFAULT_PASS": "changeme"}, DataPath: "/var/lib/rabbitmq"},
 	{ID: "minio", Name: "MinIO", Description: "S3-compatible object storage", Category: "storage", Icon: "📦", Image: "minio/minio", Tag: "latest", Port: 9000, EnvVars: map[string]string{"MINIO_ROOT_USER": "minioadmin", "MINIO_ROOT_PASSWORD": "minioadmin"}, DataPath: "/data", Command: "server /data"},
 }
 
@@ -104,7 +104,7 @@ func (h *Handler) DeployTemplate(c *gin.Context) {
 	var plainEnvVars []map[string]interface{}
 	secretData := map[string]string{}
 	for k, v := range tmpl.EnvVars {
-		if isSensitiveEnvVar(k) {
+		if isSensitiveEnvVar(tmpl.ID, k) {
 			secretData[k] = generatePassword()
 		} else {
 			plainEnvVars = append(plainEnvVars, map[string]interface{}{
@@ -237,9 +237,13 @@ func (h *Handler) DeployTemplate(c *gin.Context) {
 	})
 }
 
-func isSensitiveEnvVar(key string) bool {
+func isSensitiveEnvVar(templateID, key string) bool {
+	if templateID == "rabbitmq" && (key == "RABBITMQ_DEFAULT_USER" || key == "RABBITMQ_DEFAULT_PASS") {
+		return true
+	}
+
 	upper := strings.ToUpper(key)
-	return strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "TOKEN")
+	return strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "TOKEN") || strings.Contains(upper, "PASS")
 }
 
 func generatePassword() string {
