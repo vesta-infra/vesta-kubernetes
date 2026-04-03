@@ -502,6 +502,107 @@ func (h *Handler) RevealSecretValues(c *gin.Context) {
 
 // ─── Shared Secrets ──────────────────────────────────────────────────────────
 
+// UpdateSharedSecret updates data on an existing shared secret across all its environments.
+func (h *Handler) UpdateSharedSecret(c *gin.Context) {
+	projectID := c.Param("projectId")
+	name := c.Param("name")
+
+	var req struct {
+		Data map[string]string `json:"data" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
+	list, err := h.K8s.ListResources(c.Request.Context(), k8s.VestaSecretGVR, "",
+		"kubernetes.getvesta.sh/project="+projectID+",kubernetes.getvesta.sh/shared=true")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	updated := 0
+	for _, item := range list.Items {
+		if item.GetName() != name {
+			continue
+		}
+		spec, _, _ := unstructuredNestedMap(item.Object, "spec")
+		existingData, _, _ := unstructuredNestedMap(spec, "data")
+		if existingData == nil {
+			existingData = make(map[string]interface{})
+		}
+		for k, v := range req.Data {
+			existingData[k] = v
+		}
+		spec["data"] = existingData
+		item.Object["spec"] = spec
+		if _, err := h.K8s.UpdateResource(c.Request.Context(), k8s.VestaSecretGVR, item.GetNamespace(), &item); err == nil {
+			updated++
+		}
+	}
+
+	if updated == 0 {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "shared secret not found"})
+		return
+	}
+
+	keys := make([]string, 0, len(req.Data))
+	for k := range req.Data {
+		keys = append(keys, k)
+	}
+
+	h.auditLog(c, "update_shared_secret", "secret", name, name, projectID, "",
+		map[string]interface{}{"updatedKeys": keys})
+
+	c.JSON(http.StatusOK, gin.H{"name": name, "message": "shared secret updated", "updatedEnvironments": updated})
+}
+
+// RevealSharedSecret reveals values of a shared secret. Admin-only, audit-logged.
+func (h *Handler) RevealSharedSecret(c *gin.Context) {
+	projectID := c.Param("projectId")
+	name := c.Param("name")
+
+	list, err := h.K8s.ListResources(c.Request.Context(), k8s.VestaSecretGVR, "",
+		"kubernetes.getvesta.sh/project="+projectID+",kubernetes.getvesta.sh/shared=true")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	// Find the first matching secret (all envs share the same data)
+	for _, item := range list.Items {
+		if item.GetName() != name {
+			continue
+		}
+		spec, _, _ := unstructuredNestedMap(item.Object, "spec")
+		values := make(map[string]string)
+		if data, ok := spec["data"].(map[string]interface{}); ok {
+			for k, v := range data {
+				if s, ok := v.(string); ok {
+					values[k] = s
+				}
+			}
+		}
+
+		h.auditLog(c, "reveal_secret", "secret", name, name, projectID, "",
+			map[string]interface{}{
+				"shared":    true,
+				"keys":      extractSecretKeys(spec),
+				"namespace": item.GetNamespace(),
+			})
+
+		c.JSON(http.StatusOK, gin.H{
+			"id":     name,
+			"name":   name,
+			"values": values,
+		})
+		return
+	}
+
+	c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "shared secret not found"})
+}
+
 func (h *Handler) CreateSharedSecret(c *gin.Context) {
 	projectID := c.Param("projectId")
 

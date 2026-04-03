@@ -775,7 +775,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
   const appEnvironments: string[] = rawEnvs.map((e: any) => typeof e === 'string' ? e : e.name)
-  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number }>>(() => {
+  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
       const env = typeof e === 'string' ? { name: e } : e
@@ -786,6 +786,8 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         minReplicas: env.autoscale?.minReplicas || 1,
         maxReplicas: env.autoscale?.maxReplicas || 5,
         targetCPU: env.autoscale?.metrics?.[0]?.targetAverageUtilization || env.autoscale?.targetCPU || 80,
+        imageRepo: env.image?.repository || '',
+        imageTag: env.image?.tag || '',
       }
     }
     return configs
@@ -949,6 +951,12 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       }
       if (cfg.podSize) {
         env.resources = { size: cfg.podSize }
+      }
+      if (cfg.imageRepo || cfg.imageTag) {
+        env.image = {
+          ...(cfg.imageRepo && { repository: cfg.imageRepo }),
+          ...(cfg.imageTag && { tag: cfg.imageTag }),
+        }
       }
       return env
     })
@@ -1260,6 +1268,24 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
               <div key={envName} className="rounded-lg border border-border bg-surface-1 p-3">
                 <span className="text-sm font-mono text-accent">{envName}</span>
                 <div className="mt-2 flex items-center gap-4 flex-wrap">
+                  <div>
+                    <label className="text-xs text-text-tertiary">Image Override</label>
+                    <div className="flex gap-2 mt-1">
+                      <input
+                        value={cfg.imageRepo}
+                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageRepo: e.target.value } }))}
+                        className="input-field w-52 font-mono text-xs"
+                        placeholder={imageRepo || 'same as app'}
+                      />
+                      <input
+                        value={cfg.imageTag}
+                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageTag: e.target.value } }))}
+                        className="input-field w-28 font-mono text-xs"
+                        placeholder={imageTag || 'tag'}
+                      />
+                    </div>
+                    <p className="text-[10px] text-text-tertiary mt-0.5">Leave blank to use the app-level image</p>
+                  </div>
                   <div>
                     <label className="text-xs text-text-tertiary">Pod Size</label>
                     <select

@@ -142,6 +142,8 @@ func main() {
 		// Shared Secrets (project-scoped, opt-in per app)
 		auth.POST("/projects/:projectId/shared-secrets", dv, h.CreateSharedSecret)
 		auth.GET("/projects/:projectId/shared-secrets", h.ListSharedSecrets)
+		auth.PUT("/projects/:projectId/shared-secrets/:name", dv, h.UpdateSharedSecret)
+		auth.GET("/projects/:projectId/shared-secrets/:name/reveal", middleware.RequireRole("admin"), h.RevealSharedSecret)
 		auth.DELETE("/projects/:projectId/shared-secrets/:name", dv, h.DeleteSharedSecret)
 		auth.POST("/apps/:appId/shared-secrets", dv, h.BindSharedSecret)
 		auth.GET("/apps/:appId/shared-secrets", h.ListAppSharedSecrets)

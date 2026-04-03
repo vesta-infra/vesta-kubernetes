@@ -401,7 +401,7 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 		projectPullSecrets = project.Spec.ImagePullSecrets
 	}
 
-	container := r.buildContainer(app, target.Config.Resources, target.Config.Name)
+	container := r.buildContainer(app, target.Config.Resources, target.Config.Name, target.Config.Image)
 
 	// Auto-inject the per-app secret ("{appName}-secrets") as envFrom if it exists in the target namespace.
 	// This secret is created by the API when users add per-environment secrets.
@@ -502,9 +502,19 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 	return nil
 }
 
-func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envResources *vestav1alpha1.ResourceConfig, envName string) corev1.Container {
+func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envResources *vestav1alpha1.ResourceConfig, envName string, envImage *vestav1alpha1.ImageConfig) corev1.Container {
 	image := "placeholder:latest"
-	if app.Spec.Image != nil {
+	// Per-environment image override takes precedence over app-level image
+	if envImage != nil && envImage.Repository != "" {
+		tag := "latest"
+		if envImage.Tag != "" {
+			tag = envImage.Tag
+		}
+		image = fmt.Sprintf("%s:%s", envImage.Repository, tag)
+	} else if envImage != nil && envImage.Tag != "" && app.Spec.Image != nil {
+		// Environment overrides only the tag, keep the app-level repository
+		image = fmt.Sprintf("%s:%s", app.Spec.Image.Repository, envImage.Tag)
+	} else if app.Spec.Image != nil {
 		tag := "latest"
 		if app.Spec.Image.Tag != "" {
 			tag = app.Spec.Image.Tag
@@ -517,8 +527,14 @@ func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envReso
 		Image: image,
 	}
 
-	if app.Spec.Image != nil && app.Spec.Image.PullPolicy != "" {
-		container.ImagePullPolicy = app.Spec.Image.PullPolicy
+	pullPolicy := corev1.PullPolicy("")
+	if envImage != nil && envImage.PullPolicy != "" {
+		pullPolicy = envImage.PullPolicy
+	} else if app.Spec.Image != nil && app.Spec.Image.PullPolicy != "" {
+		pullPolicy = app.Spec.Image.PullPolicy
+	}
+	if pullPolicy != "" {
+		container.ImagePullPolicy = pullPolicy
 	}
 
 	if app.Spec.Service != nil && len(app.Spec.Service.Ports) > 0 {
@@ -1094,7 +1110,7 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 		effectiveSchedule := r.resolveCronjobSchedule(cj, target.Config.Name)
 
 		// Build the container: same image, env, secrets, volumes as the main app — only override command
-		container := r.buildContainer(app, cj.Resources, target.Config.Name)
+		container := r.buildContainer(app, cj.Resources, target.Config.Name, target.Config.Image)
 		container.Name = "job"
 		container.Command = []string{"/bin/sh", "-c", cj.Command}
 		container.Args = nil

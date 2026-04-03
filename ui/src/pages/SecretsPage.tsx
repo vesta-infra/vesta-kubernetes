@@ -239,6 +239,8 @@ function SecretItem({ secret: s, isAdmin, onDelete }: { secret: any; isAdmin: bo
 
 function SharedSecretsSection() {
   const queryClient = useQueryClient()
+  const role = useUserRole()
+  const isAdmin = role === 'admin'
   const { data: projects } = useQuery({ queryKey: ['projects'], queryFn: () => api.listProjects() })
   const [selectedProject, setSelectedProject] = useState('')
   const [showCreate, setShowCreate] = useState(false)
@@ -371,40 +373,185 @@ function SharedSecretsSection() {
       )}
 
       {data?.items?.map((s: any) => (
-        <div key={s.name} className="card-hover px-5 py-4 group">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center">
-                <svg className="w-4 h-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                </svg>
+        <SharedSecretItem key={s.name} secret={s} projectId={projectId} isAdmin={isAdmin} onDelete={(n) => deleteMutation.mutate(n)} />
+      ))}
+    </div>
+  )
+}
+
+function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete }: { secret: any; projectId: string; isAdmin: boolean; onDelete: (name: string) => void }) {
+  const queryClient = useQueryClient()
+  const [revealed, setRevealed] = useState<Record<string, string> | null>(null)
+  const [revealLoading, setRevealLoading] = useState(false)
+  const [editMode, setEditMode] = useState(false)
+  const [editKeys, setEditKeys] = useState<{ key: string; value: string }[]>([])
+
+  useEffect(() => {
+    if (!revealed) return
+    const timer = setTimeout(() => setRevealed(null), 30000)
+    return () => clearTimeout(timer)
+  }, [revealed])
+
+  const handleReveal = async () => {
+    setRevealLoading(true)
+    try {
+      const res = await api.revealSharedSecret(projectId, s.name)
+      setRevealed(res.values)
+    } catch {
+      setRevealed(null)
+    } finally {
+      setRevealLoading(false)
+    }
+  }
+
+  const updateMutation = useMutation({
+    mutationFn: (data: Record<string, string>) => api.updateSharedSecret(projectId, s.name, { data }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['sharedSecrets'] })
+      setEditMode(false)
+      setEditKeys([])
+      setRevealed(null)
+    },
+  })
+
+  const handleEditSubmit = () => {
+    const data: Record<string, string> = {}
+    editKeys.forEach(kv => { if (kv.key && kv.value) data[kv.key] = kv.value })
+    if (Object.keys(data).length === 0) return
+    updateMutation.mutate(data)
+  }
+
+  return (
+    <div className="card-hover px-5 py-4 group">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center">
+            <svg className="w-4 h-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+            </svg>
+          </div>
+          <div>
+            <p className="text-sm font-medium text-text-primary font-mono">{s.name}</p>
+            {!revealed && (
+              <div className="flex items-center gap-3 mt-1 flex-wrap">
+                {s.keys?.map((k: string) => (
+                  <span key={k} className="px-2 py-0.5 bg-surface-3 rounded text-[11px] font-mono text-text-secondary">{k}</span>
+                ))}
               </div>
-              <div>
-                <p className="text-sm font-medium text-text-primary font-mono">{s.name}</p>
-                <div className="flex items-center gap-3 mt-1 flex-wrap">
-                  {s.keys?.map((k: string) => (
-                    <span key={k} className="px-2 py-0.5 bg-surface-3 rounded text-[11px] font-mono text-text-secondary">{k}</span>
-                  ))}
-                </div>
-                {s.environments?.length > 0 && (
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-[11px] text-text-tertiary">Environments:</span>
-                    {s.environments.map((env: string) => (
-                      <span key={env} className="text-[11px] font-mono text-text-secondary">{env}</span>
-                    ))}
-                  </div>
-                )}
+            )}
+            {s.environments?.length > 0 && (
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-[11px] text-text-tertiary">Environments:</span>
+                {s.environments.map((env: string) => (
+                  <span key={env} className="text-[11px] font-mono text-text-secondary">{env}</span>
+                ))}
               </div>
-            </div>
-            <button
-              onClick={() => { if (confirm(`Delete shared secret "${s.name}" from all environments?`)) deleteMutation.mutate(s.name) }}
-              className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
-            >
-              Delete
-            </button>
+            )}
           </div>
         </div>
-      ))}
+        <div className="flex items-center gap-2">
+          {isAdmin && s.keys?.length > 0 && !revealed && !editMode && (
+            <button
+              onClick={handleReveal}
+              disabled={revealLoading}
+              className="text-xs text-text-tertiary hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
+            >
+              {revealLoading ? 'Loading...' : 'Reveal'}
+            </button>
+          )}
+          {revealed && (
+            <button
+              onClick={() => setRevealed(null)}
+              className="text-xs text-text-tertiary hover:text-accent transition-colors"
+            >
+              Hide
+            </button>
+          )}
+          {s.keys?.length > 0 && !editMode && (
+            <button
+              onClick={() => {
+                setEditMode(true)
+                setEditKeys((s.keys || []).map((k: string) => ({ key: k, value: '' })))
+                setRevealed(null)
+              }}
+              className="text-xs text-text-tertiary hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
+            >
+              Edit
+            </button>
+          )}
+          {editMode && (
+            <button onClick={() => setEditMode(false)} className="text-xs text-text-tertiary hover:text-accent transition-colors">
+              Cancel
+            </button>
+          )}
+          <button
+            onClick={() => { if (confirm(`Delete shared secret "${s.name}" from all environments?`)) onDelete(s.name) }}
+            className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+
+      {revealed && (
+        <div className="mt-3 ml-13 border-t border-border pt-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] font-mono text-yellow-500">Values visible (auto-hides in 30s)</span>
+          </div>
+          <div className="space-y-1">
+            {Object.entries(revealed).map(([k, v]) => (
+              <div key={k} className="flex items-center gap-2 font-mono text-xs">
+                <span className="text-text-tertiary min-w-[140px]">{k}</span>
+                <span className="text-text-primary bg-surface-3 px-2 py-0.5 rounded select-all break-all">{v}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {editMode && (
+        <div className="mt-3 border-t border-border pt-3 space-y-3 animate-slide-up">
+          <div>
+            <label className="label">Update Values</label>
+            <p className="text-[11px] text-text-tertiary mb-2">Enter new values for existing keys. Only keys with values will be updated.</p>
+            <div className="space-y-2">
+              {editKeys.map((kv, i) => (
+                <div key={kv.key} className="flex gap-2 items-center">
+                  <span className="font-mono text-xs text-text-secondary w-40 truncate flex-shrink-0">{kv.key}</span>
+                  <RevealableInput
+                    value={kv.value}
+                    onChange={(e) => { const u = [...editKeys]; u[i].value = e.target.value; setEditKeys(u) }}
+                    placeholder="new value"
+                    type="password"
+                    className="input-field flex-1"
+                  />
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setEditKeys([...editKeys, { key: '', value: '' }])}
+              className="text-xs text-accent hover:text-accent-glow transition-colors mt-2 font-mono"
+            >
+              + Add key
+            </button>
+          </div>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={handleEditSubmit}
+              disabled={updateMutation.isPending || !editKeys.some(kv => kv.value)}
+              className="btn-primary text-xs"
+            >
+              {updateMutation.isPending ? 'Saving...' : 'Update'}
+            </button>
+            <button type="button" onClick={() => setEditMode(false)} className="btn-ghost text-xs">Cancel</button>
+          </div>
+          {updateMutation.isError && (
+            <p className="text-status-failed text-xs">{(updateMutation.error as Error).message}</p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

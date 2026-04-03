@@ -249,6 +249,15 @@ export const api = {
   listSharedSecrets: (projectId: string) =>
     request<{ items: any[]; total: number }>(`/projects/${projectId}/shared-secrets`),
 
+  updateSharedSecret: (projectId: string, name: string, data: { data: Record<string, string> }) =>
+    request<any>(`/projects/${projectId}/shared-secrets/${name}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  revealSharedSecret: (projectId: string, name: string) =>
+    request<{ id: string; name: string; values: Record<string, string> }>(`/projects/${projectId}/shared-secrets/${name}/reveal`),
+
   deleteSharedSecret: (projectId: string, name: string) =>
     request<void>(`/projects/${projectId}/shared-secrets/${name}`, { method: 'DELETE' }),
 

@@ -73,17 +73,38 @@ func (h *Handler) DeployApp(c *gin.Context) {
 		repo, _ := imageSpec["repository"].(string)
 		targetImage := fmt.Sprintf("%s:%s", repo, req.Tag)
 
-		// Update the VestaApp CRD's image tag — the operator will reconcile
-		// the Deployment with the full pod spec (envFrom, ports, resources, etc.)
-		crdPatch := map[string]interface{}{
-			"spec": map[string]interface{}{
-				"image": map[string]interface{}{
-					"tag": req.Tag,
-				},
-			},
+		// Update the per-environment image tag on the VestaApp CRD.
+		// The operator reads env.image.tag (falling back to spec.image) per-environment.
+		environments, _, _ := unstructuredNestedSlice(spec, "environments")
+		updated := false
+		for i, raw := range environments {
+			envMap, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if getNestedString(envMap, "name") == req.Environment {
+				envImage, _ := envMap["image"].(map[string]interface{})
+				if envImage == nil {
+					envImage = map[string]interface{}{}
+				}
+				envImage["tag"] = req.Tag
+				envMap["image"] = envImage
+				environments[i] = envMap
+				updated = true
+				break
+			}
 		}
-		crdPatchBytes, _ := json.Marshal(crdPatch)
-		_, err := h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId, crdPatchBytes)
+		if !updated {
+			// Fallback: also patch global image tag for apps without per-env entries
+			spec["image"] = map[string]interface{}{
+				"repository": repo,
+				"tag":        req.Tag,
+			}
+		} else {
+			spec["environments"] = environments
+		}
+		existing.Object["spec"] = spec
+		_, err = h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, existing)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to update app image tag: %v", err)})
 			return
@@ -206,21 +227,43 @@ func (h *Handler) RollbackApp(c *gin.Context) {
 		return
 	}
 
-	// Update the VestaApp CRD's image tag — the operator will reconcile
-	// the Deployment with the full pod spec (envFrom, ports, resources, etc.)
+	// Update the per-environment image tag — the operator will reconcile
 	rollbackTag := targetImage
 	if idx := strings.LastIndex(targetImage, ":"); idx >= 0 {
 		rollbackTag = targetImage[idx+1:]
 	}
-	crdPatch := map[string]interface{}{
-		"spec": map[string]interface{}{
-			"image": map[string]interface{}{
-				"tag": rollbackTag,
-			},
-		},
+
+	environments, _, _ := unstructuredNestedSlice(spec, "environments")
+	updated := false
+	for i, raw := range environments {
+		envMap, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if getNestedString(envMap, "name") == req.Environment {
+			envImage, _ := envMap["image"].(map[string]interface{})
+			if envImage == nil {
+				envImage = map[string]interface{}{}
+			}
+			envImage["tag"] = rollbackTag
+			envMap["image"] = envImage
+			environments[i] = envMap
+			updated = true
+			break
+		}
 	}
-	crdPatchBytes, _ := json.Marshal(crdPatch)
-	_, err = h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId, crdPatchBytes)
+	if !updated {
+		imageSpec, _, _ := unstructuredNestedMap(spec, "image")
+		if imageSpec == nil {
+			imageSpec = map[string]interface{}{}
+		}
+		imageSpec["tag"] = rollbackTag
+		spec["image"] = imageSpec
+	} else {
+		spec["environments"] = environments
+	}
+	existing.Object["spec"] = spec
+	_, err = h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, existing)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to rollback app image tag: %v", err)})
 		return

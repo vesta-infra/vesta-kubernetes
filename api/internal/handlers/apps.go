@@ -305,6 +305,19 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 	}
 
 	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+
+	// Preserve runtime.secrets (shared secret bindings) when the patch replaces runtime
+	if patchRuntime, ok := patch["runtime"].(map[string]interface{}); ok {
+		if existingRuntime, _, _ := unstructuredNestedMap(spec, "runtime"); existingRuntime != nil {
+			if secrets, exists := existingRuntime["secrets"]; exists {
+				if _, hasSecrets := patchRuntime["secrets"]; !hasSecrets {
+					patchRuntime["secrets"] = secrets
+					patch["runtime"] = patchRuntime
+				}
+			}
+		}
+	}
+
 	for k, v := range patch {
 		spec[k] = v
 	}
