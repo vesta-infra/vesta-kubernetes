@@ -65,6 +65,12 @@ ui:
     limits:
       cpu: 200m
       memory: 128Mi
+  ingress:
+    enabled: false
+    host: ui.getvesta.sh
+    tls: true
+    clusterIssuer: letsencrypt-prod
+    annotations: {}
 
 # -- Vesta platform configuration (creates VestaConfig CRD)
 config:

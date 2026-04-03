@@ -76,9 +76,8 @@ helm install -n vesta-system vesta oci://ghcr.io/vesta-infra/charts/vesta \
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
   --set api.database.existingSecret=vesta-db-secret \
-  --set config.domain=apps.yourdomain.com \
-  --set api.ingress.enabled=true \
-  --set api.ingress.host=vesta-api.yourdomain.com
+  --set ui.ingress.host=k8.getvesta.sh
+  --set ui.ingress.enabled=true
 ```
 
 To pin specific image versions:
@@ -87,9 +86,9 @@ To pin specific image versions:
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
   --set api.database.existingSecret=vesta-db-secret \
-  --set operator.image.tag=0.3.18 \
-  --set api.image.tag=0.3.18 \
-  --set ui.image.tag=0.3.18 
+  --set operator.image.tag=0.3.19 \
+  --set api.image.tag=0.3.19 \
+  --set ui.image.tag=0.3.19 
 ```
 
 ```bash
@@ -123,6 +122,8 @@ kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/late
 | `config.domain` | Default domain for app ingresses | `apps.getvesta.sh` |
 | `config.clusterIssuer` | cert-manager ClusterIssuer for TLS | `letsencrypt-prod` |
 | `ui.enabled` | Deploy the web UI | `true` |
+| `ui.ingress.enabled` | Enable UI ingress | `false` |
+| `ui.ingress.host` | UI ingress hostname | `ui.getvesta.sh` |
 
 ## Usage
 
