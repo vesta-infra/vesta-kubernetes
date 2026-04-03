@@ -56,9 +56,100 @@ spec:
                 description: Name of the VestaProject this app belongs to.
               environments:
                 type: array
-                description: List of VestaEnvironment names this app is deployed to.
+                description: Per-environment deployment configuration.
                 items:
-                  type: string
+                  type: object
+                  required: [ name ]
+                  properties:
+                    name:
+                      type: string
+                      description: Environment name (must exist in project.spec.environments).
+                    replicas:
+                      type: integer
+                      format: int32
+                      minimum: 0
+                      description: Number of replicas for this environment.
+                    image:
+                      type: object
+                      description: Per-environment image override.
+                      properties:
+                        repository:
+                          type: string
+                        tag:
+                          type: string
+                        pullPolicy:
+                          type: string
+                          enum: [ Always, Never, IfNotPresent ]
+                        imagePullSecrets:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                            required: [ name ]
+                    autoscale:
+                      type: object
+                      description: Autoscaling configuration for this environment.
+                      properties:
+                        enabled:
+                          type: boolean
+                        minReplicas:
+                          type: integer
+                          format: int32
+                          minimum: 0
+                        maxReplicas:
+                          type: integer
+                          format: int32
+                          minimum: 1
+                        metrics:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              type:
+                                type: string
+                                enum: [ cpu, memory, custom ]
+                              name:
+                                type: string
+                              targetAverageUtilization:
+                                type: integer
+                                format: int32
+                              targetAverageValue:
+                                type: string
+                            required: [ type ]
+                        behavior:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                      required: [ enabled, maxReplicas ]
+                    resources:
+                      type: object
+                      description: Per-environment resource override.
+                      properties:
+                        size:
+                          type: string
+                        requests:
+                          type: object
+                          additionalProperties:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            x-kubernetes-int-or-string: true
+                        limits:
+                          type: object
+                          additionalProperties:
+                            anyOf:
+                            - type: integer
+                            - type: string
+                            x-kubernetes-int-or-string: true
+                    imagePullSecrets:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          name:
+                            type: string
+                        required: [ name ]
               git:
                 type: object
                 description: Git source configuration.

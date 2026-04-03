@@ -123,6 +123,25 @@ spec:
                             - type: integer
                             - type: string
                             x-kubernetes-int-or-string: true
+                    image:
+                      type: object
+                      description: Per-environment image override.
+                      properties:
+                        repository:
+                          type: string
+                        tag:
+                          type: string
+                        pullPolicy:
+                          type: string
+                          enum: [ Always, Never, IfNotPresent ]
+                        imagePullSecrets:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                            required: [ name ]
                     imagePullSecrets:
                       type: array
                       items:
