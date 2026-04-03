@@ -39,6 +39,10 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.api.database.existingSecret | default (printf "%s-api-db" (include "vesta.fullname" .)) }}
                   key: {{ .Values.api.database.secretKey | default "DATABASE_URL" }}
+            {{- if .Values.api.github.existingSecret }}
+            - name: GITHUB_APP_SECRET
+              value: {{ .Values.api.github.existingSecret | quote }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

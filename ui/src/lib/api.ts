@@ -134,6 +134,12 @@ export const api = {
   deleteEnvironment: (projectId: string, env: string) =>
     request<void>(`/projects/${projectId}/environments/${env}`, { method: 'DELETE' }),
 
+  updateEnvironment: (projectId: string, env: string, data: { branch?: string; autoDeploy?: boolean; requireApproval?: boolean; autoDeployPRs?: boolean }) =>
+    request<any>(`/projects/${projectId}/environments/${env}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
   // Apps
   createApp: (projectId: string, data: any) =>
     request<any>(`/projects/${projectId}/apps`, {
@@ -196,6 +202,9 @@ export const api = {
   listAppEnvSecrets: (appId: string, env: string) =>
     request<{ items: any[]; total: number }>(`/apps/${appId}/envs/${env}/secrets`),
 
+  revealAppEnvSecretValues: (appId: string, env: string) =>
+    request<{ id: string; name: string; values: Record<string, string> }>(`/apps/${appId}/envs/${env}/secrets/reveal`),
+
   deleteAppEnvSecretKey: (appId: string, env: string, key: string) =>
     request<void>(`/apps/${appId}/envs/${env}/secrets/${encodeURIComponent(key)}`, { method: 'DELETE' }),
 
@@ -229,6 +238,40 @@ export const api = {
 
   deleteRegistrySecret: (name: string) =>
     request<void>(`/secrets/registry/${name}`, { method: 'DELETE' }),
+
+  // Shared Secrets (project-scoped)
+  createSharedSecret: (projectId: string, data: { name: string; data: Record<string, string>; environments?: string[] }) =>
+    request<any>(`/projects/${projectId}/shared-secrets`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  listSharedSecrets: (projectId: string) =>
+    request<{ items: any[]; total: number }>(`/projects/${projectId}/shared-secrets`),
+
+  updateSharedSecret: (projectId: string, name: string, data: { data: Record<string, string> }) =>
+    request<any>(`/projects/${projectId}/shared-secrets/${name}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  revealSharedSecret: (projectId: string, name: string) =>
+    request<{ id: string; name: string; values: Record<string, string> }>(`/projects/${projectId}/shared-secrets/${name}/reveal`),
+
+  deleteSharedSecret: (projectId: string, name: string) =>
+    request<void>(`/projects/${projectId}/shared-secrets/${name}`, { method: 'DELETE' }),
+
+  bindSharedSecret: (appId: string, name: string, environment: string) =>
+    request<any>(`/apps/${appId}/shared-secrets`, {
+      method: 'POST',
+      body: JSON.stringify({ name, environment }),
+    }),
+
+  unbindSharedSecret: (appId: string, name: string, environment?: string) =>
+    request<void>(`/apps/${appId}/shared-secrets/${name}${environment ? `?environment=${encodeURIComponent(environment)}` : ''}`, { method: 'DELETE' }),
+
+  listAppSharedSecrets: (appId: string) =>
+    request<{ items: { name: string; environments: string[] }[]; total: number }>(`/apps/${appId}/shared-secrets`),
 
   // Logs
   getAppLogs: (appId: string, environment: string, opts?: { tail?: number; pod?: string; container?: string; previous?: boolean }) => {
@@ -411,4 +454,27 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+
+  // GitHub App
+  getGitHubAppStatus: () =>
+    request<{ configured: boolean; appId?: number; appName?: string; appSlug?: string; ownerLogin?: string; ownerType?: string; installations?: number }>('/settings/github-app'),
+
+  getGitHubAppManifest: (data: { appName?: string; apiBaseUrl: string; organization?: string; uiBaseUrl?: string }) =>
+    request<{ manifest: any; githubUrl: string; state: string }>('/github/manifest', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  listGitHubAppInstallations: () =>
+    request<{ installations: any[] }>('/settings/github-app/installations'),
+
+  deleteGitHubApp: () =>
+    request<{ status: string }>('/settings/github-app', { method: 'DELETE' }),
+
+  // Git helpers
+  listRepoBranches: (repo: string) =>
+    request<{ branches: string[] }>(`/git/branches?repo=${encodeURIComponent(repo)}`),
+
+  listAccessibleRepos: () =>
+    request<{ repos: { full_name: string; private: boolean }[] }>('/git/repos'),
 }

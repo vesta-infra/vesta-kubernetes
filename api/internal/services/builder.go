@@ -42,6 +42,7 @@ type Builder struct {
 	clientset kubernetes.Interface
 	db        *db.DB
 	notifier  *Notifier
+	githubApp *GitHubAppService
 }
 
 func NewBuilder(clientset kubernetes.Interface, database *db.DB, notifier *Notifier) *Builder {
@@ -50,6 +51,11 @@ func NewBuilder(clientset kubernetes.Interface, database *db.DB, notifier *Notif
 		db:        database,
 		notifier:  notifier,
 	}
+}
+
+// SetGitHubApp sets the GitHub App service for token generation.
+func (b *Builder) SetGitHubApp(ghApp *GitHubAppService) {
+	b.githubApp = ghApp
 }
 
 // TriggerBuild creates a Kubernetes Job that builds and pushes a container image,
@@ -76,6 +82,38 @@ func (b *Builder) TriggerBuild(ctx context.Context, req BuildRequest) (string, e
 		jobName = jobName[:63]
 	}
 	jobName = strings.ToLower(jobName)
+
+	// If no git secret is set, try to create an ephemeral one from GitHub App
+	ephemeralSecret := ""
+	if req.GitSecretName == "" && req.Repository != "" && b.githubApp != nil && b.githubApp.IsConfigured() {
+		token, err := b.githubApp.GetTokenForRepo(ctx, req.Repository)
+		if err == nil && token != "" {
+			ephemeralSecret = fmt.Sprintf("git-token-%s", jobName)
+			if len(ephemeralSecret) > 63 {
+				ephemeralSecret = ephemeralSecret[:63]
+			}
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      ephemeralSecret,
+					Namespace: buildNamespace,
+					Labels: map[string]string{
+						"kubernetes.getvesta.sh/ephemeral": "true",
+						"kubernetes.getvesta.sh/build":     jobName,
+					},
+				},
+				Type: corev1.SecretTypeOpaque,
+				StringData: map[string]string{
+					"token":    token,
+					"username": "x-access-token",
+				},
+			}
+			if _, err := b.clientset.CoreV1().Secrets(buildNamespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+				log.Printf("[builder] failed to create ephemeral git secret: %v", err)
+			} else {
+				req.GitSecretName = ephemeralSecret
+			}
+		}
+	}
 
 	// Record build in DB
 	build := db.Build{
@@ -159,9 +197,9 @@ func (b *Builder) createBuildJob(req BuildRequest, jobName string) (*batchv1.Job
 			})
 		}
 
-		gitContext := fmt.Sprintf("git://%s#refs/heads/%s", gitURL, req.Branch)
+		gitContext := fmt.Sprintf("git://github.com/%s.git#refs/heads/%s", req.Repository, req.Branch)
 		if req.CommitSHA != "" {
-			gitContext = fmt.Sprintf("git://%s#%s", gitURL, req.CommitSHA)
+			gitContext = fmt.Sprintf("git://github.com/%s.git#%s", req.Repository, req.CommitSHA)
 		}
 
 		args := []string{
@@ -233,9 +271,14 @@ func (b *Builder) createBuildJob(req BuildRequest, jobName string) (*batchv1.Job
 			})
 		}
 
-		cloneCmd := fmt.Sprintf("git clone --depth=1 -b %s %s /workspace", req.Branch, gitURL)
+		nixCloneURL := gitURL
+		if req.GitSecretName != "" {
+			nixCloneURL = fmt.Sprintf("https://x-access-token:${GIT_TOKEN}@github.com/%s.git", req.Repository)
+		}
+
+		cloneCmd := fmt.Sprintf("git clone --depth=1 -b %s %s /workspace", req.Branch, nixCloneURL)
 		if req.CommitSHA != "" {
-			cloneCmd = fmt.Sprintf("git clone %s /workspace && cd /workspace && git checkout %s", gitURL, req.CommitSHA)
+			cloneCmd = fmt.Sprintf("git clone %s /workspace && cd /workspace && git checkout %s", nixCloneURL, req.CommitSHA)
 		}
 
 		script := fmt.Sprintf(`set -e
@@ -253,6 +296,18 @@ echo "Build and push complete"
 			Command:      []string{"/bin/sh", "-c"},
 			Args:         []string{script},
 			VolumeMounts: nixMounts,
+		}
+
+		if req.GitSecretName != "" {
+			container.Env = append(container.Env, corev1.EnvVar{
+				Name: "GIT_TOKEN",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: req.GitSecretName},
+						Key:                  "token",
+					},
+				},
+			})
 		}
 
 	case BuildStrategyBuildpacks:
@@ -274,9 +329,14 @@ echo "Build and push complete"
 			})
 		}
 
-		cloneCmd := fmt.Sprintf("git clone --depth=1 -b %s %s /workspace", req.Branch, gitURL)
+		bpCloneURL := gitURL
+		if req.GitSecretName != "" {
+			bpCloneURL = fmt.Sprintf("https://x-access-token:${GIT_TOKEN}@github.com/%s.git", req.Repository)
+		}
+
+		cloneCmd := fmt.Sprintf("git clone --depth=1 -b %s %s /workspace", req.Branch, bpCloneURL)
 		if req.CommitSHA != "" {
-			cloneCmd = fmt.Sprintf("git clone %s /workspace && cd /workspace && git checkout %s", gitURL, req.CommitSHA)
+			cloneCmd = fmt.Sprintf("git clone %s /workspace && cd /workspace && git checkout %s", bpCloneURL, req.CommitSHA)
 		}
 
 		script := fmt.Sprintf(`set -e
@@ -291,6 +351,18 @@ echo "Build and push complete"
 			Command:      []string{"/bin/sh", "-c"},
 			Args:         []string{script},
 			VolumeMounts: bpMounts,
+		}
+
+		if req.GitSecretName != "" {
+			container.Env = append(container.Env, corev1.EnvVar{
+				Name: "GIT_TOKEN",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: req.GitSecretName},
+						Key:                  "token",
+					},
+				},
+			})
 		}
 
 	default:

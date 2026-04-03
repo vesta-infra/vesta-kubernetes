@@ -161,6 +161,11 @@ func (in *AppEnvironmentConfig) DeepCopyInto(out *AppEnvironmentConfig) {
 		*out = new(int32)
 		**out = **in
 	}
+	if in.Image != nil {
+		in, out := &in.Image, &out.Image
+		*out = new(ImageConfig)
+		(*in).DeepCopyInto(*out)
+	}
 	if in.Autoscale != nil {
 		in, out := &in.Autoscale, &out.Autoscale
 		*out = new(AutoscaleConfig)
@@ -300,6 +305,11 @@ func (in *SecretBinding) DeepCopyInto(out *SecretBinding) {
 	if in.Keys != nil {
 		in, out := &in.Keys, &out.Keys
 		*out = make([]SecretKeyMapping, len(*in))
+		copy(*out, *in)
+	}
+	if in.Environments != nil {
+		in, out := &in.Environments, &out.Environments
+		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
 }

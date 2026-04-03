@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
 import { api } from '../lib/api'
 import { useUserRole } from '../lib/useRole'
+import RevealableInput from '../components/RevealableInput'
 
 export default function AppDetailPage() {
   const { appId } = useParams<{ appId: string }>()
@@ -316,46 +317,25 @@ export default function AppDetailPage() {
                 <p className="text-sm text-text-tertiary">No environments assigned</p>
               ) : (
                 <div className="space-y-2">
-                  {appEnvironments.map((env: string) => (
-                    <div
-                      key={env}
-                      className="flex items-center justify-between px-4 py-3 bg-surface-1 border border-border rounded-lg group"
-                    >
-                      <span className="text-sm font-mono text-text-secondary">{env}</span>
-                      <div className="flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                        {role !== 'viewer' && (
-                        <button
-                          onClick={() => {
-                            if (confirm(`Restart "${app.name}" in "${env}"?`))
-                              restartMutation.mutate(env)
-                          }}
-                          disabled={restartMutation.isPending}
-                          className="text-xs text-text-tertiary hover:text-accent transition-colors flex items-center gap-1"
-                        >
-                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                          </svg>
-                          Restart
-                        </button>
-                        )}
-                        {appEnvironments.length > 1 && role !== 'viewer' && (
-                          <button
-                            onClick={() => {
-                              if (confirm(`Remove "${app.name}" from "${env}"?`))
-                                removeEnvMutation.mutate(env)
-                            }}
-                            disabled={removeEnvMutation.isPending}
-                            className="text-xs text-text-tertiary hover:text-status-failed transition-colors flex items-center gap-1"
-                          >
-                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                            </svg>
-                            Remove
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+                  {appEnvironments.map((env: string) => {
+                    const envConfig = (projectEnvs?.items || []).find((e: any) => e.name === env)
+                    return (
+                      <EnvironmentRow
+                        key={env}
+                        env={env}
+                        envConfig={envConfig}
+                        projectId={projectId}
+                        appName={app.name}
+                        appGitRepo={app.spec?.git?.repository || ''}
+                        canRemove={appEnvironments.length > 1}
+                        role={role}
+                        onRestart={() => restartMutation.mutate(env)}
+                        onRemove={() => removeEnvMutation.mutate(env)}
+                        restartPending={restartMutation.isPending}
+                        removePending={removeEnvMutation.isPending}
+                      />
+                    )
+                  })}
                 </div>
               )}
             </section>
@@ -577,6 +557,10 @@ export default function AppDetailPage() {
               <p className="text-sm text-text-tertiary">No environments configured</p>
             </div>
           )}
+
+          {projectId && (
+            <SharedSecretBindings appId={appId!} projectId={projectId} environments={appEnvironments} />
+          )}
         </div>
       )}
 
@@ -617,7 +601,126 @@ export default function AppDetailPage() {
       )}
 
       {activeTab === 'builds' && (
-        <AppBuilds appId={appId!} environments={appEnvironments} />
+        <AppBuilds appId={appId!} environments={appEnvironments} gitRepo={app?.spec?.git?.repository || ''} />
+      )}
+    </div>
+  )
+}
+
+function EnvironmentRow({ env, envConfig, projectId, appName, appGitRepo, canRemove, role, onRestart, onRemove, restartPending, removePending }: {
+  env: string; envConfig: any; projectId: string; appName: string; appGitRepo: string; canRemove: boolean; role: string
+  onRestart: () => void; onRemove: () => void; restartPending: boolean; removePending: boolean
+}) {
+  const queryClient = useQueryClient()
+  const [editing, setEditing] = useState(false)
+  const [branch, setBranch] = useState(envConfig?.branch || '')
+  const [autoDeploy, setAutoDeploy] = useState(envConfig?.autoDeploy || false)
+
+  const { data: branchesData } = useQuery({
+    queryKey: ['repoBranches', appGitRepo],
+    queryFn: () => api.listRepoBranches(appGitRepo),
+    enabled: editing && !!appGitRepo && appGitRepo.includes('/'),
+    staleTime: 60_000,
+  })
+  const branches: string[] = branchesData?.branches || []
+
+  const updateMutation = useMutation({
+    mutationFn: () => api.updateEnvironment(projectId, env, { branch, autoDeploy }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['environments', projectId] })
+      setEditing(false)
+    },
+  })
+
+  return (
+    <div className="bg-surface-1 border border-border rounded-lg group">
+      <div className="flex items-center justify-between px-4 py-3">
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-mono text-text-secondary">{env}</span>
+          {envConfig?.branch && (
+            <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded">
+              {envConfig.branch}
+            </span>
+          )}
+          {envConfig?.autoDeploy && (
+            <span className="text-[11px] font-mono text-accent bg-accent/10 px-1.5 py-0.5 rounded">auto-deploy</span>
+          )}
+        </div>
+        <div className="flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+          {role !== 'viewer' && (
+            <button
+              onClick={() => setEditing(!editing)}
+              className="text-xs text-text-tertiary hover:text-accent transition-colors"
+            >
+              {editing ? 'Cancel' : 'Configure'}
+            </button>
+          )}
+          {role !== 'viewer' && (
+            <button
+              onClick={() => { if (confirm(`Restart "${appName}" in "${env}"?`)) onRestart() }}
+              disabled={restartPending}
+              className="text-xs text-text-tertiary hover:text-accent transition-colors"
+            >
+              Restart
+            </button>
+          )}
+          {canRemove && role !== 'viewer' && (
+            <button
+              onClick={() => { if (confirm(`Remove "${appName}" from "${env}"?`)) onRemove() }}
+              disabled={removePending}
+              className="text-xs text-text-tertiary hover:text-status-failed transition-colors"
+            >
+              Remove
+            </button>
+          )}
+        </div>
+      </div>
+      {editing && (
+        <div className="px-4 pb-3 pt-1 border-t border-border-subtle">
+          <div className="flex items-end gap-3">
+            <div className="flex-1">
+              <label className="text-[11px] text-text-tertiary mb-1 block">Branch</label>
+              {branches.length > 0 ? (
+                <select
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                  className="input-field font-mono text-xs w-full"
+                >
+                  <option value="">No branch</option>
+                  {branches.map(b => (
+                    <option key={b} value={b}>{b}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                  className="input-field font-mono text-xs w-full"
+                  placeholder="main"
+                />
+              )}
+            </div>
+            <label className="flex items-center gap-2 cursor-pointer pb-1.5">
+              <input
+                type="checkbox"
+                checked={autoDeploy}
+                onChange={(e) => setAutoDeploy(e.target.checked)}
+                className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+              />
+              <span className="text-xs text-text-secondary whitespace-nowrap">Auto-deploy on push</span>
+            </label>
+            <button
+              onClick={() => updateMutation.mutate()}
+              disabled={updateMutation.isPending}
+              className="btn-primary text-xs whitespace-nowrap"
+            >
+              {updateMutation.isPending ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+          {updateMutation.isError && (
+            <p className="text-xs text-status-failed mt-2">{(updateMutation.error as Error).message}</p>
+          )}
+        </div>
       )}
     </div>
   )
@@ -672,7 +775,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
   const appEnvironments: string[] = rawEnvs.map((e: any) => typeof e === 'string' ? e : e.name)
-  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number }>>(() => {
+  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
       const env = typeof e === 'string' ? { name: e } : e
@@ -683,6 +786,8 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         minReplicas: env.autoscale?.minReplicas || 1,
         maxReplicas: env.autoscale?.maxReplicas || 5,
         targetCPU: env.autoscale?.metrics?.[0]?.targetAverageUtilization || env.autoscale?.targetCPU || 80,
+        imageRepo: env.image?.repository || '',
+        imageTag: env.image?.tag || '',
       }
     }
     return configs
@@ -735,6 +840,27 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const [gitBranch, setGitBranch] = useState(app.spec?.git?.branch || '')
   const [gitAutoDeploy, setGitAutoDeploy] = useState(app.spec?.git?.autoDeployOnPush || false)
   const [gitTokenSecret, setGitTokenSecret] = useState(app.spec?.git?.tokenSecret || '')
+
+  const { data: branchesData } = useQuery({
+    queryKey: ['repoBranches', gitRepo],
+    queryFn: () => api.listRepoBranches(gitRepo),
+    enabled: !!gitRepo && gitRepo.includes('/'),
+    staleTime: 60_000,
+  })
+  const branches: string[] = branchesData?.branches || []
+
+  const { data: accessibleRepos } = useQuery({
+    queryKey: ['accessibleRepos'],
+    queryFn: () => api.listAccessibleRepos(),
+    staleTime: 60_000,
+  })
+  const repos = accessibleRepos?.repos || []
+
+  const { data: ghStatus } = useQuery({
+    queryKey: ['github-app-status'],
+    queryFn: () => api.getGitHubAppStatus(),
+    staleTime: 60_000,
+  })
 
   // Build config
   const [buildStrategy, setBuildStrategy] = useState(app.spec?.build?.strategy || '')
@@ -825,6 +951,12 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       }
       if (cfg.podSize) {
         env.resources = { size: cfg.podSize }
+      }
+      if (cfg.imageRepo || cfg.imageTag) {
+        env.image = {
+          ...(cfg.imageRepo && { repository: cfg.imageRepo }),
+          ...(cfg.imageTag && { tag: cfg.imageTag }),
+        }
       }
       return env
     })
@@ -1137,15 +1269,33 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                 <span className="text-sm font-mono text-accent">{envName}</span>
                 <div className="mt-2 flex items-center gap-4 flex-wrap">
                   <div>
+                    <label className="text-xs text-text-tertiary">Image Override</label>
+                    <div className="flex gap-2 mt-1">
+                      <input
+                        value={cfg.imageRepo}
+                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageRepo: e.target.value } }))}
+                        className="input-field w-52 font-mono text-xs"
+                        placeholder={imageRepo || 'same as app'}
+                      />
+                      <input
+                        value={cfg.imageTag}
+                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageTag: e.target.value } }))}
+                        className="input-field w-28 font-mono text-xs"
+                        placeholder={imageTag || 'tag'}
+                      />
+                    </div>
+                    <p className="text-[10px] text-text-tertiary mt-0.5">Leave blank to use the app-level image</p>
+                  </div>
+                  <div>
                     <label className="text-xs text-text-tertiary">Pod Size</label>
                     <select
                       value={cfg.podSize}
                       onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], podSize: e.target.value } }))}
-                      className="input-field w-28 mt-1"
+                      className="input-field w-64 mt-1"
                     >
                       <option value="">Default</option>
                       {podSizes?.items?.map((s: any) => (
-                        <option key={s.name} value={s.name}>{s.name}</option>
+                        <option key={s.name} value={s.name}>{s.name} ({s.cpu}/{s.memory} → {s.cpuLimit}/{s.memoryLimit})</option>
                       ))}
                     </select>
                   </div>
@@ -1250,19 +1400,66 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
               </div>
               <div className="col-span-2">
                 <label className="text-xs text-text-tertiary mb-1 block">Repository</label>
-                <input value={gitRepo} onChange={e => setGitRepo(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="org/repo-name" />
+                {repos.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <select
+                      value={gitRepo}
+                      onChange={e => { setGitRepo(e.target.value); setGitBranch('') }}
+                      className="input-field font-mono text-xs w-full"
+                    >
+                      <option value="">Select repository</option>
+                      {repos.map(r => (
+                        <option key={r.full_name} value={r.full_name}>
+                          {r.full_name}{r.private ? ' 🔒' : ''}
+                        </option>
+                      ))}
+                      {gitRepo && !repos.find(r => r.full_name === gitRepo) && (
+                        <option value={gitRepo}>{gitRepo}</option>
+                      )}
+                    </select>
+                    {ghStatus?.configured && ghStatus.appSlug && (
+                      <a
+                        href={ghStatus.ownerType === 'Organization'
+                          ? `https://github.com/organizations/${ghStatus.ownerLogin}/settings/installations`
+                          : `https://github.com/settings/installations`
+                        }
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-[10px] text-accent hover:underline"
+                      >
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                        </svg>
+                        Add more repositories
+                      </a>
+                    )}
+                  </div>
+                ) : (
+                  <input value={gitRepo} onChange={e => setGitRepo(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="org/repo-name" />
+                )}
               </div>
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className={`grid ${ghStatus?.configured ? 'grid-cols-2' : 'grid-cols-3'} gap-3`}>
               <div>
                 <label className="text-xs text-text-tertiary mb-1 block">Branch</label>
-                <input value={gitBranch} onChange={e => setGitBranch(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="main" />
+                {branches.length > 0 ? (
+                  <select value={gitBranch} onChange={e => setGitBranch(e.target.value)} className="input-field font-mono text-xs w-full">
+                    <option value="">Select branch</option>
+                    {branches.map(b => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input value={gitBranch} onChange={e => setGitBranch(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="main" />
+                )}
               </div>
-              <div>
-                <label className="text-xs text-text-tertiary mb-1 block">Token Secret</label>
-                <input value={gitTokenSecret} onChange={e => setGitTokenSecret(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="github-token" />
-                <p className="text-[10px] text-text-tertiary mt-0.5">K8s secret name with key &quot;token&quot;</p>
-              </div>
+              {!ghStatus?.configured && (
+                <div>
+                  <label className="text-xs text-text-tertiary mb-1 block">Token Secret</label>
+                  <input value={gitTokenSecret} onChange={e => setGitTokenSecret(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="github-token" />
+                  <p className="text-[10px] text-text-tertiary mt-0.5">K8s secret name with key &quot;token&quot;</p>
+                </div>
+              )}
               <div className="flex items-end pb-1">
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input type="checkbox" checked={gitAutoDeploy} onChange={e => setGitAutoDeploy(e.target.checked)} className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20" />
@@ -1355,12 +1552,12 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                 <label className="text-xs text-text-tertiary">Schedule (cron)</label>
                 <input value={cj.schedule} onChange={e => { const u = [...cronjobs]; u[i].schedule = e.target.value; setCronjobs(u) }} placeholder="0 2 * * *" className="input-field font-mono text-xs mt-1" />
               </div>
-              <div className="w-24">
+              <div className="w-64">
                 <label className="text-xs text-text-tertiary">Size</label>
                 <select value={cj.size} onChange={e => { const u = [...cronjobs]; u[i].size = e.target.value; setCronjobs(u) }} className="input-field text-xs mt-1">
                   <option value="">Default</option>
                   {podSizes?.items?.map((s: any) => (
-                    <option key={s.name} value={s.name}>{s.name}</option>
+                    <option key={s.name} value={s.name}>{s.name} ({s.cpu}/{s.memory} → {s.cpuLimit}/{s.memoryLimit})</option>
                   ))}
                 </select>
               </div>
@@ -1886,7 +2083,7 @@ function AppTerminal({ appId, environments }: { appId: string; environments: str
   )
 }
 
-function AppBuilds({ appId, environments }: { appId: string; environments: string[] }) {
+function AppBuilds({ appId, environments, gitRepo }: { appId: string; environments: string[]; gitRepo: string }) {
   const queryClient = useQueryClient()
   const [buildEnv, setBuildEnv] = useState(environments[0] || '')
   const [selectedBuild, setSelectedBuild] = useState<string | null>(null)
@@ -1894,6 +2091,14 @@ function AppBuilds({ appId, environments }: { appId: string; environments: strin
   const [commitSha, setCommitSha] = useState('')
   const [branch, setBranch] = useState('')
   const role = useUserRole()
+
+  const { data: branchesData } = useQuery({
+    queryKey: ['repoBranches', gitRepo],
+    queryFn: () => api.listRepoBranches(gitRepo),
+    enabled: !!gitRepo && gitRepo.includes('/'),
+    staleTime: 60_000,
+  })
+  const buildBranches: string[] = branchesData?.branches || []
 
   const { data: builds, isLoading } = useQuery({
     queryKey: ['builds', appId],
@@ -1973,12 +2178,25 @@ function AppBuilds({ appId, environments }: { appId: string; environments: strin
             </div>
             <div>
               <label className="block text-xs text-text-tertiary mb-1">Branch (optional)</label>
-              <input
-                value={branch}
-                onChange={(e) => setBranch(e.target.value)}
-                placeholder="main"
-                className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm"
-              />
+              {buildBranches.length > 0 ? (
+                <select
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                  className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm"
+                >
+                  <option value="">Default branch</option>
+                  {buildBranches.map(b => (
+                    <option key={b} value={b}>{b}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  value={branch}
+                  onChange={(e) => setBranch(e.target.value)}
+                  placeholder="main"
+                  className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm"
+                />
+              )}
             </div>
             <div>
               <label className="block text-xs text-text-tertiary mb-1">Commit SHA (optional)</label>
@@ -2646,6 +2864,161 @@ function PrometheusChart({ appId, env, metric, range: timeRange, label, unit, co
   )
 }
 
+function SharedSecretBindings({ appId, projectId, environments }: { appId: string; projectId: string; environments: string[] }) {
+  const queryClient = useQueryClient()
+  const [bindEnv, setBindEnv] = useState<Record<string, string>>({})
+
+  const { data: bound } = useQuery({
+    queryKey: ['appSharedSecrets', appId],
+    queryFn: () => api.listAppSharedSecrets(appId),
+  })
+
+  const { data: available } = useQuery({
+    queryKey: ['sharedSecrets', projectId],
+    queryFn: () => api.listSharedSecrets(projectId),
+    enabled: !!projectId,
+  })
+
+  const bindMutation = useMutation({
+    mutationFn: ({ name, environment }: { name: string; environment: string }) => api.bindSharedSecret(appId, name, environment),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['appSharedSecrets', appId] })
+      queryClient.invalidateQueries({ queryKey: ['app', appId] })
+    },
+  })
+
+  const unbindMutation = useMutation({
+    mutationFn: ({ name, environment }: { name: string; environment: string }) => api.unbindSharedSecret(appId, name, environment),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['appSharedSecrets', appId] })
+      queryClient.invalidateQueries({ queryKey: ['app', appId] })
+    },
+  })
+
+  const boundItems: { name: string; environments: string[] }[] = bound?.items || []
+  const boundNames = boundItems.map((b) => b.name)
+  const unbound = (available?.items || []).filter((s: any) => !boundNames.includes(s.name))
+  // Secrets that are bound but not to all environments yet
+  const partiallyBound = (available?.items || []).filter((s: any) => {
+    const b = boundItems.find((bi) => bi.name === s.name)
+    return b && b.environments.length < environments.length
+  })
+
+  return (
+    <section className="card p-5">
+      <h3 className="section-title mb-4">Shared Secrets</h3>
+      <p className="text-xs text-text-tertiary mb-4">
+        Bind project-level shared secrets to specific environments of this app.
+      </p>
+
+      {boundItems.length > 0 && (
+        <div className="space-y-2 mb-4">
+          <label className="text-[11px] text-text-tertiary font-mono uppercase tracking-wider">Bound</label>
+          {boundItems.map((binding) => {
+            const secret = available?.items?.find((s: any) => s.name === binding.name)
+            return (
+              <div key={binding.name} className="bg-surface-2 rounded-lg px-4 py-3">
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="w-7 h-7 rounded bg-status-healthy/10 flex items-center justify-center shrink-0">
+                    <svg className="w-3.5 h-3.5 text-status-healthy" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                    </svg>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <span className="text-sm font-mono text-text-primary">{binding.name}</span>
+                    {secret?.keys && (
+                      <div className="flex gap-1.5 mt-0.5">
+                        {secret.keys.map((k: string) => (
+                          <span key={k} className="px-1.5 py-0.5 bg-surface-3 rounded text-[10px] font-mono text-text-tertiary">{k}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1.5 ml-10">
+                  {binding.environments.map((env) => (
+                    <span key={env} className="inline-flex items-center gap-1 px-2 py-0.5 bg-accent/10 text-accent rounded text-[11px] font-mono">
+                      {env}
+                      <button
+                        onClick={() => unbindMutation.mutate({ name: binding.name, environment: env })}
+                        disabled={unbindMutation.isPending}
+                        className="hover:text-status-failed transition-colors ml-0.5"
+                        title={`Unbind from ${env}`}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {(unbound.length > 0 || partiallyBound.length > 0) && (
+        <div className="space-y-2">
+          <label className="text-[11px] text-text-tertiary font-mono uppercase tracking-wider">Available</label>
+          {[...unbound, ...partiallyBound]
+            .filter((s: any, i: number, arr: any[]) => arr.findIndex((x: any) => x.name === s.name) === i)
+            .map((s: any) => {
+              const existingBinding = boundItems.find((b) => b.name === s.name)
+              const availableEnvs = environments.filter((e) => !existingBinding?.environments.includes(e))
+              const selectedEnv = bindEnv[s.name] || availableEnvs[0] || ''
+              return (
+                <div key={s.name} className="flex items-center justify-between bg-surface-1 border border-border-subtle rounded-lg px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-7 h-7 rounded bg-surface-3 flex items-center justify-center shrink-0">
+                      <svg className="w-3.5 h-3.5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                      </svg>
+                    </div>
+                    <div>
+                      <span className="text-sm font-mono text-text-primary">{s.name}</span>
+                      {s.keys && (
+                        <div className="flex gap-1.5 mt-0.5">
+                          {s.keys.map((k: string) => (
+                            <span key={k} className="px-1.5 py-0.5 bg-surface-3 rounded text-[10px] font-mono text-text-tertiary">{k}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={selectedEnv}
+                      onChange={(e) => setBindEnv({ ...bindEnv, [s.name]: e.target.value })}
+                      className="text-xs bg-surface-2 border border-border-subtle rounded px-2 py-1 text-text-primary"
+                    >
+                      {availableEnvs.map((env) => (
+                        <option key={env} value={env}>{env}</option>
+                      ))}
+                    </select>
+                    <button
+                      onClick={() => selectedEnv && bindMutation.mutate({ name: s.name, environment: selectedEnv })}
+                      disabled={bindMutation.isPending || !selectedEnv}
+                      className="text-xs text-accent hover:text-accent-glow transition-colors"
+                    >
+                      Bind
+                    </button>
+                  </div>
+                </div>
+              )
+            })}
+        </div>
+      )}
+
+      {boundItems.length === 0 && unbound.length === 0 && (
+        <p className="text-xs text-text-tertiary">No shared secrets in this project. Create them in Secrets → Shared Secrets.</p>
+      )}
+
+      {(bindMutation.isError || unbindMutation.isError) && (
+        <p className="text-status-failed text-xs mt-2">{((bindMutation.error || unbindMutation.error) as Error)?.message}</p>
+      )}
+    </section>
+  )
+}
+
 function EnvSecrets({ appId, env }: { appId: string; env: string }) {
   const queryClient = useQueryClient()
   const { data, isLoading } = useQuery({
@@ -2653,12 +3026,16 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
     queryFn: () => api.listAppEnvSecrets(appId, env),
   })
 
+  const role = useUserRole()
+  const isAdmin = role === 'admin'
   const [showAdd, setShowAdd] = useState(false)
   const [newKeys, setNewKeys] = useState([{ key: '', value: '' }])
   const [editMode, setEditMode] = useState(false)
   const [editKeys, setEditKeys] = useState<{ key: string; value: string }[]>([])
   const [envInput, setEnvInput] = useState('')
   const [showEnvImport, setShowEnvImport] = useState(false)
+  const [revealed, setRevealed] = useState<Record<string, string> | null>(null)
+  const [revealLoading, setRevealLoading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const addMutation = useMutation({
@@ -2673,6 +3050,7 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
       setEditKeys([])
       setShowEnvImport(false)
       setEnvInput('')
+      setRevealed(null)
     },
   })
 
@@ -2724,6 +3102,27 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
     addMutation.mutate(secretData)
   }
 
+  useEffect(() => {
+    if (!revealed) return
+    const timer = setTimeout(() => setRevealed(null), 30000)
+    return () => clearTimeout(timer)
+  }, [revealed])
+
+  const handleReveal = async () => {
+    setRevealLoading(true)
+    try {
+      const res = await api.revealAppEnvSecretValues(appId, env)
+      setRevealed(res.values)
+      setEditMode(false)
+      setShowAdd(false)
+      setShowEnvImport(false)
+    } catch {
+      setRevealed(null)
+    } finally {
+      setRevealLoading(false)
+    }
+  }
+
   if (isLoading) return <p className="text-xs text-text-tertiary">Loading secrets...</p>
 
   const existingKeys: string[] = data?.items?.[0]?.keys || []
@@ -2740,6 +3139,7 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
                 setEditKeys(existingKeys.map(k => ({ key: k, value: '' })))
                 setShowAdd(false)
                 setShowEnvImport(false)
+                setRevealed(null)
               }}
               className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
             >
@@ -2751,6 +3151,7 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
               setShowEnvImport(!showEnvImport)
               setShowAdd(false)
               setEditMode(false)
+              setRevealed(null)
             }}
             className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
           >
@@ -2761,13 +3162,47 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
               setShowAdd(!showAdd)
               setEditMode(false)
               setShowEnvImport(false)
+              setRevealed(null)
             }}
             className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
           >
             + Add Keys
           </button>
+          {isAdmin && existingKeys.length > 0 && !revealed && (
+            <button
+              onClick={handleReveal}
+              disabled={revealLoading}
+              className="text-xs text-accent hover:text-accent-glow transition-colors font-mono disabled:opacity-60"
+            >
+              {revealLoading ? 'Loading...' : 'Reveal'}
+            </button>
+          )}
+          {revealed && (
+            <button
+              onClick={() => setRevealed(null)}
+              className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
+            >
+              Hide
+            </button>
+          )}
         </div>
       </div>
+
+      {revealed && (
+        <div className="bg-surface-1 border border-border rounded-lg p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[11px] font-mono text-yellow-500">Values visible (auto-hides in 30s)</span>
+          </div>
+          <div className="space-y-1">
+            {Object.entries(revealed).map(([k, v]) => (
+              <div key={k} className="flex items-center gap-2 font-mono text-xs">
+                <span className="text-text-tertiary min-w-[140px]">{k}</span>
+                <span className="text-text-primary bg-surface-3 px-2 py-0.5 rounded select-all break-all">{v}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {existingKeys.length > 0 && !editMode && (
         <div className="space-y-1">
@@ -2797,7 +3232,7 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
               {editKeys.map((kv, i) => (
                 <div key={kv.key} className="flex gap-2 items-center">
                   <span className="font-mono text-xs text-text-secondary w-40 truncate flex-shrink-0">{kv.key}</span>
-                  <input
+                  <RevealableInput
                     value={kv.value}
                     onChange={(e) => { const u = [...editKeys]; u[i].value = e.target.value; setEditKeys(u) }}
                     placeholder="new value"
@@ -2892,7 +3327,7 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
                     placeholder="KEY"
                     className="input-field flex-1 font-mono text-xs"
                   />
-                  <input
+                  <RevealableInput
                     value={kv.value}
                     onChange={(e) => { const u = [...newKeys]; u[i].value = e.target.value; setNewKeys(u) }}
                     placeholder="value"

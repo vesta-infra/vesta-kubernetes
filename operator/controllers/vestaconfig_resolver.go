@@ -54,14 +54,17 @@ func (cr *ConfigResolver) ResolvePodSize(sizeName string) (corev1.ResourceList, 
 	cr.mu.RLock()
 	defer cr.mu.RUnlock()
 
-	if cr.config == nil {
-		return defaultRequests(), defaultLimits()
+	if cr.config != nil {
+		for _, preset := range cr.config.PodSizeList {
+			if preset.Name == sizeName {
+				return preset.Requests, preset.Limits
+			}
+		}
 	}
 
-	for _, preset := range cr.config.PodSizeList {
-		if preset.Name == sizeName {
-			return preset.Requests, preset.Limits
-		}
+	// Fall back to built-in presets
+	if reqs, lims, ok := builtinPodSize(sizeName); ok {
+		return reqs, lims
 	}
 
 	return defaultRequests(), defaultLimits()
@@ -123,14 +126,41 @@ func (cr *ConfigResolver) GetClusterIssuer() string {
 
 func defaultRequests() corev1.ResourceList {
 	return corev1.ResourceList{
-		corev1.ResourceCPU:    resource.MustParse("250m"),
-		corev1.ResourceMemory: resource.MustParse("256Mi"),
+		corev1.ResourceCPU:    resource.MustParse("100m"),
+		corev1.ResourceMemory: resource.MustParse("128Mi"),
 	}
 }
 
 func defaultLimits() corev1.ResourceList {
 	return corev1.ResourceList{
-		corev1.ResourceCPU:    resource.MustParse("500m"),
-		corev1.ResourceMemory: resource.MustParse("512Mi"),
+		corev1.ResourceCPU:    resource.MustParse("250m"),
+		corev1.ResourceMemory: resource.MustParse("256Mi"),
 	}
+}
+
+// builtinPodSize returns the resource requests and limits for a built-in size
+// preset. This is used as a fallback when no VestaConfig CRD is present.
+func builtinPodSize(name string) (corev1.ResourceList, corev1.ResourceList, bool) {
+	type preset struct {
+		cpuReq, memReq, cpuLim, memLim string
+	}
+	sizes := map[string]preset{
+		"xxsmall": {"50m", "64Mi", "100m", "128Mi"},
+		"xsmall":  {"100m", "128Mi", "250m", "256Mi"},
+		"small":   {"250m", "256Mi", "500m", "512Mi"},
+		"medium":  {"500m", "512Mi", "1", "1Gi"},
+		"large":   {"1", "1Gi", "2", "2Gi"},
+		"xlarge":  {"2", "2Gi", "4", "4Gi"},
+	}
+	p, ok := sizes[name]
+	if !ok {
+		return nil, nil, false
+	}
+	return corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(p.cpuReq),
+			corev1.ResourceMemory: resource.MustParse(p.memReq),
+		}, corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse(p.cpuLim),
+			corev1.ResourceMemory: resource.MustParse(p.memLim),
+		}, true
 }

@@ -51,6 +51,7 @@ type VestaAppSpec struct {
 type AppEnvironmentConfig struct {
 	Name             string                        `json:"name"`
 	Replicas         *int32                        `json:"replicas,omitempty"`
+	Image            *ImageConfig                  `json:"image,omitempty"`
 	Autoscale        *AutoscaleConfig              `json:"autoscale,omitempty"`
 	Resources        *ResourceConfig               `json:"resources,omitempty"`
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
@@ -91,6 +92,8 @@ type SecretBinding struct {
 	SecretKeyRef *SecretKeyRefBinding `json:"secretKeyRef,omitempty"`
 	SecretMount  *SecretMountBinding  `json:"secretMount,omitempty"`
 	Keys         []SecretKeyMapping   `json:"keys,omitempty"`
+	// Environments limits this binding to specific environments. Empty means all environments.
+	Environments []string `json:"environments,omitempty"`
 }
 
 type SecretRefBinding struct {

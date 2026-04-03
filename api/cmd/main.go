@@ -60,6 +60,9 @@ func main() {
 	// Webhooks (unauthenticated, verified by signature)
 	v1.POST("/webhooks/:provider", h.ReceiveWebhook)
 
+	// GitHub App manifest flow (callback is unauthenticated, state-verified)
+	v1.GET("/github/callback", h.GitHubAppCallback)
+
 	// Authenticated routes
 	auth := v1.Group("")
 	auth.Use(middleware.AuthRequired(database))
@@ -93,6 +96,7 @@ func main() {
 		// Environments
 		auth.POST("/projects/:projectId/environments", dv, h.CreateEnvironment)
 		auth.GET("/projects/:projectId/environments", h.ListEnvironments)
+		auth.PUT("/projects/:projectId/environments/:env", dv, h.UpdateEnvironment)
 		auth.DELETE("/projects/:projectId/environments/:env", dv, h.DeleteEnvironment)
 		auth.POST("/projects/:projectId/environments/:env/clone", dv, h.CloneEnvironment)
 
@@ -126,6 +130,7 @@ func main() {
 		auth.POST("/apps/:appId/envs/:env/secrets", dv, h.CreateAppEnvSecret)
 		auth.GET("/apps/:appId/envs/:env/secrets", dv, h.ListAppEnvSecrets)
 		auth.DELETE("/apps/:appId/envs/:env/secrets/:key", dv, h.DeleteAppEnvSecretKey)
+		auth.GET("/apps/:appId/envs/:env/secrets/reveal", middleware.RequireRole("admin"), h.RevealAppEnvSecretValues)
 		auth.GET("/secrets", dv, h.ListSecrets)
 		auth.GET("/secrets/:secretId/reveal", middleware.RequireRole("admin"), h.RevealSecretValues)
 		auth.PUT("/secrets/:secretId", dv, h.UpdateSecret)
@@ -133,6 +138,16 @@ func main() {
 		auth.POST("/secrets/registry", dv, h.CreateRegistrySecret)
 		auth.GET("/secrets/registry", dv, h.ListRegistrySecrets)
 		auth.DELETE("/secrets/registry/:name", dv, h.DeleteRegistrySecret)
+
+		// Shared Secrets (project-scoped, opt-in per app)
+		auth.POST("/projects/:projectId/shared-secrets", dv, h.CreateSharedSecret)
+		auth.GET("/projects/:projectId/shared-secrets", h.ListSharedSecrets)
+		auth.PUT("/projects/:projectId/shared-secrets/:name", dv, h.UpdateSharedSecret)
+		auth.GET("/projects/:projectId/shared-secrets/:name/reveal", middleware.RequireRole("admin"), h.RevealSharedSecret)
+		auth.DELETE("/projects/:projectId/shared-secrets/:name", dv, h.DeleteSharedSecret)
+		auth.POST("/apps/:appId/shared-secrets", dv, h.BindSharedSecret)
+		auth.GET("/apps/:appId/shared-secrets", h.ListAppSharedSecrets)
+		auth.DELETE("/apps/:appId/shared-secrets/:name", dv, h.UnbindSharedSecret)
 
 		// Logs and monitoring
 		auth.GET("/apps/:appId/logs", h.StreamLogs)
@@ -168,6 +183,16 @@ func main() {
 
 		// Webhook delivery log (admin only)
 		auth.GET("/webhook-deliveries", middleware.RequireRole("admin"), h.ListWebhookDeliveries)
+
+		// GitHub App settings (admin only)
+		auth.POST("/github/manifest", middleware.RequireRole("admin"), h.GetGitHubAppManifest)
+		auth.GET("/settings/github-app", middleware.RequireRole("admin"), h.GetGitHubAppStatus)
+		auth.GET("/settings/github-app/installations", middleware.RequireRole("admin"), h.ListGitHubAppInstallations)
+		auth.DELETE("/settings/github-app", middleware.RequireRole("admin"), h.DeleteGitHubApp)
+
+		// Git helpers
+		auth.GET("/git/branches", dv, h.ListRepoBranches)
+		auth.GET("/git/repos", dv, h.ListAccessibleRepos)
 	}
 
 	log.Printf("Vesta API server starting on :%s", port)
