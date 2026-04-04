@@ -324,6 +324,8 @@ export default function AppDetailPage() {
                         key={env}
                         env={env}
                         envConfig={envConfig}
+                        appEnvConfig={rawEnvs.find((e: any) => (typeof e === 'string' ? e : e.name) === env)}
+                        appImage={app.spec?.image}
                         projectId={projectId}
                         appName={app.name}
                         appGitRepo={app.spec?.git?.repository || ''}
@@ -463,6 +465,23 @@ export default function AppDetailPage() {
                   </>
                 )}
                 <ConfigItem label="Image Repository" value={app.spec?.image?.repository} mono />
+                {rawEnvs.length > 0 && (
+                  <div>
+                    <dt className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1">Image per Environment</dt>
+                    <dd className="flex flex-wrap gap-1.5">
+                      {rawEnvs.map((e: any) => {
+                        const env = typeof e === 'string' ? { name: e } : e
+                        const repo = env.image?.repository || app.spec?.image?.repository
+                        const tag = env.image?.tag || app.spec?.image?.tag
+                        return (
+                          <span key={env.name} className="px-2 py-0.5 bg-surface-1 border border-border rounded text-xs font-mono">
+                            <span className="text-accent">{env.name}</span>: {repo ? `${repo.split('/').pop()}:${tag || 'latest'}` : '—'}
+                          </span>
+                        )
+                      })}
+                    </dd>
+                  </div>
+                )}
                 {app.spec?.service?.ports?.length > 0 ? (
                   <>
                     <ConfigItem label="Service Type" value={app.spec.service.type || 'ClusterIP'} />
@@ -607,8 +626,8 @@ export default function AppDetailPage() {
   )
 }
 
-function EnvironmentRow({ env, envConfig, projectId, appName, appGitRepo, canRemove, role, onRestart, onRemove, restartPending, removePending }: {
-  env: string; envConfig: any; projectId: string; appName: string; appGitRepo: string; canRemove: boolean; role: string
+function EnvironmentRow({ env, envConfig, appEnvConfig, appImage, projectId, appName, appGitRepo, canRemove, role, onRestart, onRemove, restartPending, removePending }: {
+  env: string; envConfig: any; appEnvConfig: any; appImage: any; projectId: string; appName: string; appGitRepo: string; canRemove: boolean; role: string
   onRestart: () => void; onRemove: () => void; restartPending: boolean; removePending: boolean
 }) {
   const queryClient = useQueryClient()
@@ -637,6 +656,15 @@ function EnvironmentRow({ env, envConfig, projectId, appName, appGitRepo, canRem
       <div className="flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-3">
           <span className="text-sm font-mono text-text-secondary">{env}</span>
+          {(() => {
+            const repo = appEnvConfig?.image?.repository || appImage?.repository
+            const tag = appEnvConfig?.image?.tag || appImage?.tag
+            return repo ? (
+              <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded truncate max-w-[280px]" title={`${repo}:${tag || 'latest'}`}>
+                {repo.split('/').pop()}:{tag || 'latest'}
+              </span>
+            ) : null
+          })()}
           {envConfig?.branch && (
             <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded">
               {envConfig.branch}
@@ -729,7 +757,6 @@ function EnvironmentRow({ env, envConfig, projectId, appName, appGitRepo, canRem
 function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose: () => void }) {
   const queryClient = useQueryClient()
   const [imageRepo, setImageRepo] = useState(app.spec?.image?.repository || '')
-  const [imageTag, setImageTag] = useState(app.spec?.image?.tag || '')
   const [pullPolicy, setPullPolicy] = useState(app.spec?.image?.pullPolicy || 'IfNotPresent')
   const [port, setPort] = useState(String(app.spec?.runtime?.port || 3000))
   const [domain, setDomain] = useState(app.spec?.ingress?.domain || '')
@@ -886,7 +913,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     if (imageRepo) {
       patch.image = {
         repository: imageRepo,
-        tag: imageTag || 'latest',
+        tag: app.spec?.image?.tag || 'latest',
         pullPolicy,
         ...(pullSecrets.length > 0 && { imagePullSecrets: pullSecrets.map(n => ({ name: n })) }),
       }
@@ -1033,10 +1060,6 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         <div className="col-span-2">
           <label className="label">Image Repository</label>
           <input value={imageRepo} onChange={e => setImageRepo(e.target.value)} className="input-field" placeholder="registry/org/app" />
-        </div>
-        <div>
-          <label className="label">Tag</label>
-          <input value={imageTag} onChange={e => setImageTag(e.target.value)} className="input-field" placeholder="latest" />
         </div>
         <div>
           <label className="label">Pull Policy</label>
@@ -1267,25 +1290,24 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             {Object.entries(envConfigs).map(([envName, cfg]) => (
               <div key={envName} className="rounded-lg border border-border bg-surface-1 p-3">
                 <span className="text-sm font-mono text-accent">{envName}</span>
-                <div className="mt-2 flex items-center gap-4 flex-wrap">
-                  <div>
-                    <label className="text-xs text-text-tertiary">Image Override</label>
-                    <div className="flex gap-2 mt-1">
-                      <input
-                        value={cfg.imageRepo}
-                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageRepo: e.target.value } }))}
-                        className="input-field w-52 font-mono text-xs"
-                        placeholder={imageRepo || 'same as app'}
-                      />
-                      <input
-                        value={cfg.imageTag}
-                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageTag: e.target.value } }))}
-                        className="input-field w-28 font-mono text-xs"
-                        placeholder={imageTag || 'tag'}
-                      />
-                    </div>
-                    <p className="text-[10px] text-text-tertiary mt-0.5">Leave blank to use the app-level image</p>
+                <div className="mt-3 mb-2 p-2.5 rounded-md border border-accent/20 bg-accent/5">
+                  <label className="text-xs font-medium text-accent">Image Tag</label>
+                  <div className="flex gap-2 mt-1.5">
+                    <input
+                      value={cfg.imageRepo}
+                      onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageRepo: e.target.value } }))}
+                      className="input-field flex-1 font-mono text-xs"
+                      placeholder={imageRepo || 'repository (inherits from app)'}
+                    />
+                    <input
+                      value={cfg.imageTag}
+                      onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageTag: e.target.value } }))}
+                      className="input-field w-36 font-mono text-xs"
+                      placeholder="tag"
+                    />
                   </div>
+                </div>
+                <div className="mt-2 flex items-center gap-4 flex-wrap">
                   <div>
                     <label className="text-xs text-text-tertiary">Pod Size</label>
                     <select

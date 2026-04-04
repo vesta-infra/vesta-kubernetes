@@ -102,6 +102,9 @@ func (h *Handler) DeployApp(c *gin.Context) {
 			}
 		} else {
 			spec["environments"] = environments
+			// Also update global image tag so status.currentImage reflects the latest deploy
+			imageSpec["tag"] = req.Tag
+			spec["image"] = imageSpec
 		}
 		existing.Object["spec"] = spec
 		_, err = h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, existing)
