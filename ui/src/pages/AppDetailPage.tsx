@@ -489,16 +489,17 @@ export default function AppDetailPage() {
                 )}
                 <ConfigItem label="Image Repository" value={app.spec?.image?.repository} mono />
                 {rawEnvs.length > 0 && (
-                  <div>
+                  <div className="overflow-hidden">
                     <dt className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1">Image per Environment</dt>
                     <dd className="flex flex-wrap gap-1.5">
                       {rawEnvs.map((e: any) => {
                         const env = typeof e === 'string' ? { name: e } : e
                         const repo = env.image?.repository || app.spec?.image?.repository
                         const tag = env.image?.tag || app.spec?.image?.tag
+                        const label = repo ? `${repo.split('/').pop()}:${tag || 'latest'}` : '—'
                         return (
-                          <span key={env.name} className="px-2 py-0.5 bg-surface-1 border border-border rounded text-xs font-mono">
-                            <span className="text-accent">{env.name}</span>: {repo ? `${repo.split('/').pop()}:${tag || 'latest'}` : '—'}
+                          <span key={env.name} className="px-2 py-0.5 bg-surface-1 border border-border rounded text-xs font-mono truncate max-w-full" title={`${env.name}: ${repo}:${tag || 'latest'}`}>
+                            <span className="text-accent">{env.name}</span>: {label}
                           </span>
                         )
                       })}
