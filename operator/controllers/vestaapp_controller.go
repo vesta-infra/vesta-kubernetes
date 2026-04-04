@@ -950,13 +950,17 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			if clusterIssuer != "" {
 				ing.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuer
 			}
-			for k, v := range app.Spec.Ingress.Annotations {
-				ing.Annotations[k] = v
-			}
 
 			ingressClassName := app.Spec.Ingress.IngressClassName
 			if ingressClassName == "" {
 				ingressClassName = r.ConfigResolver.GetIngressClassName()
+			}
+			if ingressClassName != "" {
+				ing.Annotations["kubernetes.io/ingress.class"] = ingressClassName
+			}
+
+			for k, v := range app.Spec.Ingress.Annotations {
+				ing.Annotations[k] = v
 			}
 
 			ing.Spec = networkingv1.IngressSpec{
