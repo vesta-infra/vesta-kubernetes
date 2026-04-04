@@ -41,6 +41,9 @@ spec:
                 clusterIssuer:
                   type: string
                   description: cert-manager ClusterIssuer name for TLS certificates.
+                ingressClassName:
+                  type: string
+                  description: Default Kubernetes IngressClass name (e.g. traefik, nginx).
                 registry:
                   type: object
                   properties:

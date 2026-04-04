@@ -949,6 +949,11 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Annotations[k] = v
 			}
 
+			ingressClassName := app.Spec.Ingress.IngressClassName
+			if ingressClassName == "" {
+				ingressClassName = r.ConfigResolver.GetIngressClassName()
+			}
+
 			ing.Spec = networkingv1.IngressSpec{
 				Rules: []networkingv1.IngressRule{
 					{
@@ -973,6 +978,10 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 						},
 					},
 				},
+			}
+
+			if ingressClassName != "" {
+				ing.Spec.IngressClassName = &ingressClassName
 			}
 
 			if app.Spec.Ingress.TLS {

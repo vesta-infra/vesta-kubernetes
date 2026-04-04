@@ -156,11 +156,12 @@ type ResourceConfig struct {
 }
 
 type IngressConfig struct {
-	Domain        string            `json:"domain"`
-	TLS           bool              `json:"tls,omitempty"`
-	ClusterIssuer string            `json:"clusterIssuer,omitempty"`
-	BasicAuth     bool              `json:"basicAuth,omitempty"`
-	Annotations   map[string]string `json:"annotations,omitempty"`
+	Domain           string            `json:"domain"`
+	TLS              bool              `json:"tls,omitempty"`
+	ClusterIssuer    string            `json:"clusterIssuer,omitempty"`
+	IngressClassName string            `json:"ingressClassName,omitempty"`
+	BasicAuth        bool              `json:"basicAuth,omitempty"`
+	Annotations      map[string]string `json:"annotations,omitempty"`
 }
 
 type HealthCheckConfig struct {
@@ -401,9 +402,10 @@ type VestaConfig struct {
 }
 
 type VestaConfigSpec struct {
-	Domain        string                 `json:"domain"`
-	ClusterIssuer string                 `json:"clusterIssuer,omitempty"`
-	Registry      *RegistryConfig        `json:"registry,omitempty"`
+	Domain           string                 `json:"domain"`
+	ClusterIssuer    string                 `json:"clusterIssuer,omitempty"`
+	IngressClassName string                 `json:"ingressClassName,omitempty"`
+	Registry         *RegistryConfig        `json:"registry,omitempty"`
 
 	PodSizeList       []PodSizePreset        `json:"podSizeList,omitempty"`
 	AutoscaleDefaults *AutoscaleDefaults     `json:"autoscaleDefaults,omitempty"`

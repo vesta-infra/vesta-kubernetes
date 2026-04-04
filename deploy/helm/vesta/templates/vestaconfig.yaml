@@ -7,6 +7,9 @@ spec:
   {{- if .Values.config.clusterIssuer }}
   clusterIssuer: {{ .Values.config.clusterIssuer }}
   {{- end }}
+  {{- if .Values.config.ingressClassName }}
+  ingressClassName: {{ .Values.config.ingressClassName }}
+  {{- end }}
 
   {{- if or .Values.config.registry.build.url .Values.config.registry.globalImagePullSecrets }}
   registry:

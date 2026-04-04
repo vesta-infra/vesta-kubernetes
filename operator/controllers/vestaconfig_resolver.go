@@ -124,6 +124,15 @@ func (cr *ConfigResolver) GetClusterIssuer() string {
 	return cr.config.ClusterIssuer
 }
 
+func (cr *ConfigResolver) GetIngressClassName() string {
+	cr.mu.RLock()
+	defer cr.mu.RUnlock()
+	if cr.config == nil {
+		return ""
+	}
+	return cr.config.IngressClassName
+}
+
 func defaultRequests() corev1.ResourceList {
 	return corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse("100m"),
