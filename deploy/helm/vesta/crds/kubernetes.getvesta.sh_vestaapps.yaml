@@ -558,6 +558,8 @@ spec:
                       type: integer
                     image:
                       type: string
+                    environment:
+                      type: string
                     commitSHA:
                       type: string
                     deployedAt:

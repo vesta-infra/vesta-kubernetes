@@ -266,11 +266,12 @@ type VestaAppStatus struct {
 }
 
 type DeploymentRecord struct {
-	Version    int    `json:"version"`
-	Image      string `json:"image"`
-	CommitSHA  string `json:"commitSHA,omitempty"`
-	DeployedAt string `json:"deployedAt"`
-	DeployedBy string `json:"deployedBy,omitempty"`
+	Version     int    `json:"version"`
+	Image       string `json:"image"`
+	Environment string `json:"environment,omitempty"`
+	CommitSHA   string `json:"commitSHA,omitempty"`
+	DeployedAt  string `json:"deployedAt"`
+	DeployedBy  string `json:"deployedBy,omitempty"`
 }
 
 type ScalingStatus struct {

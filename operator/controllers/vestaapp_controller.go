@@ -1340,10 +1340,15 @@ func (r *VestaAppReconciler) updateStatusRunning(ctx context.Context, key client
 				if len(app.Status.DeploymentHistory) > 0 {
 					nextVersion = app.Status.DeploymentHistory[len(app.Status.DeploymentHistory)-1].Version + 1
 				}
+				deployEnv := ""
+				if ann := app.GetAnnotations(); ann != nil {
+					deployEnv = ann["vesta.sh/last-deploy-environment"]
+				}
 				app.Status.DeploymentHistory = append(app.Status.DeploymentHistory, vestav1alpha1.DeploymentRecord{
-					Version:    nextVersion,
-					Image:      newImage,
-					DeployedAt: now,
+					Version:     nextVersion,
+					Image:       newImage,
+					Environment: deployEnv,
+					DeployedAt:  now,
 				})
 			}
 			app.Status.CurrentImage = newImage

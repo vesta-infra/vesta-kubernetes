@@ -107,6 +107,17 @@ func (h *Handler) DeployApp(c *gin.Context) {
 			spec["image"] = imageSpec
 		}
 		existing.Object["spec"] = spec
+
+		// Store the target environment as an annotation for the operator to record in deployment history
+		metadata, _ := existing.Object["metadata"].(map[string]interface{})
+		annotations, _ := metadata["annotations"].(map[string]interface{})
+		if annotations == nil {
+			annotations = map[string]interface{}{}
+		}
+		annotations["vesta.sh/last-deploy-environment"] = req.Environment
+		metadata["annotations"] = annotations
+		existing.Object["metadata"] = metadata
+
 		_, err = h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, existing)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to update app image tag: %v", err)})
@@ -266,6 +277,17 @@ func (h *Handler) RollbackApp(c *gin.Context) {
 		spec["environments"] = environments
 	}
 	existing.Object["spec"] = spec
+
+	// Store the target environment as an annotation for the operator to record in deployment history
+	metadata, _ := existing.Object["metadata"].(map[string]interface{})
+	annotations, _ := metadata["annotations"].(map[string]interface{})
+	if annotations == nil {
+		annotations = map[string]interface{}{}
+	}
+	annotations["vesta.sh/last-deploy-environment"] = req.Environment
+	metadata["annotations"] = annotations
+	existing.Object["metadata"] = metadata
+
 	_, err = h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, existing)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to rollback app image tag: %v", err)})

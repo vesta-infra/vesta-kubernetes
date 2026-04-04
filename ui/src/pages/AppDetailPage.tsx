@@ -30,6 +30,7 @@ export default function AppDetailPage() {
   const [editing, setEditing] = useState(false)
   const [activeTab, setActiveTab] = useState<'overview' | 'builds' | 'secrets' | 'logs' | 'terminal' | 'metrics'>('overview')
   const [showCloneModal, setShowCloneModal] = useState(false)
+  const [historyEnvFilter, setHistoryEnvFilter] = useState('')
   const role = useUserRole()
 
   const projectId = app?.project || app?.spec?.project
@@ -343,12 +344,28 @@ export default function AppDetailPage() {
             </section>
 
             <section className="card p-5">
-              <h3 className="section-title mb-4">Deployment History</h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="section-title mb-0">Deployment History</h3>
+                {appEnvironments.length > 1 && (
+                  <select
+                    value={historyEnvFilter}
+                    onChange={(e) => setHistoryEnvFilter(e.target.value)}
+                    className="bg-surface-secondary border border-border rounded px-2 py-1 text-xs font-mono"
+                  >
+                    <option value="">All environments</option>
+                    {appEnvironments.map((env: string) => (
+                      <option key={env} value={env}>{env}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
               {(!deployments?.items || deployments.items.length === 0) ? (
                 <p className="text-sm text-text-tertiary">No deployments yet</p>
               ) : (
                 <div className="space-y-0">
-                  {deployments.items.map((d: any, i: number) => (
+                  {deployments.items
+                    .filter((d: any) => !historyEnvFilter || d.environment === historyEnvFilter)
+                    .map((d: any, i: number) => (
                     <div key={i} className="flex items-center justify-between py-3 border-b border-border-subtle last:border-0 group">
                       <div className="flex items-center gap-3">
                         <div className="w-6 h-6 rounded bg-surface-3 flex items-center justify-center text-[10px] font-mono text-text-tertiary">
@@ -362,6 +379,9 @@ export default function AppDetailPage() {
                             </span>
                           )}
                         </div>
+                        {d.environment && (
+                          <span className="text-[10px] font-mono text-accent bg-accent/10 px-1.5 py-0.5 rounded">{d.environment}</span>
+                        )}
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="text-xs text-text-tertiary font-mono">{d.deployedBy}</span>
@@ -369,7 +389,7 @@ export default function AppDetailPage() {
                           <button
                             onClick={() => {
                               if (confirm(`Rollback to version ${d.version}?`)) {
-                                const env = prompt('Which environment?', appEnvironments[0] || '')
+                                const env = d.environment || prompt('Which environment?', appEnvironments[0] || '')
                                 if (env) rollbackMutation.mutate({ version: d.version, environment: env })
                               }
                             }}
@@ -381,6 +401,9 @@ export default function AppDetailPage() {
                       </div>
                     </div>
                   ))}
+                  {deployments.items.filter((d: any) => !historyEnvFilter || d.environment === historyEnvFilter).length === 0 && (
+                    <p className="text-sm text-text-tertiary py-3">No deployments for this environment</p>
+                  )}
                 </div>
               )}
             </section>
@@ -620,7 +643,7 @@ export default function AppDetailPage() {
       )}
 
       {activeTab === 'builds' && (
-        <AppBuilds appId={appId!} environments={appEnvironments} gitRepo={app?.spec?.git?.repository || ''} />
+        <AppBuilds appId={appId!} environments={appEnvironments} gitRepo={app?.spec?.git?.repository || ''} deployments={deployments} role={role} onRollback={(version, env) => rollbackMutation.mutate({ version, environment: env })} />
       )}
     </div>
   )
@@ -2105,14 +2128,14 @@ function AppTerminal({ appId, environments }: { appId: string; environments: str
   )
 }
 
-function AppBuilds({ appId, environments, gitRepo }: { appId: string; environments: string[]; gitRepo: string }) {
+function AppBuilds({ appId, environments, gitRepo, deployments, role, onRollback }: { appId: string; environments: string[]; gitRepo: string; deployments: any; role: string; onRollback: (version: number, env: string) => void }) {
   const queryClient = useQueryClient()
   const [buildEnv, setBuildEnv] = useState(environments[0] || '')
   const [selectedBuild, setSelectedBuild] = useState<string | null>(null)
   const [showTrigger, setShowTrigger] = useState(false)
   const [commitSha, setCommitSha] = useState('')
   const [branch, setBranch] = useState('')
-  const role = useUserRole()
+  const [historyEnvFilter, setHistoryEnvFilter] = useState('')
 
   const { data: branchesData } = useQuery({
     queryKey: ['repoBranches', gitRepo],
@@ -2323,6 +2346,74 @@ function AppBuilds({ appId, environments, gitRepo }: { appId: string; environmen
           ))}
         </div>
       )}
+
+      <div className="mt-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-mono tracking-wider uppercase text-text-secondary">Deployment History</h3>
+          <select
+            value={historyEnvFilter}
+            onChange={(e) => setHistoryEnvFilter(e.target.value)}
+            className="bg-surface-secondary border border-border rounded px-2 py-1 text-xs font-mono"
+          >
+            <option value="">All environments</option>
+            {environments.map((env) => (
+              <option key={env} value={env}>{env}</option>
+            ))}
+          </select>
+        </div>
+        {(!deployments?.items || deployments.items.length === 0) ? (
+          <div className="card p-5 text-center text-text-tertiary text-sm">No deployments yet</div>
+        ) : (
+          <div className="card">
+            <div className="space-y-0">
+              {deployments.items
+                .filter((d: any) => !historyEnvFilter || d.environment === historyEnvFilter)
+                .map((d: any, i: number) => (
+                <div key={i} className="flex items-center justify-between px-4 py-3 border-b border-border-subtle last:border-0 group">
+                  <div className="flex items-center gap-3">
+                    <div className="w-6 h-6 rounded bg-surface-3 flex items-center justify-center text-[10px] font-mono text-text-tertiary">
+                      v{d.version}
+                    </div>
+                    <div>
+                      <span className="font-mono text-xs text-text-secondary">{d.image || '—'}</span>
+                      {d.commitSHA && (
+                        <span className="ml-2 font-mono text-[11px] text-text-tertiary">
+                          {d.commitSHA.slice(0, 7)}
+                        </span>
+                      )}
+                    </div>
+                    {d.environment && (
+                      <span className="text-[10px] font-mono text-accent bg-accent/10 px-1.5 py-0.5 rounded">{d.environment}</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {d.deployedAt && (
+                      <span className="text-[11px] text-text-tertiary">{new Date(d.deployedAt).toLocaleString()}</span>
+                    )}
+                    <span className="text-xs text-text-tertiary font-mono">{d.deployedBy}</span>
+                    {d.version && role !== 'viewer' && (
+                      <button
+                        onClick={() => {
+                          if (confirm(`Rollback to version ${d.version}?`)) {
+                            const env = d.environment || prompt('Which environment?', environments[0] || '')
+                            if (env) onRollback(d.version, env)
+                          }
+                        }}
+                        className="text-xs text-text-tertiary hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
+                      >
+                        Rollback
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {deployments.items.filter((d: any) => !historyEnvFilter || d.environment === historyEnvFilter).length === 0 && (
+                <div className="px-4 py-5 text-center text-text-tertiary text-sm">No deployments for this environment</div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
