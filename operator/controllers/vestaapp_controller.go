@@ -56,6 +56,11 @@ const vestaAppFinalizer = "kubernetes.getvesta.sh/app-cleanup"
 func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
+	// Refresh global config on each reconcile so we pick up VestaConfig changes
+	if err := r.ConfigResolver.Refresh(ctx); err != nil {
+		logger.Error(err, "failed to refresh VestaConfig")
+	}
+
 	var app vestav1alpha1.VestaApp
 	if err := r.Get(ctx, req.NamespacedName, &app); err != nil {
 		if errors.IsNotFound(err) {
