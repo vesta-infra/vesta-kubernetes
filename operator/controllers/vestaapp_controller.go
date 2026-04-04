@@ -994,6 +994,7 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			}
 
 			if app.Spec.Ingress.TLS {
+				ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
 				ing.Spec.TLS = []networkingv1.IngressTLS{
 					{
 						Hosts:      []string{app.Spec.Ingress.Domain},
