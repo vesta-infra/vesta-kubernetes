@@ -47,6 +47,7 @@ type targetEnv struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
@@ -430,6 +431,18 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 				},
 			})
 		}
+	}
+
+	// Auto-inject the per-app ConfigMap ("{appName}-envvars") as envFrom if it exists.
+	// This ConfigMap is created by the API when users add per-environment env vars.
+	appEnvVarsCM := app.Name + "-envvars"
+	cm := &corev1.ConfigMap{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: appEnvVarsCM}, cm); err == nil {
+		container.EnvFrom = append(container.EnvFrom, corev1.EnvFromSource{
+			ConfigMapRef: &corev1.ConfigMapEnvSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: appEnvVarsCM},
+			},
+		})
 	}
 
 	podSpec := r.buildPodSpec(app, container, projectPullSecrets, target.Config.ImagePullSecrets)

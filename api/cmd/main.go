@@ -126,6 +126,11 @@ func main() {
 		auth.GET("/apps/:appId/builds/:buildId/logs", middleware.RequireScope("read"), h.GetBuildLogs)
 		auth.POST("/apps/:appId/builds/:buildId/cancel", dv, middleware.RequireScope("deploy", "write"), h.CancelBuild)
 
+		// Environment Variables (per app per environment) -- non-secret config
+		auth.POST("/apps/:appId/envs/:env/envvars", dv, h.CreateAppEnvVars)
+		auth.GET("/apps/:appId/envs/:env/envvars", dv, h.ListAppEnvVars)
+		auth.DELETE("/apps/:appId/envs/:env/envvars/:key", dv, h.DeleteAppEnvVarKey)
+
 		// Secrets (per app per environment) -- viewers have no access
 		auth.POST("/apps/:appId/envs/:env/secrets", dv, h.CreateAppEnvSecret)
 		auth.GET("/apps/:appId/envs/:env/secrets", dv, h.ListAppEnvSecrets)

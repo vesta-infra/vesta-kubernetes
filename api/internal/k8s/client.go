@@ -44,6 +44,10 @@ var (
 	DeploymentGVR = schema.GroupVersionResource{
 		Group: "apps", Version: "v1", Resource: "deployments",
 	}
+
+	ConfigMapGVR = schema.GroupVersionResource{
+		Group: "", Version: "v1", Resource: "configmaps",
+	}
 )
 
 type Client struct {

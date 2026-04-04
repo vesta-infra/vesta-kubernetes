@@ -576,25 +576,38 @@ export default function AppDetailPage() {
       {activeTab === 'secrets' && (
         <div className="space-y-4">
           {appEnvironments.length > 0 ? (
-            <section className="card p-5">
-              <h3 className="section-title mb-4">Per-Environment Secrets</h3>
-              <div className="mb-3">
-                <label className="label">Select Environment</label>
-                <select
-                  value={secretEnv}
-                  onChange={(e) => setSecretEnv(e.target.value)}
-                  className="input-field w-48"
-                >
-                  <option value="">Choose...</option>
-                  {appEnvironments.map((env: string) => (
-                    <option key={env} value={env}>{env}</option>
-                  ))}
-                </select>
-              </div>
-              {secretEnv && (
-                <EnvSecrets appId={appId!} env={secretEnv} />
-              )}
-            </section>
+            <>
+              <section className="card p-5">
+                <h3 className="section-title mb-4">Per-Environment Variables</h3>
+                <p className="text-[11px] text-text-tertiary mb-3">Non-sensitive configuration. Values are visible to all team members.</p>
+                <div className="mb-3">
+                  <label className="label">Select Environment</label>
+                  <select
+                    value={secretEnv}
+                    onChange={(e) => setSecretEnv(e.target.value)}
+                    className="input-field w-48"
+                  >
+                    <option value="">Choose...</option>
+                    {appEnvironments.map((env: string) => (
+                      <option key={env} value={env}>{env}</option>
+                    ))}
+                  </select>
+                </div>
+                {secretEnv && (
+                  <EnvVarsSection appId={appId!} env={secretEnv} />
+                )}
+              </section>
+
+              <section className="card p-5">
+                <h3 className="section-title mb-4">Per-Environment Secrets</h3>
+                <p className="text-[11px] text-text-tertiary mb-3">Sensitive configuration. Values are hidden and can only be revealed by admins.</p>
+                {secretEnv ? (
+                  <EnvSecrets appId={appId!} env={secretEnv} />
+                ) : (
+                  <p className="text-xs text-text-tertiary">Select an environment above to manage secrets.</p>
+                )}
+              </section>
+            </>
           ) : (
             <div className="card p-5">
               <p className="text-sm text-text-tertiary">No environments configured</p>
@@ -3142,6 +3155,290 @@ function SharedSecretBindings({ appId, projectId, environments }: { appId: strin
         <p className="text-status-failed text-xs mt-2">{((bindMutation.error || unbindMutation.error) as Error)?.message}</p>
       )}
     </section>
+  )
+}
+
+function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
+  const queryClient = useQueryClient()
+  const { data, isLoading } = useQuery({
+    queryKey: ['appEnvVars', appId, env],
+    queryFn: () => api.listAppEnvVars(appId, env),
+  })
+
+  const [showAdd, setShowAdd] = useState(false)
+  const [newKeys, setNewKeys] = useState([{ key: '', value: '' }])
+  const [editMode, setEditMode] = useState(false)
+  const [editKeys, setEditKeys] = useState<{ key: string; value: string }[]>([])
+  const [envInput, setEnvInput] = useState('')
+  const [showEnvImport, setShowEnvImport] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const addMutation = useMutation({
+    mutationFn: (varData: Record<string, string>) => {
+      return api.createAppEnvVars(appId, env, { data: varData })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['appEnvVars', appId, env] })
+      setShowAdd(false)
+      setNewKeys([{ key: '', value: '' }])
+      setEditMode(false)
+      setEditKeys([])
+      setShowEnvImport(false)
+      setEnvInput('')
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (key: string) => api.deleteAppEnvVarKey(appId, env, key),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['appEnvVars', appId, env] }),
+  })
+
+  const parseEnvContent = (content: string): Record<string, string> => {
+    const result: Record<string, string> = {}
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      const eqIdx = trimmed.indexOf('=')
+      if (eqIdx === -1) continue
+      const key = trimmed.slice(0, eqIdx).trim()
+      let value = trimmed.slice(eqIdx + 1).trim()
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1)
+      }
+      if (key) result[key] = value
+    }
+    return result
+  }
+
+  const handleEnvImport = () => {
+    const parsed = parseEnvContent(envInput)
+    if (Object.keys(parsed).length === 0) return
+    addMutation.mutate(parsed)
+  }
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const content = ev.target?.result as string
+      setEnvInput(content)
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
+
+  const handleEditSubmit = () => {
+    const varData: Record<string, string> = {}
+    editKeys.forEach((kv) => { if (kv.key) varData[kv.key] = kv.value })
+    if (Object.keys(varData).length === 0) return
+    addMutation.mutate(varData)
+  }
+
+  if (isLoading) return <p className="text-xs text-text-tertiary">Loading environment variables...</p>
+
+  const item = data?.items?.[0]
+  const values: Record<string, string> = item?.values || {}
+  const existingKeys: string[] = Object.keys(values)
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-text-tertiary">{existingKeys.length} variable{existingKeys.length !== 1 ? 's' : ''} in {env}</p>
+        <div className="flex items-center gap-3">
+          {existingKeys.length > 0 && (
+            <button
+              onClick={() => {
+                setEditMode(!editMode)
+                setEditKeys(existingKeys.map(k => ({ key: k, value: values[k] || '' })))
+                setShowAdd(false)
+                setShowEnvImport(false)
+              }}
+              className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
+            >
+              {editMode ? 'Cancel Edit' : 'Edit Values'}
+            </button>
+          )}
+          <button
+            onClick={() => {
+              setShowEnvImport(!showEnvImport)
+              setShowAdd(false)
+              setEditMode(false)
+            }}
+            className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
+          >
+            {showEnvImport ? 'Cancel' : 'Import .env'}
+          </button>
+          <button
+            onClick={() => {
+              setShowAdd(!showAdd)
+              setEditMode(false)
+              setShowEnvImport(false)
+            }}
+            className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
+          >
+            + Add Variables
+          </button>
+        </div>
+      </div>
+
+      {existingKeys.length > 0 && !editMode && (
+        <div className="space-y-1">
+          {existingKeys.map((k: string) => (
+            <div key={k} className="flex items-center justify-between px-3 py-2 bg-surface-1 border border-border rounded-lg group">
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <span className="text-xs font-mono text-text-secondary flex-shrink-0">{k}</span>
+                <span className="text-xs font-mono text-text-tertiary truncate">{values[k]}</span>
+              </div>
+              <button
+                onClick={() => {
+                  if (confirm(`Delete variable "${k}" from ${env}?`))
+                    deleteMutation.mutate(k)
+                }}
+                className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0 ml-2"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {editMode && (
+        <div className="bg-surface-1 border border-border rounded-lg p-4 space-y-3 animate-slide-up">
+          <div>
+            <label className="label">Update Values</label>
+            <p className="text-[11px] text-text-tertiary mb-2">Edit values for existing variables. All keys will be saved.</p>
+            <div className="space-y-2">
+              {editKeys.map((kv, i) => (
+                <div key={kv.key} className="flex gap-2 items-center">
+                  <span className="font-mono text-xs text-text-secondary w-40 truncate flex-shrink-0">{kv.key}</span>
+                  <input
+                    value={kv.value}
+                    onChange={(e) => { const u = [...editKeys]; u[i].value = e.target.value; setEditKeys(u) }}
+                    placeholder="value"
+                    className="input-field flex-1 font-mono text-xs"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={handleEditSubmit}
+              disabled={addMutation.isPending}
+              className="btn-primary text-xs"
+            >
+              {addMutation.isPending ? 'Saving...' : 'Update'}
+            </button>
+            <button type="button" onClick={() => setEditMode(false)} className="btn-ghost text-xs">Cancel</button>
+          </div>
+          {addMutation.isError && (
+            <p className="text-status-failed text-xs">{(addMutation.error as Error).message}</p>
+          )}
+        </div>
+      )}
+
+      {showEnvImport && (
+        <div className="bg-surface-1 border border-border rounded-lg p-4 space-y-3 animate-slide-up">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="label mb-0">Import .env File</label>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
+              >
+                Upload file
+              </button>
+              <input ref={fileInputRef} type="file" accept=".env,.env.*,text/plain" onChange={handleFileUpload} className="hidden" />
+            </div>
+            <p className="text-[11px] text-text-tertiary mb-2">Paste .env content below or upload a file. Format: KEY=value (one per line, # comments ignored).</p>
+            <textarea
+              value={envInput}
+              onChange={(e) => setEnvInput(e.target.value)}
+              placeholder={"NODE_ENV=production\nLOG_LEVEL=info\n# Comments are ignored"}
+              rows={6}
+              className="input-field font-mono text-xs w-full"
+              spellCheck={false}
+            />
+            {envInput && (
+              <p className="text-[11px] text-text-tertiary mt-1">
+                {Object.keys(parseEnvContent(envInput)).length} variable{Object.keys(parseEnvContent(envInput)).length !== 1 ? 's' : ''} detected
+              </p>
+            )}
+          </div>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={handleEnvImport}
+              disabled={addMutation.isPending || Object.keys(parseEnvContent(envInput)).length === 0}
+              className="btn-primary text-xs"
+            >
+              {addMutation.isPending ? 'Importing...' : 'Import'}
+            </button>
+            <button type="button" onClick={() => { setShowEnvImport(false); setEnvInput('') }} className="btn-ghost text-xs">Cancel</button>
+          </div>
+          {addMutation.isError && (
+            <p className="text-status-failed text-xs">{(addMutation.error as Error).message}</p>
+          )}
+        </div>
+      )}
+
+      {showAdd && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            const varData: Record<string, string> = {}
+            newKeys.forEach((kv) => { if (kv.key) varData[kv.key] = kv.value })
+            addMutation.mutate(varData)
+          }}
+          className="bg-surface-1 border border-border rounded-lg p-4 space-y-3 animate-slide-up"
+        >
+          <div>
+            <label className="label">Key-Value Pairs</label>
+            <div className="space-y-2">
+              {newKeys.map((kv, i) => (
+                <div key={i} className="flex gap-2">
+                  <input
+                    value={kv.key}
+                    onChange={(e) => { const u = [...newKeys]; u[i].key = e.target.value; setNewKeys(u) }}
+                    placeholder="KEY"
+                    className="input-field flex-1 font-mono text-xs"
+                  />
+                  <input
+                    value={kv.value}
+                    onChange={(e) => { const u = [...newKeys]; u[i].value = e.target.value; setNewKeys(u) }}
+                    placeholder="value"
+                    className="input-field flex-1 font-mono text-xs"
+                  />
+                  {newKeys.length > 1 && (
+                    <button type="button" onClick={() => setNewKeys(newKeys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={() => setNewKeys([...newKeys, { key: '', value: '' }])} className="text-xs text-accent hover:text-accent-glow transition-colors mt-2 font-mono">
+              + Add another
+            </button>
+          </div>
+          <div className="flex gap-3">
+            <button type="submit" disabled={addMutation.isPending || !newKeys.some(kv => kv.key)} className="btn-primary text-xs">
+              {addMutation.isPending ? 'Saving...' : 'Save'}
+            </button>
+            <button type="button" onClick={() => setShowAdd(false)} className="btn-ghost text-xs">Cancel</button>
+          </div>
+          {addMutation.isError && (
+            <p className="text-status-failed text-xs">{(addMutation.error as Error).message}</p>
+          )}
+        </form>
+      )}
+    </div>
   )
 }
 
