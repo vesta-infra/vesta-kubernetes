@@ -250,7 +250,7 @@ type CustomConfig struct {
 // --- Status ---
 
 type VestaAppStatus struct {
-	// +kubebuilder:validation:Enum=Pending;Building;Deploying;Running;Failed;Sleeping
+	// +kubebuilder:validation:Enum=Pending;Building;Deploying;Running;Degraded;Failed;Sleeping;CrashLoopBackOff
 	Phase       string `json:"phase,omitempty"`
 	BuildStatus string `json:"buildStatus,omitempty"`
 	URL         string `json:"url,omitempty"`

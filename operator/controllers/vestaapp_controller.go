@@ -48,6 +48,7 @@ type targetEnv struct {
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=cronjobs;jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
@@ -169,7 +170,7 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	if err := r.updateStatusRunning(ctx, req.NamespacedName); err != nil {
+	if err := r.updateStatus(ctx, req.NamespacedName); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -1324,17 +1325,109 @@ func (r *VestaAppReconciler) resolveCronjobSchedule(cj vestav1alpha1.CronjobConf
 	return cj.Schedule
 }
 
-func (r *VestaAppReconciler) updateStatusRunning(ctx context.Context, key client.ObjectKey) error {
+func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.ObjectKey) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var app vestav1alpha1.VestaApp
 		if err := r.Get(ctx, key, &app); err != nil {
 			return err
 		}
-		app.Status.Phase = "Running"
+
 		now := time.Now().UTC().Format(time.RFC3339)
+
+		// --- Compute phase from actual Deployment + Pod health ---
+		targetNamespaces, err := r.resolveTargetNamespaces(ctx, &app)
+		if err != nil {
+			// Can't resolve — keep current phase, just update metadata
+			app.Status.LastDeployedAt = now
+			return r.Status().Update(ctx, &app)
+		}
+
+		var totalDesired, totalAvailable, totalReady int32
+		hasCrashLoop := false
+		hasImagePullErr := false
+		autoscaleActive := false
+
+		for _, target := range targetNamespaces {
+			// Check if any environment has autoscale
+			if target.Config.Autoscale != nil && target.Config.Autoscale.Enabled {
+				autoscaleActive = true
+			}
+
+			// Get the Deployment for this environment
+			var deploy appsv1.Deployment
+			deployKey := client.ObjectKey{Namespace: target.Namespace, Name: app.Name}
+			if err := r.Get(ctx, deployKey, &deploy); err != nil {
+				continue // Deployment may not exist yet
+			}
+
+			if deploy.Spec.Replicas != nil {
+				totalDesired += *deploy.Spec.Replicas
+			}
+			totalAvailable += deploy.Status.AvailableReplicas
+			totalReady += deploy.Status.ReadyReplicas
+
+			// Check pods for CrashLoopBackOff / ImagePullBackOff
+			var podList corev1.PodList
+			if err := r.List(ctx, &podList,
+				client.InNamespace(target.Namespace),
+				client.MatchingLabels{"kubernetes.getvesta.sh/app": app.Name},
+			); err != nil {
+				continue
+			}
+
+			for _, pod := range podList.Items {
+				for _, cs := range pod.Status.ContainerStatuses {
+					if cs.State.Waiting != nil {
+						switch cs.State.Waiting.Reason {
+						case "CrashLoopBackOff":
+							hasCrashLoop = true
+						case "ImagePullBackOff", "ErrImagePull":
+							hasImagePullErr = true
+						}
+					}
+				}
+				for _, cs := range pod.Status.InitContainerStatuses {
+					if cs.State.Waiting != nil {
+						switch cs.State.Waiting.Reason {
+						case "CrashLoopBackOff":
+							hasCrashLoop = true
+						case "ImagePullBackOff", "ErrImagePull":
+							hasImagePullErr = true
+						}
+					}
+				}
+			}
+		}
+
+		// Determine phase
+		sleepEnabled := app.Spec.Sleep != nil && app.Spec.Sleep.Enabled
+		switch {
+		case sleepEnabled && totalDesired == 0:
+			app.Status.Phase = "Sleeping"
+		case hasImagePullErr:
+			app.Status.Phase = "Failed"
+		case hasCrashLoop:
+			app.Status.Phase = "CrashLoopBackOff"
+		case totalDesired > 0 && totalAvailable == 0:
+			app.Status.Phase = "Deploying"
+		case totalDesired > 0 && totalAvailable < totalDesired:
+			app.Status.Phase = "Degraded"
+		case totalDesired > 0 && totalAvailable >= totalDesired:
+			app.Status.Phase = "Running"
+		default:
+			app.Status.Phase = "Pending"
+		}
+
+		// Populate scaling status
+		app.Status.Scaling = &vestav1alpha1.ScalingStatus{
+			CurrentReplicas:  totalReady,
+			DesiredReplicas:  totalDesired,
+			AutoscalerActive: autoscaleActive,
+		}
+
+		// --- Existing metadata updates ---
 		if app.Spec.Image != nil {
 			newImage := fmt.Sprintf("%s:%s", app.Spec.Image.Repository, app.Spec.Image.Tag)
-			// Append to deployment history if the image changed
 			if newImage != app.Status.CurrentImage {
 				nextVersion := 1
 				if len(app.Status.DeploymentHistory) > 0 {

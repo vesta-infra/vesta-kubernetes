@@ -537,7 +537,7 @@ spec:
             properties:
               phase:
                 type: string
-                enum: [ Pending, Building, Deploying, Running, Failed, Sleeping ]
+                enum: [ Pending, Building, Deploying, Running, Degraded, Failed, Sleeping, CrashLoopBackOff ]
               buildStatus:
                 type: string
               url:

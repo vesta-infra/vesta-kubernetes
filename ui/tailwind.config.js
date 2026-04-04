@@ -32,9 +32,13 @@ export default {
           running: '#22c55e',
           failed: '#ef4444',
           pending: '#f59e0b',
+          degraded: '#f97316',
+          sleeping: '#64748b',
           'running-bg': 'rgba(34, 197, 94, 0.12)',
           'failed-bg': 'rgba(239, 68, 68, 0.12)',
           'pending-bg': 'rgba(245, 158, 11, 0.10)',
+          'degraded-bg': 'rgba(249, 115, 22, 0.12)',
+          'sleeping-bg': 'rgba(100, 116, 139, 0.10)',
         },
       },
       fontFamily: {
