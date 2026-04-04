@@ -67,7 +67,8 @@ kubectl create secret generic vesta-db-secret \
 ```bash
 helm install -n vesta-system vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system   \
-  --set api.database.existingSecret=vesta-db-secret
+  --set api.database.existingSecret=vesta-db-secret \
+  --set config.ingressClassName=traefik
 ```
 
 ### 4. Upgrade
@@ -77,7 +78,7 @@ helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
    --reuse-values \
    --set ui.ingress.tls=false
-  # --set ui.ingress.host=k8.credpal.xyz \
+  # --set ui.ingress.host=k8.getvesta.sh \
   # --set ui.ingress.enabled=true \
   # --set ui.ingress.clusterIssuer=letsencrypt-prod
 ```
@@ -88,9 +89,10 @@ To pin specific image versions:
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
    --reuse-values \
-  --set operator.image.tag=0.3.20 \
-  --set api.image.tag=0.3.20 \
-  --set ui.image.tag=0.3.20 
+    --set config.ingressClassName=traefik \
+  --set operator.image.tag=0.3.25 \
+  --set api.image.tag=0.3.25 \
+  --set ui.image.tag=0.3.25 
 ```
 
 ```bash

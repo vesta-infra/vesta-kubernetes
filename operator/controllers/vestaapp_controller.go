@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -145,12 +146,12 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return r.updateStatusFailed(ctx, &app, err)
 		}
 
-		if err := r.reconcileService(ctx, &app, target.Namespace); err != nil {
+		if err := r.reconcileService(ctx, &app, target); err != nil {
 			return r.updateStatusFailed(ctx, &app, err)
 		}
 
 		if app.Spec.Ingress != nil {
-			if err := r.reconcileIngress(ctx, &app, target.Namespace); err != nil {
+			if err := r.reconcileIngress(ctx, &app, target); err != nil {
 				return r.updateStatusFailed(ctx, &app, err)
 			}
 		}
@@ -844,13 +845,31 @@ func (r *VestaAppReconciler) reconcilePVCs(ctx context.Context, app *vestav1alph
 	return nil
 }
 
-func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) error {
+func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
+	// Determine service config: per-environment override → app-level → legacy runtime.port
+	svcCfg := app.Spec.Service
+	if target.Config.Service != nil {
+		// Merge: env overrides app-level service config
+		merged := &vestav1alpha1.ServiceConfig{}
+		if svcCfg != nil {
+			merged.Type = svcCfg.Type
+			merged.Ports = svcCfg.Ports
+		}
+		if target.Config.Service.Type != "" {
+			merged.Type = target.Config.Service.Type
+		}
+		if len(target.Config.Service.Ports) > 0 {
+			merged.Ports = target.Config.Service.Ports
+		}
+		svcCfg = merged
+	}
+
 	// Determine service ports: prefer spec.service.ports, fall back to runtime.port
 	var svcPorts []corev1.ServicePort
 	var svcType corev1.ServiceType
 
-	if app.Spec.Service != nil && len(app.Spec.Service.Ports) > 0 {
-		for _, p := range app.Spec.Service.Ports {
+	if svcCfg != nil && len(svcCfg.Ports) > 0 {
+		for _, p := range svcCfg.Ports {
 			protocol := corev1.ProtocolTCP
 			if p.Protocol != "" {
 				protocol = corev1.Protocol(p.Protocol)
@@ -870,7 +889,7 @@ func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1a
 			}
 			svcPorts = append(svcPorts, sp)
 		}
-		switch app.Spec.Service.Type {
+		switch svcCfg.Type {
 		case "NodePort":
 			svcType = corev1.ServiceTypeNodePort
 		case "LoadBalancer":
@@ -899,7 +918,7 @@ func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1a
 		svc := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      app.Name,
-				Namespace: namespace,
+				Namespace: target.Namespace,
 			},
 		}
 
@@ -914,7 +933,7 @@ func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1a
 	})
 }
 
-func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) error {
+func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
 	labels := r.labelsForApp(app)
 	pathType := networkingv1.PathTypePrefix
 
@@ -931,11 +950,34 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 		}
 	}
 
+	// Resolve per-environment domain: env override → domain template → app-level domain
+	domain := app.Spec.Ingress.Domain
+	if target.Config.Ingress != nil && target.Config.Ingress.Domain != "" {
+		domain = target.Config.Ingress.Domain
+	} else if tpl := r.ConfigResolver.GetDomainTemplate(); tpl != "" && target.Config.Name != "" {
+		expanded := strings.ReplaceAll(tpl, "{{app}}", app.Name)
+		expanded = strings.ReplaceAll(expanded, "{{env}}", target.Config.Name)
+		expanded = strings.ReplaceAll(expanded, "{{domain}}", r.ConfigResolver.GetDomain())
+		domain = expanded
+	}
+
+	// Resolve per-environment TLS: env override → app-level TLS
+	tlsEnabled := app.Spec.Ingress.TLS
+	if target.Config.Ingress != nil && target.Config.Ingress.TLS != nil {
+		tlsEnabled = *target.Config.Ingress.TLS
+	}
+
+	// TLS secret name includes env to avoid cross-environment collisions
+	tlsSecretName := fmt.Sprintf("%s-tls", app.Name)
+	if target.Config.Name != "" {
+		tlsSecretName = fmt.Sprintf("%s-%s-tls", app.Name, target.Config.Name)
+	}
+
 	return retry.OnError(retry.DefaultRetry, isRetriable, func() error {
 		ing := &networkingv1.Ingress{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      app.Name,
-				Namespace: namespace,
+				Namespace: target.Namespace,
 			},
 		}
 
@@ -966,7 +1008,7 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			ing.Spec = networkingv1.IngressSpec{
 				Rules: []networkingv1.IngressRule{
 					{
-						Host: app.Spec.Ingress.Domain,
+						Host: domain,
 						IngressRuleValue: networkingv1.IngressRuleValue{
 							HTTP: &networkingv1.HTTPIngressRuleValue{
 								Paths: []networkingv1.HTTPIngressPath{
@@ -993,12 +1035,12 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Spec.IngressClassName = &ingressClassName
 			}
 
-			if app.Spec.Ingress.TLS {
+			if tlsEnabled {
 				ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
 				ing.Spec.TLS = []networkingv1.IngressTLS{
 					{
-						Hosts:      []string{app.Spec.Ingress.Domain},
-						SecretName: fmt.Sprintf("%s-tls", app.Name),
+						Hosts:      []string{domain},
+						SecretName: tlsSecretName,
 					},
 				}
 			}

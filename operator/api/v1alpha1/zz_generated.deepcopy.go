@@ -181,6 +181,16 @@ func (in *AppEnvironmentConfig) DeepCopyInto(out *AppEnvironmentConfig) {
 		*out = make([]corev1.LocalObjectReference, len(*in))
 		copy(*out, *in)
 	}
+	if in.Ingress != nil {
+		in, out := &in.Ingress, &out.Ingress
+		*out = new(IngressOverride)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.Service != nil {
+		in, out := &in.Service, &out.Service
+		*out = new(ServiceOverride)
+		(*in).DeepCopyInto(*out)
+	}
 }
 
 func (in *AppEnvironmentConfig) DeepCopy() *AppEnvironmentConfig {
@@ -188,6 +198,46 @@ func (in *AppEnvironmentConfig) DeepCopy() *AppEnvironmentConfig {
 		return nil
 	}
 	out := new(AppEnvironmentConfig)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// --- IngressOverride ---
+
+func (in *IngressOverride) DeepCopyInto(out *IngressOverride) {
+	*out = *in
+	if in.TLS != nil {
+		in, out := &in.TLS, &out.TLS
+		*out = new(bool)
+		**out = **in
+	}
+}
+
+func (in *IngressOverride) DeepCopy() *IngressOverride {
+	if in == nil {
+		return nil
+	}
+	out := new(IngressOverride)
+	in.DeepCopyInto(out)
+	return out
+}
+
+// --- ServiceOverride ---
+
+func (in *ServiceOverride) DeepCopyInto(out *ServiceOverride) {
+	*out = *in
+	if in.Ports != nil {
+		in, out := &in.Ports, &out.Ports
+		*out = make([]ServicePort, len(*in))
+		copy(*out, *in)
+	}
+}
+
+func (in *ServiceOverride) DeepCopy() *ServiceOverride {
+	if in == nil {
+		return nil
+	}
+	out := new(ServiceOverride)
 	in.DeepCopyInto(out)
 	return out
 }

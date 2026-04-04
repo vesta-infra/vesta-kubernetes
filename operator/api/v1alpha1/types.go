@@ -55,6 +55,21 @@ type AppEnvironmentConfig struct {
 	Autoscale        *AutoscaleConfig              `json:"autoscale,omitempty"`
 	Resources        *ResourceConfig               `json:"resources,omitempty"`
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+	Ingress          *IngressOverride              `json:"ingress,omitempty"`
+	Service          *ServiceOverride              `json:"service,omitempty"`
+}
+
+// IngressOverride allows per-environment domain and TLS configuration.
+type IngressOverride struct {
+	Domain string `json:"domain,omitempty"`
+	TLS    *bool  `json:"tls,omitempty"`
+}
+
+// ServiceOverride allows per-environment service type and port configuration.
+type ServiceOverride struct {
+	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
+	Type  string        `json:"type,omitempty"`
+	Ports []ServicePort `json:"ports,omitempty"`
 }
 
 type GitSource struct {
@@ -403,6 +418,7 @@ type VestaConfig struct {
 
 type VestaConfigSpec struct {
 	Domain           string                 `json:"domain"`
+	DomainTemplate   string                 `json:"domainTemplate,omitempty"`
 	ClusterIssuer    string                 `json:"clusterIssuer,omitempty"`
 	IngressClassName string                 `json:"ingressClassName,omitempty"`
 	Registry         *RegistryConfig        `json:"registry,omitempty"`

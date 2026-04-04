@@ -4,6 +4,9 @@ metadata:
   name: vesta
 spec:
   domain: {{ .Values.config.domain }}
+  {{- if .Values.config.domainTemplate }}
+  domainTemplate: {{ .Values.config.domainTemplate | quote }}
+  {{- end }}
   {{- if .Values.config.clusterIssuer }}
   clusterIssuer: {{ .Values.config.clusterIssuer }}
   {{- end }}
