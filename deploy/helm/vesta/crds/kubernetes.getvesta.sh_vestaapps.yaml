@@ -399,6 +399,8 @@ spec:
                     default: true
                   clusterIssuer:
                     type: string
+                  ingressClassName:
+                    type: string
                   basicAuth:
                     type: boolean
                     default: false

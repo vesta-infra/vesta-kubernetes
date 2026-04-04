@@ -76,6 +76,7 @@ ui:
 config:
   domain: apps.getvesta.sh
   clusterIssuer: letsencrypt-prod
+  ingressClassName: ""
 
   registry:
     build:

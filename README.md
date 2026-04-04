@@ -75,9 +75,11 @@ helm install -n vesta-system vesta oci://ghcr.io/vesta-infra/charts/vesta \
 ```bash
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
-  --set api.database.existingSecret=vesta-db-secret \
-  --set ui.ingress.host=k8.getvesta.sh
-  --set ui.ingress.enabled=true
+   --reuse-values \
+   --set ui.ingress.tls=false
+  # --set ui.ingress.host=k8.credpal.xyz \
+  # --set ui.ingress.enabled=true \
+  # --set ui.ingress.clusterIssuer=letsencrypt-prod
 ```
 
 To pin specific image versions:
@@ -85,10 +87,10 @@ To pin specific image versions:
 ```bash
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
-  --set api.database.existingSecret=vesta-db-secret \
-  --set operator.image.tag=0.3.19 \
-  --set api.image.tag=0.3.19 \
-  --set ui.image.tag=0.3.19 
+   --reuse-values \
+  --set operator.image.tag=0.3.20 \
+  --set api.image.tag=0.3.20 \
+  --set ui.image.tag=0.3.20 
 ```
 
 ```bash

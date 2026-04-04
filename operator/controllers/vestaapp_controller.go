@@ -671,9 +671,10 @@ func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envReso
 
 	// Health checks (liveness + readiness probes)
 	if hc := app.Spec.HealthCheck; hc != nil {
-		probe := r.buildProbe(hc, app.Spec.Runtime.Port)
-		container.LivenessProbe = probe.DeepCopy()
-		container.ReadinessProbe = probe.DeepCopy()
+		if probe := r.buildProbe(hc, app.Spec.Runtime.Port); probe != nil {
+			container.LivenessProbe = probe.DeepCopy()
+			container.ReadinessProbe = probe.DeepCopy()
+		}
 	}
 
 	return container
@@ -687,6 +688,9 @@ func (r *VestaAppReconciler) buildProbe(hc *vestav1alpha1.HealthCheckConfig, run
 		port := hc.Port
 		if port == 0 {
 			port = runtimePort
+		}
+		if port == 0 {
+			return nil
 		}
 		path := hc.Path
 		if path == "" {
@@ -702,6 +706,9 @@ func (r *VestaAppReconciler) buildProbe(hc *vestav1alpha1.HealthCheckConfig, run
 		port := hc.Port
 		if port == 0 {
 			port = runtimePort
+		}
+		if port == 0 {
+			return nil
 		}
 		probe.ProbeHandler = corev1.ProbeHandler{
 			TCPSocket: &corev1.TCPSocketAction{
@@ -931,11 +938,20 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			ing.Labels = labels
 			ing.Annotations = map[string]string{}
 
-			if app.Spec.Ingress.ClusterIssuer != "" {
-				ing.Annotations["cert-manager.io/cluster-issuer"] = app.Spec.Ingress.ClusterIssuer
+			clusterIssuer := app.Spec.Ingress.ClusterIssuer
+			if clusterIssuer == "" {
+				clusterIssuer = r.ConfigResolver.GetClusterIssuer()
+			}
+			if clusterIssuer != "" {
+				ing.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuer
 			}
 			for k, v := range app.Spec.Ingress.Annotations {
 				ing.Annotations[k] = v
+			}
+
+			ingressClassName := app.Spec.Ingress.IngressClassName
+			if ingressClassName == "" {
+				ingressClassName = r.ConfigResolver.GetIngressClassName()
 			}
 
 			ing.Spec = networkingv1.IngressSpec{
@@ -962,6 +978,10 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 						},
 					},
 				},
+			}
+
+			if ingressClassName != "" {
+				ing.Spec.IngressClassName = &ingressClassName
 			}
 
 			if app.Spec.Ingress.TLS {
