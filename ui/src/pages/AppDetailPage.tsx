@@ -2934,6 +2934,18 @@ function SharedSecretBindings({ appId, projectId, environments }: { appId: strin
                       </div>
                     )}
                   </div>
+                  <button
+                    onClick={() => {
+                      if (confirm(`Unbind "${binding.name}" from all environments?`)) {
+                        unbindMutation.mutate({ name: binding.name, environment: '' })
+                      }
+                    }}
+                    disabled={unbindMutation.isPending}
+                    className="text-xs text-text-tertiary hover:text-status-failed transition-colors px-2 py-1"
+                    title="Unbind from all environments"
+                  >
+                    Unbind
+                  </button>
                 </div>
                 <div className="flex flex-wrap gap-1.5 ml-10">
                   {binding.environments.map((env) => (
