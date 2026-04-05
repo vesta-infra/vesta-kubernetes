@@ -90,9 +90,9 @@ helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
    --reuse-values \
     --set config.ingressClassName=traefik \
-  --set operator.image.tag=0.3.28 \
-  --set api.image.tag=0.3.28 \
-  --set ui.image.tag=0.3.28 
+  --set operator.image.tag=0.3.29 \
+  --set api.image.tag=0.3.29 \
+  --set ui.image.tag=0.3.29 
 ```
 
 ```bash
@@ -201,3 +201,6 @@ EOF
 ## License
 
 GPL-3.0
+
+
+redis://:895y278ur782rf278fr@redis:6379
