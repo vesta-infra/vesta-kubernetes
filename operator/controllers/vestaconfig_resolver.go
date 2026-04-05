@@ -133,6 +133,15 @@ func (cr *ConfigResolver) GetIngressClassName() string {
 	return cr.config.IngressClassName
 }
 
+func (cr *ConfigResolver) GetDomainTemplate() string {
+	cr.mu.RLock()
+	defer cr.mu.RUnlock()
+	if cr.config == nil {
+		return ""
+	}
+	return cr.config.DomainTemplate
+}
+
 func defaultRequests() corev1.ResourceList {
 	return corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse("100m"),

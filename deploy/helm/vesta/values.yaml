@@ -75,6 +75,10 @@ ui:
 # -- Vesta platform configuration (creates VestaConfig CRD)
 config:
   domain: apps.getvesta.sh
+  # -- Template for auto-generating per-environment domains.
+  # Supports {{app}}, {{env}}, {{domain}} placeholders.
+  # Example: "{{app}}-{{env}}.{{domain}}" → myapp-staging.apps.getvesta.sh
+  domainTemplate: ""
   clusterIssuer: letsencrypt-prod
   ingressClassName: ""
 

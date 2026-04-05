@@ -150,19 +150,52 @@ spec:
                           name:
                             type: string
                         required: [ name ]
+                    ingress:
+                      type: object
+                      description: Per-environment ingress override.
+                      properties:
+                        domain:
+                          type: string
+                          description: Custom domain for this environment. Overrides app-level domain and domain template.
+                        tls:
+                          type: boolean
+                          description: Enable or disable TLS for this environment. Overrides app-level TLS setting.
+                    service:
+                      type: object
+                      description: Per-environment service override.
+                      properties:
+                        type:
+                          type: string
+                          enum: [ ClusterIP, NodePort, LoadBalancer ]
+                        ports:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                              port:
+                                type: integer
+                                format: int32
+                                minimum: 1
+                                maximum: 65535
+                              targetPort:
+                                type: integer
+                                format: int32
+                                minimum: 1
+                                maximum: 65535
+                              protocol:
+                                type: string
+                                enum: [ TCP, UDP, SCTP ]
+                                default: TCP
+                              nodePort:
+                                type: integer
+                                format: int32
+                                minimum: 30000
+                                maximum: 32767
+                                description: NodePort number (only for NodePort/LoadBalancer type).
+                            required: [ name, port ]
               git:
-                type: object
-                description: Git source configuration.
-                properties:
-                  provider:
-                    type: string
-                    enum: [ github, gitlab, bitbucket, gitea ]
-                  repository:
-                    type: string
-                  branch:
-                    type: string
-                  autoDeployOnPush:
-                    type: boolean
                     default: false
                 required: [ provider, repository ]
               build:
@@ -454,7 +487,7 @@ spec:
             properties:
               phase:
                 type: string
-                enum: [ Pending, Building, Deploying, Running, Failed, Sleeping ]
+                enum: [ Pending, Building, Deploying, Running, Degraded, Failed, Sleeping, CrashLoopBackOff ]
               buildStatus:
                 type: string
               url:
@@ -474,6 +507,8 @@ spec:
                     version:
                       type: integer
                     image:
+                      type: string
+                    environment:
                       type: string
                     commitSHA:
                       type: string

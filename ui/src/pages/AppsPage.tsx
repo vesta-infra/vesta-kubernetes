@@ -645,13 +645,20 @@ function StatusBadge({ phase }: { phase?: string }) {
   const styles =
     p === 'Running'
       ? 'bg-status-running-bg text-status-running border border-status-running/10'
-      : p === 'Failed'
+      : p === 'Failed' || p === 'CrashLoopBackOff'
       ? 'bg-status-failed-bg text-status-failed border border-status-failed/10'
+      : p === 'Degraded'
+      ? 'bg-status-degraded-bg text-status-degraded border border-status-degraded/10'
+      : p === 'Sleeping'
+      ? 'bg-status-sleeping-bg text-status-sleeping border border-status-sleeping/10'
+      : p === 'Deploying'
+      ? 'bg-status-pending-bg text-status-pending border border-status-pending/10'
       : 'bg-status-pending-bg text-status-pending border border-status-pending/10'
 
   return (
     <span className={`status-badge ${styles}`}>
       {p === 'Running' && <span className="inline-block w-1.5 h-1.5 rounded-full bg-current animate-glow-pulse" />}
+      {p === 'Deploying' && <span className="inline-block w-1.5 h-1.5 rounded-full bg-current animate-glow-pulse" />}
       {p}
     </span>
   )

@@ -38,6 +38,9 @@ spec:
                 domain:
                   type: string
                   description: Base domain for app ingress (e.g. apps.example.com).
+                domainTemplate:
+                  type: string
+                  description: "Template for auto-generating per-environment domains. Supports {{app}}, {{env}}, {{domain}} placeholders (e.g. {{app}}-{{env}}.{{domain}})."
                 clusterIssuer:
                   type: string
                   description: cert-manager ClusterIssuer name for TLS certificates.

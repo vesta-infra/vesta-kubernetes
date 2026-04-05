@@ -55,6 +55,21 @@ type AppEnvironmentConfig struct {
 	Autoscale        *AutoscaleConfig              `json:"autoscale,omitempty"`
 	Resources        *ResourceConfig               `json:"resources,omitempty"`
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+	Ingress          *IngressOverride              `json:"ingress,omitempty"`
+	Service          *ServiceOverride              `json:"service,omitempty"`
+}
+
+// IngressOverride allows per-environment domain and TLS configuration.
+type IngressOverride struct {
+	Domain string `json:"domain,omitempty"`
+	TLS    *bool  `json:"tls,omitempty"`
+}
+
+// ServiceOverride allows per-environment service type and port configuration.
+type ServiceOverride struct {
+	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
+	Type  string        `json:"type,omitempty"`
+	Ports []ServicePort `json:"ports,omitempty"`
 }
 
 type GitSource struct {
@@ -235,7 +250,7 @@ type CustomConfig struct {
 // --- Status ---
 
 type VestaAppStatus struct {
-	// +kubebuilder:validation:Enum=Pending;Building;Deploying;Running;Failed;Sleeping
+	// +kubebuilder:validation:Enum=Pending;Building;Deploying;Running;Degraded;Failed;Sleeping;CrashLoopBackOff
 	Phase       string `json:"phase,omitempty"`
 	BuildStatus string `json:"buildStatus,omitempty"`
 	URL         string `json:"url,omitempty"`
@@ -251,11 +266,12 @@ type VestaAppStatus struct {
 }
 
 type DeploymentRecord struct {
-	Version    int    `json:"version"`
-	Image      string `json:"image"`
-	CommitSHA  string `json:"commitSHA,omitempty"`
-	DeployedAt string `json:"deployedAt"`
-	DeployedBy string `json:"deployedBy,omitempty"`
+	Version     int    `json:"version"`
+	Image       string `json:"image"`
+	Environment string `json:"environment,omitempty"`
+	CommitSHA   string `json:"commitSHA,omitempty"`
+	DeployedAt  string `json:"deployedAt"`
+	DeployedBy  string `json:"deployedBy,omitempty"`
 }
 
 type ScalingStatus struct {
@@ -403,6 +419,7 @@ type VestaConfig struct {
 
 type VestaConfigSpec struct {
 	Domain           string                 `json:"domain"`
+	DomainTemplate   string                 `json:"domainTemplate,omitempty"`
 	ClusterIssuer    string                 `json:"clusterIssuer,omitempty"`
 	IngressClassName string                 `json:"ingressClassName,omitempty"`
 	Registry         *RegistryConfig        `json:"registry,omitempty"`

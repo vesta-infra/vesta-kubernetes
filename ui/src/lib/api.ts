@@ -192,6 +192,19 @@ export const api = {
       body: JSON.stringify({ replicas }),
     }),
 
+  // Environment Variables (per app+environment, non-secret)
+  createAppEnvVars: (appId: string, env: string, data: { data: Record<string, string> }) =>
+    request<any>(`/apps/${appId}/envs/${env}/envvars`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  listAppEnvVars: (appId: string, env: string) =>
+    request<{ items: { name: string; keys: string[]; values: Record<string, string> }[]; total: number }>(`/apps/${appId}/envs/${env}/envvars`),
+
+  deleteAppEnvVarKey: (appId: string, env: string, key: string) =>
+    request<void>(`/apps/${appId}/envs/${env}/envvars/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+
   // Secrets (per app+environment)
   createAppEnvSecret: (appId: string, env: string, data: { data: Record<string, string> }) =>
     request<any>(`/apps/${appId}/envs/${env}/secrets`, {

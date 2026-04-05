@@ -30,6 +30,7 @@ export default function AppDetailPage() {
   const [editing, setEditing] = useState(false)
   const [activeTab, setActiveTab] = useState<'overview' | 'builds' | 'secrets' | 'logs' | 'terminal' | 'metrics'>('overview')
   const [showCloneModal, setShowCloneModal] = useState(false)
+  const [historyEnvFilter, setHistoryEnvFilter] = useState('')
   const role = useUserRole()
 
   const projectId = app?.project || app?.spec?.project
@@ -324,6 +325,8 @@ export default function AppDetailPage() {
                         key={env}
                         env={env}
                         envConfig={envConfig}
+                        appEnvConfig={rawEnvs.find((e: any) => (typeof e === 'string' ? e : e.name) === env)}
+                        appImage={app.spec?.image}
                         projectId={projectId}
                         appName={app.name}
                         appGitRepo={app.spec?.git?.repository || ''}
@@ -341,12 +344,28 @@ export default function AppDetailPage() {
             </section>
 
             <section className="card p-5">
-              <h3 className="section-title mb-4">Deployment History</h3>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="section-title mb-0">Deployment History</h3>
+                {appEnvironments.length > 1 && (
+                  <select
+                    value={historyEnvFilter}
+                    onChange={(e) => setHistoryEnvFilter(e.target.value)}
+                    className="bg-surface-secondary border border-border rounded px-2 py-1 text-xs font-mono"
+                  >
+                    <option value="">All environments</option>
+                    {appEnvironments.map((env: string) => (
+                      <option key={env} value={env}>{env}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
               {(!deployments?.items || deployments.items.length === 0) ? (
                 <p className="text-sm text-text-tertiary">No deployments yet</p>
               ) : (
                 <div className="space-y-0">
-                  {deployments.items.map((d: any, i: number) => (
+                  {deployments.items
+                    .filter((d: any) => !historyEnvFilter || d.environment === historyEnvFilter)
+                    .map((d: any, i: number) => (
                     <div key={i} className="flex items-center justify-between py-3 border-b border-border-subtle last:border-0 group">
                       <div className="flex items-center gap-3">
                         <div className="w-6 h-6 rounded bg-surface-3 flex items-center justify-center text-[10px] font-mono text-text-tertiary">
@@ -360,6 +379,9 @@ export default function AppDetailPage() {
                             </span>
                           )}
                         </div>
+                        {d.environment && (
+                          <span className="text-[10px] font-mono text-accent bg-accent/10 px-1.5 py-0.5 rounded">{d.environment}</span>
+                        )}
                       </div>
                       <div className="flex items-center gap-3">
                         <span className="text-xs text-text-tertiary font-mono">{d.deployedBy}</span>
@@ -367,7 +389,7 @@ export default function AppDetailPage() {
                           <button
                             onClick={() => {
                               if (confirm(`Rollback to version ${d.version}?`)) {
-                                const env = prompt('Which environment?', appEnvironments[0] || '')
+                                const env = d.environment || prompt('Which environment?', appEnvironments[0] || '')
                                 if (env) rollbackMutation.mutate({ version: d.version, environment: env })
                               }
                             }}
@@ -379,6 +401,9 @@ export default function AppDetailPage() {
                       </div>
                     </div>
                   ))}
+                  {deployments.items.filter((d: any) => !historyEnvFilter || d.environment === historyEnvFilter).length === 0 && (
+                    <p className="text-sm text-text-tertiary py-3">No deployments for this environment</p>
+                  )}
                 </div>
               )}
             </section>
@@ -463,6 +488,24 @@ export default function AppDetailPage() {
                   </>
                 )}
                 <ConfigItem label="Image Repository" value={app.spec?.image?.repository} mono />
+                {rawEnvs.length > 0 && (
+                  <div className="overflow-hidden">
+                    <dt className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1">Image per Environment</dt>
+                    <dd className="flex flex-wrap gap-1.5">
+                      {rawEnvs.map((e: any) => {
+                        const env = typeof e === 'string' ? { name: e } : e
+                        const repo = env.image?.repository || app.spec?.image?.repository
+                        const tag = env.image?.tag || app.spec?.image?.tag
+                        const label = repo ? `${repo.split('/').pop()}:${tag || 'latest'}` : '—'
+                        return (
+                          <span key={env.name} className="px-2 py-0.5 bg-surface-1 border border-border rounded text-xs font-mono truncate max-w-full" title={`${env.name}: ${repo}:${tag || 'latest'}`}>
+                            <span className="text-accent">{env.name}</span>: {label}
+                          </span>
+                        )
+                      })}
+                    </dd>
+                  </div>
+                )}
                 {app.spec?.service?.ports?.length > 0 ? (
                   <>
                     <ConfigItem label="Service Type" value={app.spec.service.type || 'ClusterIP'} />
@@ -533,25 +576,38 @@ export default function AppDetailPage() {
       {activeTab === 'secrets' && (
         <div className="space-y-4">
           {appEnvironments.length > 0 ? (
-            <section className="card p-5">
-              <h3 className="section-title mb-4">Per-Environment Secrets</h3>
-              <div className="mb-3">
-                <label className="label">Select Environment</label>
-                <select
-                  value={secretEnv}
-                  onChange={(e) => setSecretEnv(e.target.value)}
-                  className="input-field w-48"
-                >
-                  <option value="">Choose...</option>
-                  {appEnvironments.map((env: string) => (
-                    <option key={env} value={env}>{env}</option>
-                  ))}
-                </select>
-              </div>
-              {secretEnv && (
-                <EnvSecrets appId={appId!} env={secretEnv} />
-              )}
-            </section>
+            <>
+              <section className="card p-5">
+                <h3 className="section-title mb-4">Per-Environment Variables</h3>
+                <p className="text-[11px] text-text-tertiary mb-3">Non-sensitive configuration. Values are visible to all team members.</p>
+                <div className="mb-3">
+                  <label className="label">Select Environment</label>
+                  <select
+                    value={secretEnv}
+                    onChange={(e) => setSecretEnv(e.target.value)}
+                    className="input-field w-48"
+                  >
+                    <option value="">Choose...</option>
+                    {appEnvironments.map((env: string) => (
+                      <option key={env} value={env}>{env}</option>
+                    ))}
+                  </select>
+                </div>
+                {secretEnv && (
+                  <EnvVarsSection appId={appId!} env={secretEnv} />
+                )}
+              </section>
+
+              <section className="card p-5">
+                <h3 className="section-title mb-4">Per-Environment Secrets</h3>
+                <p className="text-[11px] text-text-tertiary mb-3">Sensitive configuration. Values are hidden and can only be revealed by admins.</p>
+                {secretEnv ? (
+                  <EnvSecrets appId={appId!} env={secretEnv} />
+                ) : (
+                  <p className="text-xs text-text-tertiary">Select an environment above to manage secrets.</p>
+                )}
+              </section>
+            </>
           ) : (
             <div className="card p-5">
               <p className="text-sm text-text-tertiary">No environments configured</p>
@@ -601,14 +657,14 @@ export default function AppDetailPage() {
       )}
 
       {activeTab === 'builds' && (
-        <AppBuilds appId={appId!} environments={appEnvironments} gitRepo={app?.spec?.git?.repository || ''} />
+        <AppBuilds appId={appId!} environments={appEnvironments} gitRepo={app?.spec?.git?.repository || ''} deployments={deployments} role={role} onRollback={(version, env) => rollbackMutation.mutate({ version, environment: env })} />
       )}
     </div>
   )
 }
 
-function EnvironmentRow({ env, envConfig, projectId, appName, appGitRepo, canRemove, role, onRestart, onRemove, restartPending, removePending }: {
-  env: string; envConfig: any; projectId: string; appName: string; appGitRepo: string; canRemove: boolean; role: string
+function EnvironmentRow({ env, envConfig, appEnvConfig, appImage, projectId, appName, appGitRepo, canRemove, role, onRestart, onRemove, restartPending, removePending }: {
+  env: string; envConfig: any; appEnvConfig: any; appImage: any; projectId: string; appName: string; appGitRepo: string; canRemove: boolean; role: string
   onRestart: () => void; onRemove: () => void; restartPending: boolean; removePending: boolean
 }) {
   const queryClient = useQueryClient()
@@ -637,6 +693,15 @@ function EnvironmentRow({ env, envConfig, projectId, appName, appGitRepo, canRem
       <div className="flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-3">
           <span className="text-sm font-mono text-text-secondary">{env}</span>
+          {(() => {
+            const repo = appEnvConfig?.image?.repository || appImage?.repository
+            const tag = appEnvConfig?.image?.tag || appImage?.tag
+            return repo ? (
+              <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded truncate max-w-[280px]" title={`${repo}:${tag || 'latest'}`}>
+                {repo.split('/').pop()}:{tag || 'latest'}
+              </span>
+            ) : null
+          })()}
           {envConfig?.branch && (
             <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded">
               {envConfig.branch}
@@ -729,7 +794,6 @@ function EnvironmentRow({ env, envConfig, projectId, appName, appGitRepo, canRem
 function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose: () => void }) {
   const queryClient = useQueryClient()
   const [imageRepo, setImageRepo] = useState(app.spec?.image?.repository || '')
-  const [imageTag, setImageTag] = useState(app.spec?.image?.tag || '')
   const [pullPolicy, setPullPolicy] = useState(app.spec?.image?.pullPolicy || 'IfNotPresent')
   const [port, setPort] = useState(String(app.spec?.runtime?.port || 3000))
   const [domain, setDomain] = useState(app.spec?.ingress?.domain || '')
@@ -886,7 +950,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     if (imageRepo) {
       patch.image = {
         repository: imageRepo,
-        tag: imageTag || 'latest',
+        tag: app.spec?.image?.tag || 'latest',
         pullPolicy,
         ...(pullSecrets.length > 0 && { imagePullSecrets: pullSecrets.map(n => ({ name: n })) }),
       }
@@ -1033,10 +1097,6 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         <div className="col-span-2">
           <label className="label">Image Repository</label>
           <input value={imageRepo} onChange={e => setImageRepo(e.target.value)} className="input-field" placeholder="registry/org/app" />
-        </div>
-        <div>
-          <label className="label">Tag</label>
-          <input value={imageTag} onChange={e => setImageTag(e.target.value)} className="input-field" placeholder="latest" />
         </div>
         <div>
           <label className="label">Pull Policy</label>
@@ -1267,25 +1327,24 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             {Object.entries(envConfigs).map(([envName, cfg]) => (
               <div key={envName} className="rounded-lg border border-border bg-surface-1 p-3">
                 <span className="text-sm font-mono text-accent">{envName}</span>
-                <div className="mt-2 flex items-center gap-4 flex-wrap">
-                  <div>
-                    <label className="text-xs text-text-tertiary">Image Override</label>
-                    <div className="flex gap-2 mt-1">
-                      <input
-                        value={cfg.imageRepo}
-                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageRepo: e.target.value } }))}
-                        className="input-field w-52 font-mono text-xs"
-                        placeholder={imageRepo || 'same as app'}
-                      />
-                      <input
-                        value={cfg.imageTag}
-                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageTag: e.target.value } }))}
-                        className="input-field w-28 font-mono text-xs"
-                        placeholder={imageTag || 'tag'}
-                      />
-                    </div>
-                    <p className="text-[10px] text-text-tertiary mt-0.5">Leave blank to use the app-level image</p>
+                <div className="mt-3 mb-2 p-2.5 rounded-md border border-accent/20 bg-accent/5">
+                  <label className="text-xs font-medium text-accent">Image Tag</label>
+                  <div className="flex gap-2 mt-1.5">
+                    <input
+                      value={cfg.imageRepo}
+                      onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageRepo: e.target.value } }))}
+                      className="input-field flex-1 font-mono text-xs"
+                      placeholder={imageRepo || 'repository (inherits from app)'}
+                    />
+                    <input
+                      value={cfg.imageTag}
+                      onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageTag: e.target.value } }))}
+                      className="input-field w-36 font-mono text-xs"
+                      placeholder="tag"
+                    />
                   </div>
+                </div>
+                <div className="mt-2 flex items-center gap-4 flex-wrap">
                   <div>
                     <label className="text-xs text-text-tertiary">Pod Size</label>
                     <select
@@ -2083,14 +2142,14 @@ function AppTerminal({ appId, environments }: { appId: string; environments: str
   )
 }
 
-function AppBuilds({ appId, environments, gitRepo }: { appId: string; environments: string[]; gitRepo: string }) {
+function AppBuilds({ appId, environments, gitRepo, deployments, role, onRollback }: { appId: string; environments: string[]; gitRepo: string; deployments: any; role: string; onRollback: (version: number, env: string) => void }) {
   const queryClient = useQueryClient()
   const [buildEnv, setBuildEnv] = useState(environments[0] || '')
   const [selectedBuild, setSelectedBuild] = useState<string | null>(null)
   const [showTrigger, setShowTrigger] = useState(false)
   const [commitSha, setCommitSha] = useState('')
   const [branch, setBranch] = useState('')
-  const role = useUserRole()
+  const [historyEnvFilter, setHistoryEnvFilter] = useState('')
 
   const { data: branchesData } = useQuery({
     queryKey: ['repoBranches', gitRepo],
@@ -2301,6 +2360,74 @@ function AppBuilds({ appId, environments, gitRepo }: { appId: string; environmen
           ))}
         </div>
       )}
+
+      <div className="mt-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-mono tracking-wider uppercase text-text-secondary">Deployment History</h3>
+          <select
+            value={historyEnvFilter}
+            onChange={(e) => setHistoryEnvFilter(e.target.value)}
+            className="bg-surface-secondary border border-border rounded px-2 py-1 text-xs font-mono"
+          >
+            <option value="">All environments</option>
+            {environments.map((env) => (
+              <option key={env} value={env}>{env}</option>
+            ))}
+          </select>
+        </div>
+        {(!deployments?.items || deployments.items.length === 0) ? (
+          <div className="card p-5 text-center text-text-tertiary text-sm">No deployments yet</div>
+        ) : (
+          <div className="card">
+            <div className="space-y-0">
+              {deployments.items
+                .filter((d: any) => !historyEnvFilter || d.environment === historyEnvFilter)
+                .map((d: any, i: number) => (
+                <div key={i} className="flex items-center justify-between px-4 py-3 border-b border-border-subtle last:border-0 group">
+                  <div className="flex items-center gap-3">
+                    <div className="w-6 h-6 rounded bg-surface-3 flex items-center justify-center text-[10px] font-mono text-text-tertiary">
+                      v{d.version}
+                    </div>
+                    <div>
+                      <span className="font-mono text-xs text-text-secondary">{d.image || '—'}</span>
+                      {d.commitSHA && (
+                        <span className="ml-2 font-mono text-[11px] text-text-tertiary">
+                          {d.commitSHA.slice(0, 7)}
+                        </span>
+                      )}
+                    </div>
+                    {d.environment && (
+                      <span className="text-[10px] font-mono text-accent bg-accent/10 px-1.5 py-0.5 rounded">{d.environment}</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {d.deployedAt && (
+                      <span className="text-[11px] text-text-tertiary">{new Date(d.deployedAt).toLocaleString()}</span>
+                    )}
+                    <span className="text-xs text-text-tertiary font-mono">{d.deployedBy}</span>
+                    {d.version && role !== 'viewer' && (
+                      <button
+                        onClick={() => {
+                          if (confirm(`Rollback to version ${d.version}?`)) {
+                            const env = d.environment || prompt('Which environment?', environments[0] || '')
+                            if (env) onRollback(d.version, env)
+                          }
+                        }}
+                        className="text-xs text-text-tertiary hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
+                      >
+                        Rollback
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {deployments.items.filter((d: any) => !historyEnvFilter || d.environment === historyEnvFilter).length === 0 && (
+                <div className="px-4 py-5 text-center text-text-tertiary text-sm">No deployments for this environment</div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -3031,6 +3158,290 @@ function SharedSecretBindings({ appId, projectId, environments }: { appId: strin
   )
 }
 
+function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
+  const queryClient = useQueryClient()
+  const { data, isLoading } = useQuery({
+    queryKey: ['appEnvVars', appId, env],
+    queryFn: () => api.listAppEnvVars(appId, env),
+  })
+
+  const [showAdd, setShowAdd] = useState(false)
+  const [newKeys, setNewKeys] = useState([{ key: '', value: '' }])
+  const [editMode, setEditMode] = useState(false)
+  const [editKeys, setEditKeys] = useState<{ key: string; value: string }[]>([])
+  const [envInput, setEnvInput] = useState('')
+  const [showEnvImport, setShowEnvImport] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const addMutation = useMutation({
+    mutationFn: (varData: Record<string, string>) => {
+      return api.createAppEnvVars(appId, env, { data: varData })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['appEnvVars', appId, env] })
+      setShowAdd(false)
+      setNewKeys([{ key: '', value: '' }])
+      setEditMode(false)
+      setEditKeys([])
+      setShowEnvImport(false)
+      setEnvInput('')
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (key: string) => api.deleteAppEnvVarKey(appId, env, key),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['appEnvVars', appId, env] }),
+  })
+
+  const parseEnvContent = (content: string): Record<string, string> => {
+    const result: Record<string, string> = {}
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      const eqIdx = trimmed.indexOf('=')
+      if (eqIdx === -1) continue
+      const key = trimmed.slice(0, eqIdx).trim()
+      let value = trimmed.slice(eqIdx + 1).trim()
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1)
+      }
+      if (key) result[key] = value
+    }
+    return result
+  }
+
+  const handleEnvImport = () => {
+    const parsed = parseEnvContent(envInput)
+    if (Object.keys(parsed).length === 0) return
+    addMutation.mutate(parsed)
+  }
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      const content = ev.target?.result as string
+      setEnvInput(content)
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
+
+  const handleEditSubmit = () => {
+    const varData: Record<string, string> = {}
+    editKeys.forEach((kv) => { if (kv.key) varData[kv.key] = kv.value })
+    if (Object.keys(varData).length === 0) return
+    addMutation.mutate(varData)
+  }
+
+  if (isLoading) return <p className="text-xs text-text-tertiary">Loading environment variables...</p>
+
+  const item = data?.items?.[0]
+  const values: Record<string, string> = item?.values || {}
+  const existingKeys: string[] = Object.keys(values)
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-text-tertiary">{existingKeys.length} variable{existingKeys.length !== 1 ? 's' : ''} in {env}</p>
+        <div className="flex items-center gap-3">
+          {existingKeys.length > 0 && (
+            <button
+              onClick={() => {
+                setEditMode(!editMode)
+                setEditKeys(existingKeys.map(k => ({ key: k, value: values[k] || '' })))
+                setShowAdd(false)
+                setShowEnvImport(false)
+              }}
+              className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
+            >
+              {editMode ? 'Cancel Edit' : 'Edit Values'}
+            </button>
+          )}
+          <button
+            onClick={() => {
+              setShowEnvImport(!showEnvImport)
+              setShowAdd(false)
+              setEditMode(false)
+            }}
+            className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
+          >
+            {showEnvImport ? 'Cancel' : 'Import .env'}
+          </button>
+          <button
+            onClick={() => {
+              setShowAdd(!showAdd)
+              setEditMode(false)
+              setShowEnvImport(false)
+            }}
+            className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
+          >
+            + Add Variables
+          </button>
+        </div>
+      </div>
+
+      {existingKeys.length > 0 && !editMode && (
+        <div className="space-y-1">
+          {existingKeys.map((k: string) => (
+            <div key={k} className="flex items-center justify-between px-3 py-2 bg-surface-1 border border-border rounded-lg group">
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <span className="text-xs font-mono text-text-secondary flex-shrink-0">{k}</span>
+                <span className="text-xs font-mono text-text-tertiary truncate">{values[k]}</span>
+              </div>
+              <button
+                onClick={() => {
+                  if (confirm(`Delete variable "${k}" from ${env}?`))
+                    deleteMutation.mutate(k)
+                }}
+                className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0 ml-2"
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {editMode && (
+        <div className="bg-surface-1 border border-border rounded-lg p-4 space-y-3 animate-slide-up">
+          <div>
+            <label className="label">Update Values</label>
+            <p className="text-[11px] text-text-tertiary mb-2">Edit values for existing variables. All keys will be saved.</p>
+            <div className="space-y-2">
+              {editKeys.map((kv, i) => (
+                <div key={kv.key} className="flex gap-2 items-center">
+                  <span className="font-mono text-xs text-text-secondary w-40 truncate flex-shrink-0">{kv.key}</span>
+                  <input
+                    value={kv.value}
+                    onChange={(e) => { const u = [...editKeys]; u[i].value = e.target.value; setEditKeys(u) }}
+                    placeholder="value"
+                    className="input-field flex-1 font-mono text-xs"
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={handleEditSubmit}
+              disabled={addMutation.isPending}
+              className="btn-primary text-xs"
+            >
+              {addMutation.isPending ? 'Saving...' : 'Update'}
+            </button>
+            <button type="button" onClick={() => setEditMode(false)} className="btn-ghost text-xs">Cancel</button>
+          </div>
+          {addMutation.isError && (
+            <p className="text-status-failed text-xs">{(addMutation.error as Error).message}</p>
+          )}
+        </div>
+      )}
+
+      {showEnvImport && (
+        <div className="bg-surface-1 border border-border rounded-lg p-4 space-y-3 animate-slide-up">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <label className="label mb-0">Import .env File</label>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="text-xs text-accent hover:text-accent-glow transition-colors font-mono"
+              >
+                Upload file
+              </button>
+              <input ref={fileInputRef} type="file" accept=".env,.env.*,text/plain" onChange={handleFileUpload} className="hidden" />
+            </div>
+            <p className="text-[11px] text-text-tertiary mb-2">Paste .env content below or upload a file. Format: KEY=value (one per line, # comments ignored).</p>
+            <textarea
+              value={envInput}
+              onChange={(e) => setEnvInput(e.target.value)}
+              placeholder={"NODE_ENV=production\nLOG_LEVEL=info\n# Comments are ignored"}
+              rows={6}
+              className="input-field font-mono text-xs w-full"
+              spellCheck={false}
+            />
+            {envInput && (
+              <p className="text-[11px] text-text-tertiary mt-1">
+                {Object.keys(parseEnvContent(envInput)).length} variable{Object.keys(parseEnvContent(envInput)).length !== 1 ? 's' : ''} detected
+              </p>
+            )}
+          </div>
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={handleEnvImport}
+              disabled={addMutation.isPending || Object.keys(parseEnvContent(envInput)).length === 0}
+              className="btn-primary text-xs"
+            >
+              {addMutation.isPending ? 'Importing...' : 'Import'}
+            </button>
+            <button type="button" onClick={() => { setShowEnvImport(false); setEnvInput('') }} className="btn-ghost text-xs">Cancel</button>
+          </div>
+          {addMutation.isError && (
+            <p className="text-status-failed text-xs">{(addMutation.error as Error).message}</p>
+          )}
+        </div>
+      )}
+
+      {showAdd && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            const varData: Record<string, string> = {}
+            newKeys.forEach((kv) => { if (kv.key) varData[kv.key] = kv.value })
+            addMutation.mutate(varData)
+          }}
+          className="bg-surface-1 border border-border rounded-lg p-4 space-y-3 animate-slide-up"
+        >
+          <div>
+            <label className="label">Key-Value Pairs</label>
+            <div className="space-y-2">
+              {newKeys.map((kv, i) => (
+                <div key={i} className="flex gap-2">
+                  <input
+                    value={kv.key}
+                    onChange={(e) => { const u = [...newKeys]; u[i].key = e.target.value; setNewKeys(u) }}
+                    placeholder="KEY"
+                    className="input-field flex-1 font-mono text-xs"
+                  />
+                  <input
+                    value={kv.value}
+                    onChange={(e) => { const u = [...newKeys]; u[i].value = e.target.value; setNewKeys(u) }}
+                    placeholder="value"
+                    className="input-field flex-1 font-mono text-xs"
+                  />
+                  {newKeys.length > 1 && (
+                    <button type="button" onClick={() => setNewKeys(newKeys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+            <button type="button" onClick={() => setNewKeys([...newKeys, { key: '', value: '' }])} className="text-xs text-accent hover:text-accent-glow transition-colors mt-2 font-mono">
+              + Add another
+            </button>
+          </div>
+          <div className="flex gap-3">
+            <button type="submit" disabled={addMutation.isPending || !newKeys.some(kv => kv.key)} className="btn-primary text-xs">
+              {addMutation.isPending ? 'Saving...' : 'Save'}
+            </button>
+            <button type="button" onClick={() => setShowAdd(false)} className="btn-ghost text-xs">Cancel</button>
+          </div>
+          {addMutation.isError && (
+            <p className="text-status-failed text-xs">{(addMutation.error as Error).message}</p>
+          )}
+        </form>
+      )}
+    </div>
+  )
+}
+
 function EnvSecrets({ appId, env }: { appId: string; env: string }) {
   const queryClient = useQueryClient()
   const { data, isLoading } = useQuery({
@@ -3401,13 +3812,20 @@ function StatusBadge({ phase }: { phase?: string }) {
   const styles =
     p === 'Running'
       ? 'bg-status-running-bg text-status-running border border-status-running/10'
-      : p === 'Failed'
+      : p === 'Failed' || p === 'CrashLoopBackOff'
       ? 'bg-status-failed-bg text-status-failed border border-status-failed/10'
+      : p === 'Degraded'
+      ? 'bg-status-degraded-bg text-status-degraded border border-status-degraded/10'
+      : p === 'Sleeping'
+      ? 'bg-status-sleeping-bg text-status-sleeping border border-status-sleeping/10'
+      : p === 'Deploying'
+      ? 'bg-status-pending-bg text-status-pending border border-status-pending/10'
       : 'bg-status-pending-bg text-status-pending border border-status-pending/10'
 
   return (
     <span className={`status-badge ${styles}`}>
       {p === 'Running' && <span className="inline-block w-1.5 h-1.5 rounded-full bg-current animate-glow-pulse" />}
+      {p === 'Deploying' && <span className="inline-block w-1.5 h-1.5 rounded-full bg-current animate-glow-pulse" />}
       {p}
     </span>
   )

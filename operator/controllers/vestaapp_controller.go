@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -46,7 +47,9 @@ type targetEnv struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=batch,resources=cronjobs;jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create
@@ -55,6 +58,11 @@ const vestaAppFinalizer = "kubernetes.getvesta.sh/app-cleanup"
 
 func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+
+	// Refresh global config on each reconcile so we pick up VestaConfig changes
+	if err := r.ConfigResolver.Refresh(ctx); err != nil {
+		logger.Error(err, "failed to refresh VestaConfig")
+	}
 
 	var app vestav1alpha1.VestaApp
 	if err := r.Get(ctx, req.NamespacedName, &app); err != nil {
@@ -140,12 +148,12 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return r.updateStatusFailed(ctx, &app, err)
 		}
 
-		if err := r.reconcileService(ctx, &app, target.Namespace); err != nil {
+		if err := r.reconcileService(ctx, &app, target); err != nil {
 			return r.updateStatusFailed(ctx, &app, err)
 		}
 
 		if app.Spec.Ingress != nil {
-			if err := r.reconcileIngress(ctx, &app, target.Namespace); err != nil {
+			if err := r.reconcileIngress(ctx, &app, target); err != nil {
 				return r.updateStatusFailed(ctx, &app, err)
 			}
 		}
@@ -163,7 +171,7 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 	}
 
-	if err := r.updateStatusRunning(ctx, req.NamespacedName); err != nil {
+	if err := r.updateStatus(ctx, req.NamespacedName); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -423,6 +431,18 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 				},
 			})
 		}
+	}
+
+	// Auto-inject the per-app ConfigMap ("{appName}-envvars") as envFrom if it exists.
+	// This ConfigMap is created by the API when users add per-environment env vars.
+	appEnvVarsCM := app.Name + "-envvars"
+	cm := &corev1.ConfigMap{}
+	if err := r.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: appEnvVarsCM}, cm); err == nil {
+		container.EnvFrom = append(container.EnvFrom, corev1.EnvFromSource{
+			ConfigMapRef: &corev1.ConfigMapEnvSource{
+				LocalObjectReference: corev1.LocalObjectReference{Name: appEnvVarsCM},
+			},
+		})
 	}
 
 	podSpec := r.buildPodSpec(app, container, projectPullSecrets, target.Config.ImagePullSecrets)
@@ -839,13 +859,31 @@ func (r *VestaAppReconciler) reconcilePVCs(ctx context.Context, app *vestav1alph
 	return nil
 }
 
-func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) error {
+func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
+	// Determine service config: per-environment override → app-level → legacy runtime.port
+	svcCfg := app.Spec.Service
+	if target.Config.Service != nil {
+		// Merge: env overrides app-level service config
+		merged := &vestav1alpha1.ServiceConfig{}
+		if svcCfg != nil {
+			merged.Type = svcCfg.Type
+			merged.Ports = svcCfg.Ports
+		}
+		if target.Config.Service.Type != "" {
+			merged.Type = target.Config.Service.Type
+		}
+		if len(target.Config.Service.Ports) > 0 {
+			merged.Ports = target.Config.Service.Ports
+		}
+		svcCfg = merged
+	}
+
 	// Determine service ports: prefer spec.service.ports, fall back to runtime.port
 	var svcPorts []corev1.ServicePort
 	var svcType corev1.ServiceType
 
-	if app.Spec.Service != nil && len(app.Spec.Service.Ports) > 0 {
-		for _, p := range app.Spec.Service.Ports {
+	if svcCfg != nil && len(svcCfg.Ports) > 0 {
+		for _, p := range svcCfg.Ports {
 			protocol := corev1.ProtocolTCP
 			if p.Protocol != "" {
 				protocol = corev1.Protocol(p.Protocol)
@@ -865,7 +903,7 @@ func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1a
 			}
 			svcPorts = append(svcPorts, sp)
 		}
-		switch app.Spec.Service.Type {
+		switch svcCfg.Type {
 		case "NodePort":
 			svcType = corev1.ServiceTypeNodePort
 		case "LoadBalancer":
@@ -894,7 +932,7 @@ func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1a
 		svc := &corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      app.Name,
-				Namespace: namespace,
+				Namespace: target.Namespace,
 			},
 		}
 
@@ -909,7 +947,7 @@ func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1a
 	})
 }
 
-func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) error {
+func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
 	labels := r.labelsForApp(app)
 	pathType := networkingv1.PathTypePrefix
 
@@ -926,11 +964,34 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 		}
 	}
 
+	// Resolve per-environment domain: env override → domain template → app-level domain
+	domain := app.Spec.Ingress.Domain
+	if target.Config.Ingress != nil && target.Config.Ingress.Domain != "" {
+		domain = target.Config.Ingress.Domain
+	} else if tpl := r.ConfigResolver.GetDomainTemplate(); tpl != "" && target.Config.Name != "" {
+		expanded := strings.ReplaceAll(tpl, "{{app}}", app.Name)
+		expanded = strings.ReplaceAll(expanded, "{{env}}", target.Config.Name)
+		expanded = strings.ReplaceAll(expanded, "{{domain}}", r.ConfigResolver.GetDomain())
+		domain = expanded
+	}
+
+	// Resolve per-environment TLS: env override → app-level TLS
+	tlsEnabled := app.Spec.Ingress.TLS
+	if target.Config.Ingress != nil && target.Config.Ingress.TLS != nil {
+		tlsEnabled = *target.Config.Ingress.TLS
+	}
+
+	// TLS secret name includes env to avoid cross-environment collisions
+	tlsSecretName := fmt.Sprintf("%s-tls", app.Name)
+	if target.Config.Name != "" {
+		tlsSecretName = fmt.Sprintf("%s-%s-tls", app.Name, target.Config.Name)
+	}
+
 	return retry.OnError(retry.DefaultRetry, isRetriable, func() error {
 		ing := &networkingv1.Ingress{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      app.Name,
-				Namespace: namespace,
+				Namespace: target.Namespace,
 			},
 		}
 
@@ -945,19 +1006,23 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			if clusterIssuer != "" {
 				ing.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuer
 			}
-			for k, v := range app.Spec.Ingress.Annotations {
-				ing.Annotations[k] = v
-			}
 
 			ingressClassName := app.Spec.Ingress.IngressClassName
 			if ingressClassName == "" {
 				ingressClassName = r.ConfigResolver.GetIngressClassName()
 			}
+			if ingressClassName != "" {
+				ing.Annotations["kubernetes.io/ingress.class"] = ingressClassName
+			}
+
+			for k, v := range app.Spec.Ingress.Annotations {
+				ing.Annotations[k] = v
+			}
 
 			ing.Spec = networkingv1.IngressSpec{
 				Rules: []networkingv1.IngressRule{
 					{
-						Host: app.Spec.Ingress.Domain,
+						Host: domain,
 						IngressRuleValue: networkingv1.IngressRuleValue{
 							HTTP: &networkingv1.HTTPIngressRuleValue{
 								Paths: []networkingv1.HTTPIngressPath{
@@ -984,11 +1049,12 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Spec.IngressClassName = &ingressClassName
 			}
 
-			if app.Spec.Ingress.TLS {
+			if tlsEnabled {
+				ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
 				ing.Spec.TLS = []networkingv1.IngressTLS{
 					{
-						Hosts:      []string{app.Spec.Ingress.Domain},
-						SecretName: fmt.Sprintf("%s-tls", app.Name),
+						Hosts:      []string{domain},
+						SecretName: tlsSecretName,
 					},
 				}
 			}
@@ -1272,26 +1338,123 @@ func (r *VestaAppReconciler) resolveCronjobSchedule(cj vestav1alpha1.CronjobConf
 	return cj.Schedule
 }
 
-func (r *VestaAppReconciler) updateStatusRunning(ctx context.Context, key client.ObjectKey) error {
+func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.ObjectKey) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var app vestav1alpha1.VestaApp
 		if err := r.Get(ctx, key, &app); err != nil {
 			return err
 		}
-		app.Status.Phase = "Running"
+
 		now := time.Now().UTC().Format(time.RFC3339)
+
+		// --- Compute phase from actual Deployment + Pod health ---
+		targetNamespaces, err := r.resolveTargetNamespaces(ctx, &app)
+		if err != nil {
+			// Can't resolve — keep current phase, just update metadata
+			app.Status.LastDeployedAt = now
+			return r.Status().Update(ctx, &app)
+		}
+
+		var totalDesired, totalAvailable, totalReady int32
+		hasCrashLoop := false
+		hasImagePullErr := false
+		autoscaleActive := false
+
+		for _, target := range targetNamespaces {
+			// Check if any environment has autoscale
+			if target.Config.Autoscale != nil && target.Config.Autoscale.Enabled {
+				autoscaleActive = true
+			}
+
+			// Get the Deployment for this environment
+			var deploy appsv1.Deployment
+			deployKey := client.ObjectKey{Namespace: target.Namespace, Name: app.Name}
+			if err := r.Get(ctx, deployKey, &deploy); err != nil {
+				continue // Deployment may not exist yet
+			}
+
+			if deploy.Spec.Replicas != nil {
+				totalDesired += *deploy.Spec.Replicas
+			}
+			totalAvailable += deploy.Status.AvailableReplicas
+			totalReady += deploy.Status.ReadyReplicas
+
+			// Check pods for CrashLoopBackOff / ImagePullBackOff
+			var podList corev1.PodList
+			if err := r.List(ctx, &podList,
+				client.InNamespace(target.Namespace),
+				client.MatchingLabels{"kubernetes.getvesta.sh/app": app.Name},
+			); err != nil {
+				continue
+			}
+
+			for _, pod := range podList.Items {
+				for _, cs := range pod.Status.ContainerStatuses {
+					if cs.State.Waiting != nil {
+						switch cs.State.Waiting.Reason {
+						case "CrashLoopBackOff":
+							hasCrashLoop = true
+						case "ImagePullBackOff", "ErrImagePull":
+							hasImagePullErr = true
+						}
+					}
+				}
+				for _, cs := range pod.Status.InitContainerStatuses {
+					if cs.State.Waiting != nil {
+						switch cs.State.Waiting.Reason {
+						case "CrashLoopBackOff":
+							hasCrashLoop = true
+						case "ImagePullBackOff", "ErrImagePull":
+							hasImagePullErr = true
+						}
+					}
+				}
+			}
+		}
+
+		// Determine phase
+		sleepEnabled := app.Spec.Sleep != nil && app.Spec.Sleep.Enabled
+		switch {
+		case sleepEnabled && totalDesired == 0:
+			app.Status.Phase = "Sleeping"
+		case hasImagePullErr:
+			app.Status.Phase = "Failed"
+		case hasCrashLoop:
+			app.Status.Phase = "CrashLoopBackOff"
+		case totalDesired > 0 && totalAvailable == 0:
+			app.Status.Phase = "Deploying"
+		case totalDesired > 0 && totalAvailable < totalDesired:
+			app.Status.Phase = "Degraded"
+		case totalDesired > 0 && totalAvailable >= totalDesired:
+			app.Status.Phase = "Running"
+		default:
+			app.Status.Phase = "Pending"
+		}
+
+		// Populate scaling status
+		app.Status.Scaling = &vestav1alpha1.ScalingStatus{
+			CurrentReplicas:  totalReady,
+			DesiredReplicas:  totalDesired,
+			AutoscalerActive: autoscaleActive,
+		}
+
+		// --- Existing metadata updates ---
 		if app.Spec.Image != nil {
 			newImage := fmt.Sprintf("%s:%s", app.Spec.Image.Repository, app.Spec.Image.Tag)
-			// Append to deployment history if the image changed
 			if newImage != app.Status.CurrentImage {
 				nextVersion := 1
 				if len(app.Status.DeploymentHistory) > 0 {
 					nextVersion = app.Status.DeploymentHistory[len(app.Status.DeploymentHistory)-1].Version + 1
 				}
+				deployEnv := ""
+				if ann := app.GetAnnotations(); ann != nil {
+					deployEnv = ann["vesta.sh/last-deploy-environment"]
+				}
 				app.Status.DeploymentHistory = append(app.Status.DeploymentHistory, vestav1alpha1.DeploymentRecord{
-					Version:    nextVersion,
-					Image:      newImage,
-					DeployedAt: now,
+					Version:     nextVersion,
+					Image:       newImage,
+					Environment: deployEnv,
+					DeployedAt:  now,
 				})
 			}
 			app.Status.CurrentImage = newImage
