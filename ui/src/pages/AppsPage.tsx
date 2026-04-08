@@ -143,7 +143,7 @@ export default function AppsPage() {
         {filteredApps.map((app: any, i: number) => (
           <Link
             key={app.id}
-            to={`/apps/${app.id}`}
+            to={{ pathname: `/apps/${app.id}`, search: searchParams.toString() }}
             className="card-hover p-5 group relative overflow-hidden"
             style={{ animationDelay: `${i * 0.03}s` }}
           >

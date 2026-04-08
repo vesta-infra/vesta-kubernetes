@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
-import { useParams, Link, useNavigate } from 'react-router-dom'
+import { useParams, Link, useNavigate, useLocation } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
 import { api } from '../lib/api'
@@ -10,6 +10,8 @@ export default function AppDetailPage() {
   const { appId } = useParams<{ appId: string }>()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const location = useLocation()
+  const appsPath = `/apps${location.search}`
 
   const { data: app, isLoading } = useQuery({
     queryKey: ['app', appId],
@@ -82,7 +84,7 @@ export default function AppDetailPage() {
     mutationFn: () => api.deleteApp(appId!),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['apps'] })
-      navigate('/apps')
+      navigate(appsPath)
     },
   })
 
@@ -129,7 +131,7 @@ export default function AppDetailPage() {
     return (
       <div className="card px-6 py-12 text-center">
         <p className="text-sm text-text-secondary">App not found</p>
-        <Link to="/apps" className="text-xs text-accent mt-2 inline-block">&larr; Back to apps</Link>
+        <Link to={appsPath} className="text-xs text-accent mt-2 inline-block">&larr; Back to apps</Link>
       </div>
     )
   }
@@ -140,7 +142,7 @@ export default function AppDetailPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <Link to="/apps" className="text-text-tertiary hover:text-text-secondary transition-colors">
+          <Link to={appsPath} className="text-text-tertiary hover:text-text-secondary transition-colors">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
             </svg>
