@@ -424,7 +424,7 @@ func (n *Notifier) SendPasswordResetEmail(toEmail, resetToken string) error {
 
 // SendInviteEmail sends a welcome/invite email to a newly created user.
 // It silently returns nil if no email channel is configured.
-func (n *Notifier) SendInviteEmail(toEmail, username, role, invitedBy string) error {
+func (n *Notifier) SendInviteEmail(toEmail, username, role, loginURL string) error {
 	ch, err := n.db.GetAnyEmailChannel()
 	if err != nil || ch == nil {
 		return nil // no email channel — skip silently
@@ -439,19 +439,104 @@ func (n *Notifier) SendInviteEmail(toEmail, username, role, invitedBy string) er
 	}
 
 	subject := "[Vesta] You've been invited"
-	body := fmt.Sprintf(
-		"Hi %s,\n\n"+
-			"You've been invited to Vesta as a %s.\n\n"+
-			"Username: %s\n"+
-			"Email: %s\n\n"+
-			"You can log in with the credentials provided by your administrator.\n",
-		username, role, username, toEmail,
-	)
-	if invitedBy != "" {
-		body += fmt.Sprintf("Invited by: %s\n", invitedBy)
+
+	accentColor := "#E8590C"
+	bgColor := "#0C0C0E"
+	cardBg := "#16161A"
+	borderColor := "#2A2A30"
+	textPrimary := "#E4E4E7"
+	textMuted := "#8B8B94"
+
+	buttonBlock := ""
+	if loginURL != "" {
+		buttonBlock = fmt.Sprintf(`<tr><td style="padding:32px 0 0">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+<td style="background:%s;border-radius:6px;padding:14px 32px">
+<a href="%s" style="color:#fff;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;font-weight:600;letter-spacing:0.5px;text-decoration:none;text-transform:uppercase" target="_blank">Accept Invite</a>
+</td></tr></table>
+</td></tr>`, accentColor, loginURL)
 	}
 
-	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
+	body := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background:%s;-webkit-font-smoothing:antialiased">
+<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0" style="background:%s">
+<tr><td align="center" style="padding:48px 24px">
+<table role="presentation" width="520" cellpadding="0" cellspacing="0" border="0" style="max-width:520px;width:100%%">
+
+<!-- Logo -->
+<tr><td style="padding:0 0 40px">
+<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+<td style="background:%s;border-radius:8px;width:40px;height:40px;text-align:center;vertical-align:middle;font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:18px;font-weight:700;color:#fff">V</td>
+<td style="padding-left:12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:17px;font-weight:600;color:%s;letter-spacing:-0.2px">Vesta</td>
+</tr></table>
+</td></tr>
+
+<!-- Card -->
+<tr><td style="background:%s;border:1px solid %s;border-radius:12px;padding:40px">
+<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0">
+
+<tr><td style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:22px;font-weight:700;color:%s;line-height:1.3;padding:0 0 8px">You're in.</td></tr>
+<tr><td style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:15px;color:%s;line-height:1.6;padding:0 0 28px">You've been invited to join <strong style="color:%s">Vesta</strong> as a team member. Your account is ready.</td></tr>
+
+<!-- Details -->
+<tr><td style="background:%s;border:1px solid %s;border-radius:8px;padding:20px">
+<table role="presentation" width="100%%" cellpadding="0" cellspacing="0" border="0">
+<tr>
+<td style="font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;font-weight:600;color:%s;text-transform:uppercase;letter-spacing:1px;padding:0 0 12px" colspan="2">Account Details</td>
+</tr>
+<tr>
+<td style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;color:%s;padding:6px 0;width:90px">Username</td>
+<td style="font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;color:%s;padding:6px 0">%s</td>
+</tr>
+<tr><td colspan="2" style="border-top:1px solid %s;font-size:1px;line-height:1px;padding:0">&nbsp;</td></tr>
+<tr>
+<td style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;color:%s;padding:6px 0;width:90px">Email</td>
+<td style="font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;color:%s;padding:6px 0">%s</td>
+</tr>
+<tr><td colspan="2" style="border-top:1px solid %s;font-size:1px;line-height:1px;padding:0">&nbsp;</td></tr>
+<tr>
+<td style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;color:%s;padding:6px 0;width:90px">Role</td>
+<td style="font-family:'SF Mono',SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;color:%s;padding:6px 0"><span style="background:%s;color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">%s</span></td>
+</tr>
+</table>
+</td></tr>
+
+%s
+
+<tr><td style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;color:%s;line-height:1.6;padding:28px 0 0">Log in with the credentials provided by your administrator.</td></tr>
+
+</table>
+</td></tr>
+
+<!-- Footer -->
+<tr><td style="padding:32px 0 0;text-align:center">
+<p style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:12px;color:%s;margin:0">Vesta &mdash; Self-hosted PaaS for Kubernetes</p>
+</td></tr>
+
+</table>
+</td></tr>
+</table>
+</body>
+</html>`,
+		bgColor, bgColor,
+		accentColor, textPrimary,
+		cardBg, borderColor,
+		textPrimary, textMuted, textPrimary,
+		bgColor, borderColor,
+		accentColor,
+		textMuted, textPrimary, username,
+		borderColor,
+		textMuted, textPrimary, toEmail,
+		borderColor,
+		textMuted, textPrimary, accentColor, role,
+		buttonBlock,
+		textMuted,
+		textMuted,
+	)
+
+	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n%s",
 		cfg.From, toEmail, subject, body)
 
 	addr := fmt.Sprintf("%s:%s", cfg.SMTPHost, cfg.SMTPPort)
