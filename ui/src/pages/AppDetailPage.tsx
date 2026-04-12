@@ -30,7 +30,7 @@ export default function AppDetailPage() {
   const [deployEnv, setDeployEnv] = useState('')
   const [secretEnv, setSecretEnv] = useState('')
   const [editing, setEditing] = useState(false)
-  const [activeTab, setActiveTab] = useState<'overview' | 'builds' | 'secrets' | 'logs' | 'terminal' | 'metrics'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'builds' | 'secrets' | 'logs' | 'terminal' | 'metrics' | 'cronjobs'>('overview')
   const [showCloneModal, setShowCloneModal] = useState(false)
   const [historyEnvFilter, setHistoryEnvFilter] = useState('')
   const role = useUserRole()
@@ -244,7 +244,7 @@ export default function AppDetailPage() {
       )}
 
       <div className="flex border-b border-border">
-        {(['overview', 'builds', ...(role !== 'viewer' ? ['secrets' as const, 'logs' as const, 'terminal' as const] : ['logs' as const]), 'metrics'] as const).map((tab) => (
+        {(['overview', 'builds', ...(role !== 'viewer' ? ['secrets' as const, 'cronjobs' as const, 'logs' as const, 'terminal' as const] : ['logs' as const]), 'metrics'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -658,6 +658,10 @@ export default function AppDetailPage() {
         </div>
       )}
 
+      {activeTab === 'cronjobs' && (
+        <AppCronjobs appId={appId!} app={app} environments={appEnvironments} />
+      )}
+
       {activeTab === 'builds' && (
         <AppBuilds appId={appId!} environments={appEnvironments} gitRepo={app?.spec?.git?.repository || ''} deployments={deployments} role={role} onRollback={(version, env) => rollbackMutation.mutate({ version, environment: env })} />
       )}
@@ -876,21 +880,6 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     return entries.length > 0 ? entries.map(([key, value]) => ({ key, value: value as string })) : []
   })
 
-  // Cron jobs
-  const [cronjobs, setCronjobs] = useState<{ name: string; schedule: string; command: string; size: string; environments: { name: string; enabled: boolean; schedule: string }[] }[]>(() => {
-    return (app.spec?.cronjobs || []).map((cj: any) => ({
-      name: cj.name || '',
-      schedule: cj.schedule || '',
-      command: cj.command || '',
-      size: cj.resources?.size || '',
-      environments: (cj.environments || []).map((e: any) => ({
-        name: e.name || '',
-        enabled: e.enabled !== false,
-        schedule: e.schedule || '',
-      })),
-    }))
-  })
-
   // Volumes (PVC mounts)
   const [volumes, setVolumes] = useState<{ name: string; mountPath: string; claimName: string }[]>(() => {
     return (app.spec?.runtime?.volumes || []).map((v: any) => ({
@@ -1041,22 +1030,6 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         ...(Object.keys(customAnnotations).length > 0 && { annotations: customAnnotations }),
       }
     }
-
-    // Cron jobs
-    const validCronjobs = cronjobs.filter(cj => cj.name && cj.schedule && cj.command)
-    patch.cronjobs = validCronjobs.map(cj => ({
-      name: cj.name,
-      schedule: cj.schedule,
-      command: cj.command,
-      ...(cj.size && { resources: { size: cj.size } }),
-      ...(cj.environments.length > 0 && {
-        environments: cj.environments.filter(e => e.name).map(e => ({
-          name: e.name,
-          ...((!e.enabled) && { enabled: false }),
-          ...(e.schedule && { schedule: e.schedule }),
-        })),
-      }),
-    }))
 
     // Git source
     if (gitRepo) {
@@ -1597,107 +1570,6 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         ))}
       </div>
 
-      <div>
-        <div className="flex items-center justify-between mb-2">
-          <label className="label">Cron Jobs</label>
-          <button type="button" onClick={() => setCronjobs(prev => [...prev, { name: '', schedule: '', command: '', size: '', environments: [] }])} className="text-xs text-accent hover:text-accent-glow">+ Add</button>
-        </div>
-        {cronjobs.map((cj, i) => (
-          <div key={i} className="rounded-lg border border-border bg-surface-1 p-3 mb-2">
-            <div className="flex gap-2 mb-2">
-              <div className="flex-1">
-                <label className="text-xs text-text-tertiary">Name</label>
-                <input value={cj.name} onChange={e => { const u = [...cronjobs]; u[i].name = e.target.value; setCronjobs(u) }} placeholder="cleanup" className="input-field font-mono text-xs mt-1" />
-              </div>
-              <div className="flex-1">
-                <label className="text-xs text-text-tertiary">Schedule (cron)</label>
-                <input value={cj.schedule} onChange={e => { const u = [...cronjobs]; u[i].schedule = e.target.value; setCronjobs(u) }} placeholder="0 2 * * *" className="input-field font-mono text-xs mt-1" />
-              </div>
-              <div className="w-64">
-                <label className="text-xs text-text-tertiary">Size</label>
-                <select value={cj.size} onChange={e => { const u = [...cronjobs]; u[i].size = e.target.value; setCronjobs(u) }} className="input-field text-xs mt-1">
-                  <option value="">Default</option>
-                  {podSizes?.items?.map((s: any) => (
-                    <option key={s.name} value={s.name}>{s.name} ({s.cpu}/{s.memory} → {s.cpuLimit}/{s.memoryLimit})</option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex items-end pb-1">
-                <button type="button" onClick={() => setCronjobs(prev => prev.filter((_, j) => j !== i))} className="text-text-tertiary hover:text-status-failed text-xs px-2">&times;</button>
-              </div>
-            </div>
-            <div className="mb-2">
-              <label className="text-xs text-text-tertiary">Command</label>
-              <input value={cj.command} onChange={e => { const u = [...cronjobs]; u[i].command = e.target.value; setCronjobs(u) }} placeholder="npm run cleanup" className="input-field font-mono text-xs mt-1" />
-            </div>
-            {appEnvironments.length > 0 && (
-              <div className="mt-2 pt-2 border-t border-border-subtle">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] text-text-tertiary font-mono uppercase tracking-wider">Per-Environment Overrides</span>
-                  {appEnvironments.filter(env => !cj.environments.some(e => e.name === env)).length > 0 && (
-                    <select
-                      value=""
-                      onChange={e => {
-                        if (!e.target.value) return
-                        const u = [...cronjobs]
-                        u[i].environments = [...u[i].environments, { name: e.target.value, enabled: true, schedule: '' }]
-                        setCronjobs(u)
-                      }}
-                      className="input-field text-xs w-auto"
-                    >
-                      <option value="">+ Add override</option>
-                      {appEnvironments.filter(env => !cj.environments.some(e => e.name === env)).map(env => (
-                        <option key={env} value={env}>{env}</option>
-                      ))}
-                    </select>
-                  )}
-                </div>
-                {cj.environments.map((envOvr, ei) => (
-                  <div key={envOvr.name} className="flex items-center gap-3 mb-1.5 pl-2">
-                    <span className="text-xs font-mono text-accent w-24">{envOvr.name}</span>
-                    <label className="flex items-center gap-1.5 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={envOvr.enabled}
-                        onChange={e => {
-                          const u = [...cronjobs]
-                          u[i].environments[ei].enabled = e.target.checked
-                          setCronjobs(u)
-                        }}
-                        className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
-                      />
-                      <span className="text-[11px] text-text-tertiary">Enabled</span>
-                    </label>
-                    <div className="flex-1">
-                      <input
-                        value={envOvr.schedule}
-                        onChange={e => {
-                          const u = [...cronjobs]
-                          u[i].environments[ei].schedule = e.target.value
-                          setCronjobs(u)
-                        }}
-                        placeholder={`Override schedule (default: ${cj.schedule || '...'})`}
-                        className="input-field font-mono text-xs w-full"
-                        disabled={!envOvr.enabled}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const u = [...cronjobs]
-                        u[i].environments = u[i].environments.filter((_, j) => j !== ei)
-                        setCronjobs(u)
-                      }}
-                      className="text-text-tertiary hover:text-status-failed text-xs px-1"
-                    >&times;</button>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
       <div className="flex gap-3 pt-1">
         <button type="submit" disabled={mutation.isPending} className="btn-primary">
           {mutation.isPending ? 'Saving...' : 'Save Changes'}
@@ -1708,6 +1580,271 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         <p className="text-status-failed text-xs">{(mutation.error as Error).message}</p>
       )}
     </form>
+  )
+}
+
+function AppCronjobs({ appId, app, environments }: { appId: string; app: any; environments: string[] }) {
+  const queryClient = useQueryClient()
+  const [showAdd, setShowAdd] = useState(false)
+  const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const [name, setName] = useState('')
+  const [schedule, setSchedule] = useState('')
+  const [command, setCommand] = useState('')
+  const [size, setSize] = useState('')
+  const [envOverrides, setEnvOverrides] = useState<{ name: string; enabled: boolean; schedule: string }[]>([])
+
+  const { data: podSizes } = useQuery({
+    queryKey: ['podSizes'],
+    queryFn: () => api.listPodSizes(),
+  })
+
+  const cronjobs: any[] = app.spec?.cronjobs || []
+
+  const mutation = useMutation({
+    mutationFn: (newCronjobs: any[]) => api.updateApp(appId, { cronjobs: newCronjobs }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['app', appId] })
+      resetForm()
+    },
+  })
+
+  const resetForm = () => {
+    setShowAdd(false)
+    setEditingIndex(null)
+    setName('')
+    setSchedule('')
+    setCommand('')
+    setSize('')
+    setEnvOverrides([])
+  }
+
+  const startEdit = (i: number) => {
+    const cj = cronjobs[i]
+    setEditingIndex(i)
+    setShowAdd(true)
+    setName(cj.name || '')
+    setSchedule(cj.schedule || '')
+    setCommand(cj.command || '')
+    setSize(cj.resources?.size || '')
+    setEnvOverrides((cj.environments || []).map((e: any) => ({
+      name: e.name || '',
+      enabled: e.enabled !== false,
+      schedule: e.schedule || '',
+    })))
+  }
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!name || !schedule || !command) return
+    const entry: any = {
+      name,
+      schedule,
+      command,
+      ...(size && { resources: { size } }),
+      ...(envOverrides.length > 0 && {
+        environments: envOverrides.filter(eo => eo.name).map(eo => ({
+          name: eo.name,
+          ...(!eo.enabled && { enabled: false }),
+          ...(eo.schedule && { schedule: eo.schedule }),
+        })),
+      }),
+    }
+    const updated = [...cronjobs]
+    if (editingIndex !== null) {
+      updated[editingIndex] = entry
+    } else {
+      updated.push(entry)
+    }
+    mutation.mutate(updated)
+  }
+
+  const handleDelete = (i: number) => {
+    if (!confirm(`Delete cron job "${cronjobs[i].name}"?`)) return
+    const updated = cronjobs.filter((_: any, j: number) => j !== i)
+    mutation.mutate(updated)
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm text-text-secondary">{cronjobs.length} cron job{cronjobs.length !== 1 ? 's' : ''}</p>
+          <p className="text-xs text-text-tertiary mt-0.5">Scheduled tasks that run using the same image and secrets as the app.</p>
+        </div>
+        {!showAdd && (
+          <button onClick={() => { resetForm(); setShowAdd(true) }} className="btn-primary">
+            <span className="flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              Add Cron Job
+            </span>
+          </button>
+        )}
+      </div>
+
+      {showAdd && (
+        <form onSubmit={handleSubmit} className="card p-5 space-y-4 animate-slide-up">
+          <h3 className="section-title">{editingIndex !== null ? 'Edit Cron Job' : 'Add Cron Job'}</h3>
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="label">Name</label>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="cleanup" className="input-field font-mono text-xs" required disabled={editingIndex !== null} />
+            </div>
+            <div>
+              <label className="label">Schedule (cron)</label>
+              <input value={schedule} onChange={e => setSchedule(e.target.value)} placeholder="0 2 * * *" className="input-field font-mono text-xs" required />
+            </div>
+            <div>
+              <label className="label">Size</label>
+              <select value={size} onChange={e => setSize(e.target.value)} className="input-field text-xs">
+                <option value="">Default</option>
+                {podSizes?.items?.map((s: any) => (
+                  <option key={s.name} value={s.name}>{s.name} ({s.cpu}/{s.memory})</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="label">Command</label>
+            <input value={command} onChange={e => setCommand(e.target.value)} placeholder="npm run cleanup" className="input-field font-mono text-xs" required />
+          </div>
+
+          {environments.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="label mb-0">Per-Environment Overrides</label>
+                {environments.filter(env => !envOverrides.some(eo => eo.name === env)).length > 0 && (
+                  <select
+                    value=""
+                    onChange={e => {
+                      if (!e.target.value) return
+                      setEnvOverrides(prev => [...prev, { name: e.target.value, enabled: true, schedule: '' }])
+                    }}
+                    className="input-field text-xs w-auto"
+                  >
+                    <option value="">+ Add override</option>
+                    {environments.filter(env => !envOverrides.some(eo => eo.name === env)).map(env => (
+                      <option key={env} value={env}>{env}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+              {envOverrides.map((eo, ei) => (
+                <div key={eo.name} className="flex items-center gap-3 mb-1.5 pl-2">
+                  <span className="text-xs font-mono text-accent w-24">{eo.name}</span>
+                  <label className="flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={eo.enabled}
+                      onChange={e => {
+                        const u = [...envOverrides]
+                        u[ei].enabled = e.target.checked
+                        setEnvOverrides(u)
+                      }}
+                      className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                    />
+                    <span className="text-[11px] text-text-tertiary">Enabled</span>
+                  </label>
+                  <div className="flex-1">
+                    <input
+                      value={eo.schedule}
+                      onChange={e => {
+                        const u = [...envOverrides]
+                        u[ei].schedule = e.target.value
+                        setEnvOverrides(u)
+                      }}
+                      placeholder={`Override schedule (default: ${schedule || '...'})`}
+                      className="input-field font-mono text-xs w-full"
+                      disabled={!eo.enabled}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEnvOverrides(prev => prev.filter((_, j) => j !== ei))}
+                    className="text-text-tertiary hover:text-status-failed text-xs px-1"
+                  >&times;</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex gap-3 pt-1">
+            <button type="submit" disabled={mutation.isPending || !name || !schedule || !command} className="btn-primary">
+              {mutation.isPending ? 'Saving...' : editingIndex !== null ? 'Update' : 'Add'}
+            </button>
+            <button type="button" onClick={resetForm} className="btn-ghost">Cancel</button>
+          </div>
+          {mutation.isError && (
+            <p className="text-status-failed text-xs">{(mutation.error as Error).message}</p>
+          )}
+        </form>
+      )}
+
+      {cronjobs.length === 0 && !showAdd && (
+        <div className="card px-6 py-12 text-center">
+          <div className="w-10 h-10 rounded-xl bg-surface-3 flex items-center justify-center mx-auto mb-3">
+            <svg className="w-5 h-5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <p className="text-sm text-text-secondary">No cron jobs configured</p>
+          <p className="text-xs text-text-tertiary mt-1">Add scheduled tasks that run using the same image as your app</p>
+        </div>
+      )}
+
+      {cronjobs.length > 0 && (
+        <div className="space-y-2">
+          {cronjobs.map((cj: any, i: number) => (
+            <div key={cj.name} className="card-hover px-5 py-4 group">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4 min-w-0">
+                  <div className="w-9 h-9 rounded-lg bg-surface-3 flex items-center justify-center flex-shrink-0">
+                    <svg className="w-4 h-4 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-mono text-accent">{cj.name}</span>
+                      <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-2 py-0.5 rounded">{cj.schedule}</span>
+                      {cj.resources?.size && (
+                        <span className="text-[10px] text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded">{cj.resources.size}</span>
+                      )}
+                    </div>
+                    <p className="text-xs font-mono text-text-secondary mt-1 truncate">{cj.command}</p>
+                    {cj.environments?.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-2">
+                        {cj.environments.map((envOvr: any) => (
+                          <span key={envOvr.name} className={`text-[10px] font-mono px-2 py-0.5 rounded border ${envOvr.enabled === false ? 'bg-status-failed/5 text-status-failed border-status-failed/20 line-through' : 'bg-surface-3 text-text-tertiary border-border/50'}`}>
+                            {envOvr.name}{envOvr.enabled === false ? ' (disabled)' : ''}{envOvr.schedule ? `: ${envOvr.schedule}` : ''}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button
+                    onClick={() => startEdit(i)}
+                    className="text-xs text-text-tertiary hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => handleDelete(i)}
+                    disabled={mutation.isPending}
+                    className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 

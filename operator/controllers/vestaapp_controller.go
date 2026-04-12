@@ -1380,6 +1380,7 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 			totalReady += deploy.Status.ReadyReplicas
 
 			// Check pods for CrashLoopBackOff / ImagePullBackOff
+			// Exclude CronJob/Job pods — they have the "kubernetes.getvesta.sh/cronjob" label
 			var podList corev1.PodList
 			if err := r.List(ctx, &podList,
 				client.InNamespace(target.Namespace),
@@ -1389,6 +1390,10 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 			}
 
 			for _, pod := range podList.Items {
+				// Skip pods that belong to cron jobs
+				if _, isCronPod := pod.Labels["kubernetes.getvesta.sh/cronjob"]; isCronPod {
+					continue
+				}
 				for _, cs := range pod.Status.ContainerStatuses {
 					if cs.State.Waiting != nil {
 						switch cs.State.Waiting.Reason {
