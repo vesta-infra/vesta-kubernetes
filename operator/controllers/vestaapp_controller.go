@@ -1271,7 +1271,9 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 			_, createErr := controllerutil.CreateOrUpdate(ctx, r.Client, cronJob, func() error {
 				cronJob.Labels = cronjobLabels
 				cronJob.Annotations = cronjobAnnotations
+				ttl := int32(300) // 5 minutes after completion
 				jobSpec := batchv1.JobSpec{
+					TTLSecondsAfterFinished: &ttl,
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Labels: cronjobLabels,
