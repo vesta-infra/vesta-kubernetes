@@ -1632,9 +1632,41 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
     })))
   }
 
+  const validateCronSchedule = (s: string): boolean => {
+    const parts = s.trim().split(/\s+/)
+    if (parts.length !== 5) return false
+    const ranges = [
+      [0, 59], // minute
+      [0, 23], // hour
+      [1, 31], // day of month
+      [1, 12], // month
+      [0, 7],  // day of week
+    ]
+    return parts.every((part, i) => {
+      // Handle comma-separated values
+      return part.split(',').every(segment => {
+        // Handle step values: */5, 1-30/2, etc.
+        const [range, step] = segment.split('/')
+        if (step !== undefined && (step === '' || isNaN(Number(step)) || Number(step) < 1)) return false
+        if (range === '*') return true
+        // Handle ranges: 1-5
+        if (range.includes('-')) {
+          const [start, end] = range.split('-')
+          return !isNaN(Number(start)) && !isNaN(Number(end)) &&
+            Number(start) >= ranges[i][0] && Number(end) <= ranges[i][1]
+        }
+        // Single value
+        return !isNaN(Number(range)) && Number(range) >= ranges[i][0] && Number(range) <= ranges[i][1]
+      })
+    })
+  }
+
+  const scheduleValid = !schedule || validateCronSchedule(schedule)
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (!name || !schedule || !command) return
+    if (!validateCronSchedule(schedule)) return
     const entry: any = {
       name,
       schedule,
@@ -1692,7 +1724,10 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
             </div>
             <div>
               <label className="label">Schedule (cron)</label>
-              <input value={schedule} onChange={e => setSchedule(e.target.value)} placeholder="0 2 * * *" className="input-field font-mono text-xs" required />
+              <input value={schedule} onChange={e => setSchedule(e.target.value)} placeholder="*/5 * * * *" className={`input-field font-mono text-xs ${schedule && !scheduleValid ? 'border-status-failed/50 focus:border-status-failed/50 focus:ring-status-failed/10' : ''}`} required />
+              {schedule && !scheduleValid && (
+                <p className="text-[11px] text-status-failed mt-1">Invalid cron expression. Use: min hour day month weekday (e.g. */5 * * * *)</p>
+              )}
             </div>
             <div>
               <label className="label">Size</label>
@@ -1769,7 +1804,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
           )}
 
           <div className="flex gap-3 pt-1">
-            <button type="submit" disabled={mutation.isPending || !name || !schedule || !command} className="btn-primary">
+            <button type="submit" disabled={mutation.isPending || !name || !schedule || !command || !scheduleValid} className="btn-primary">
               {mutation.isPending ? 'Saving...' : editingIndex !== null ? 'Update' : 'Add'}
             </button>
             <button type="button" onClick={resetForm} className="btn-ghost">Cancel</button>
