@@ -1724,7 +1724,28 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
             </div>
             <div>
               <label className="label">Schedule (cron)</label>
-              <input value={schedule} onChange={e => setSchedule(e.target.value)} placeholder="*/5 * * * *" className={`input-field font-mono text-xs ${schedule && !scheduleValid ? 'border-status-failed/50 focus:border-status-failed/50 focus:ring-status-failed/10' : ''}`} required />
+              <div className="flex gap-2">
+                <input value={schedule} onChange={e => setSchedule(e.target.value)} placeholder="*/5 * * * *" className={`input-field font-mono text-xs flex-1 ${schedule && !scheduleValid ? 'border-status-failed/50 focus:border-status-failed/50 focus:ring-status-failed/10' : ''}`} required />
+                <select
+                  value=""
+                  onChange={e => { if (e.target.value) setSchedule(e.target.value) }}
+                  className="input-field text-xs w-auto flex-shrink-0"
+                >
+                  <option value="">Presets</option>
+                  <option value="* * * * *">Every minute</option>
+                  <option value="*/5 * * * *">Every 5 min</option>
+                  <option value="*/15 * * * *">Every 15 min</option>
+                  <option value="*/30 * * * *">Every 30 min</option>
+                  <option value="0 * * * *">Every hour</option>
+                  <option value="0 */2 * * *">Every 2 hours</option>
+                  <option value="0 */6 * * *">Every 6 hours</option>
+                  <option value="0 */12 * * *">Every 12 hours</option>
+                  <option value="0 0 * * *">Daily (midnight)</option>
+                  <option value="0 2 * * *">Daily (2 AM)</option>
+                  <option value="0 0 * * 1">Weekly (Mon)</option>
+                  <option value="0 0 1 * *">Monthly (1st)</option>
+                </select>
+              </div>
               {schedule && !scheduleValid && (
                 <p className="text-[11px] text-status-failed mt-1">Invalid cron expression. Use: min hour day month weekday (e.g. */5 * * * *)</p>
               )}
