@@ -693,7 +693,7 @@ function EnvironmentRow({ env, envConfig, appEnvConfig, appImage, projectId, app
   return (
     <div className="bg-surface-1 border border-border rounded-lg group">
       <div className="flex items-center justify-between px-4 py-3">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 min-w-0">
           <span className="text-sm font-mono text-text-secondary">{env}</span>
           {(() => {
             const repo = appEnvConfig?.image?.repository || appImage?.repository
@@ -713,7 +713,7 @@ function EnvironmentRow({ env, envConfig, appEnvConfig, appImage, projectId, app
             <span className="text-[11px] font-mono text-accent bg-accent/10 px-1.5 py-0.5 rounded">auto-deploy</span>
           )}
         </div>
-        <div className="flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
           {role !== 'viewer' && (
             <button
               onClick={() => setEditing(!editing)}
@@ -3633,13 +3633,13 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
         <div className="space-y-1">
           {existingKeys.map((k: string) => (
             <div key={k} className="flex items-center justify-between px-3 py-2 bg-surface-1 border border-border rounded-lg group">
-              <span className="text-xs font-mono text-text-secondary">{k}</span>
+              <span className="text-xs font-mono text-text-secondary min-w-0 truncate">{k}</span>
               <button
                 onClick={() => {
                   if (confirm(`Delete key "${k}" from ${env} secrets?`))
                     deleteMutation.mutate(k)
                 }}
-                className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
+                className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0 ml-2"
               >
                 Remove
               </button>
