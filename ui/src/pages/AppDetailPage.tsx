@@ -844,7 +844,6 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
-  const appEnvironments: string[] = rawEnvs.map((e: any) => typeof e === 'string' ? e : e.name)
   const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
