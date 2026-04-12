@@ -1590,6 +1590,8 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
   const [schedule, setSchedule] = useState('')
   const [command, setCommand] = useState('')
   const [size, setSize] = useState('')
+  const [restartPolicy, setRestartPolicy] = useState('OnFailure')
+  const [backoffLimit, setBackoffLimit] = useState('')
   const [envOverrides, setEnvOverrides] = useState<{ name: string; enabled: boolean; schedule: string }[]>([])
 
   const { data: podSizes } = useQuery({
@@ -1614,6 +1616,8 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
     setSchedule('')
     setCommand('')
     setSize('')
+    setRestartPolicy('OnFailure')
+    setBackoffLimit('')
     setEnvOverrides([])
   }
 
@@ -1625,6 +1629,8 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
     setSchedule(cj.schedule || '')
     setCommand(cj.command || '')
     setSize(cj.resources?.size || '')
+    setRestartPolicy(cj.restartPolicy || 'OnFailure')
+    setBackoffLimit(cj.backoffLimit != null ? String(cj.backoffLimit) : '')
     setEnvOverrides((cj.environments || []).map((e: any) => ({
       name: e.name || '',
       enabled: e.enabled !== false,
@@ -1672,6 +1678,8 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
       schedule,
       command,
       ...(size && { resources: { size } }),
+      restartPolicy,
+      ...(backoffLimit !== '' && { backoffLimit: Number(backoffLimit) }),
       ...(envOverrides.length > 0 && {
         environments: envOverrides.filter(eo => eo.name).map(eo => ({
           name: eo.name,
@@ -1758,6 +1766,19 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
                   <option key={s.name} value={s.name}>{s.name} ({s.cpu}/{s.memory})</option>
                 ))}
               </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">Restart Policy</label>
+              <select value={restartPolicy} onChange={e => setRestartPolicy(e.target.value)} className="input-field text-xs">
+                <option value="OnFailure">OnFailure</option>
+                <option value="Never">Never</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">Backoff Limit</label>
+              <input type="number" min="0" value={backoffLimit} onChange={e => setBackoffLimit(e.target.value)} placeholder="6 (default)" className="input-field font-mono text-xs" />
             </div>
           </div>
           <div>
@@ -1865,6 +1886,12 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
                       <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-2 py-0.5 rounded">{cj.schedule}</span>
                       {cj.resources?.size && (
                         <span className="text-[10px] text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded">{cj.resources.size}</span>
+                      )}
+                      {cj.restartPolicy === 'Never' && (
+                        <span className="text-[10px] text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded">restart: Never</span>
+                      )}
+                      {cj.backoffLimit != null && (
+                        <span className="text-[10px] text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded">backoff: {cj.backoffLimit}</span>
                       )}
                     </div>
                     <p className="text-xs font-mono text-text-secondary mt-1 truncate">{cj.command}</p>
