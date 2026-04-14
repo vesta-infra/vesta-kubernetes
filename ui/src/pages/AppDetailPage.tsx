@@ -953,9 +953,15 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       persistentVolumeClaim: { claimName: v.claimName },
     }))
 
-    // Runtime & Service
+    // Runtime & Service — carry forward existing runtime fields not managed by the form
+    const existingRuntime = app.spec?.runtime || {}
+    const preservedRuntime: Record<string, unknown> = {}
+    for (const key of ['command', 'args', 'env']) {
+      if (existingRuntime[key] != null) preservedRuntime[key] = existingRuntime[key]
+    }
+
     if (useServiceConfig) {
-      patch.runtime = { port: 0, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
+      patch.runtime = { ...preservedRuntime, port: 0, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
       patch.service = {
         type: serviceType,
         ports: servicePorts.filter(p => p.name && p.port).map(p => ({
@@ -967,7 +973,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         })),
       }
     } else {
-      patch.runtime = { port: Number.parseInt(port) || 3000, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
+      patch.runtime = { ...preservedRuntime, port: Number.parseInt(port) || 3000, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
       patch.service = null
     }
 

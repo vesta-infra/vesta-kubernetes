@@ -196,6 +196,18 @@ spec:
                                 description: NodePort number (only for NodePort/LoadBalancer type).
                             required: [ name, port ]
               git:
+                type: object
+                description: Git source configuration.
+                properties:
+                  provider:
+                    type: string
+                    enum: [ github, gitlab, bitbucket, gitea ]
+                  repository:
+                    type: string
+                  branch:
+                    type: string
+                  autoDeployOnPush:
+                    type: boolean
                     default: false
                 required: [ provider, repository ]
               build:
