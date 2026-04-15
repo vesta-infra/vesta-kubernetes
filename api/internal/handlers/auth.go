@@ -167,9 +167,12 @@ func (h *Handler) Register(c *gin.Context) {
 	})
 
 	// Send invite email asynchronously if an email channel is configured
-	invitedBy := c.GetString("userId")
+	loginURL := ""
+	if origin := c.Request.Header.Get("Origin"); origin != "" {
+		loginURL = origin
+	}
 	go func() {
-		if err := h.Notifier.SendInviteEmail(user.Email, user.Username, user.Role, invitedBy); err != nil {
+		if err := h.Notifier.SendInviteEmail(user.Email, user.Username, user.Role, loginURL); err != nil {
 			// Log but don't fail — the user was already created
 			_ = err
 		}

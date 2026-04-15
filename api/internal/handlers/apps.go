@@ -138,6 +138,9 @@ func (h *Handler) CreateApp(c *gin.Context) {
 	} else {
 		spec["runtime"] = map[string]interface{}{"port": 3000}
 	}
+	if req.Service != nil {
+		spec["service"] = req.Service
+	}
 	if req.Resources != nil {
 		spec["resources"] = req.Resources
 	}
@@ -306,15 +309,15 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 
 	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
 
-	// Preserve runtime.secrets (shared secret bindings) when the patch replaces runtime
+	// Deep-merge runtime: preserve existing fields (secrets, command, args, env, etc.) not present in the patch
 	if patchRuntime, ok := patch["runtime"].(map[string]interface{}); ok {
 		if existingRuntime, _, _ := unstructuredNestedMap(spec, "runtime"); existingRuntime != nil {
-			if secrets, exists := existingRuntime["secrets"]; exists {
-				if _, hasSecrets := patchRuntime["secrets"]; !hasSecrets {
-					patchRuntime["secrets"] = secrets
-					patch["runtime"] = patchRuntime
+			for key, val := range existingRuntime {
+				if _, exists := patchRuntime[key]; !exists {
+					patchRuntime[key] = val
 				}
 			}
+			patch["runtime"] = patchRuntime
 		}
 	}
 

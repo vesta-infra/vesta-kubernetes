@@ -47,8 +47,8 @@ export default {
         mono: ['"JetBrains Mono"', '"Fira Code"', 'monospace'],
       },
       animation: {
-        'fade-in': 'fadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1)',
-        'slide-up': 'slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1)',
+        'fade-in': 'fadeIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) both',
+        'slide-up': 'slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both',
         'slide-up-delayed': 'slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) 0.1s both',
         'glow-pulse': 'glowPulse 3s ease-in-out infinite',
         'border-glow': 'borderGlow 4s ease-in-out infinite',

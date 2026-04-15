@@ -384,7 +384,8 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete }: { secret:
   const [revealed, setRevealed] = useState<Record<string, string> | null>(null)
   const [revealLoading, setRevealLoading] = useState(false)
   const [editMode, setEditMode] = useState(false)
-  const [editKeys, setEditKeys] = useState<{ key: string; value: string }[]>([])
+  const [editKeys, setEditKeys] = useState<{ key: string; value: string; isNew?: boolean }[]>([])
+  const [deletedKeys, setDeletedKeys] = useState<string[]>([])
 
   useEffect(() => {
     if (!revealed) return
@@ -405,11 +406,12 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete }: { secret:
   }
 
   const updateMutation = useMutation({
-    mutationFn: (data: Record<string, string>) => api.updateSharedSecret(projectId, s.name, { data }),
+    mutationFn: (payload: { data?: Record<string, string>; deleteKeys?: string[] }) => api.updateSharedSecret(projectId, s.name, payload),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sharedSecrets'] })
       setEditMode(false)
       setEditKeys([])
+      setDeletedKeys([])
       setRevealed(null)
     },
   })
@@ -417,8 +419,11 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete }: { secret:
   const handleEditSubmit = () => {
     const data: Record<string, string> = {}
     editKeys.forEach(kv => { if (kv.key && kv.value) data[kv.key] = kv.value })
-    if (Object.keys(data).length === 0) return
-    updateMutation.mutate(data)
+    const payload: { data?: Record<string, string>; deleteKeys?: string[] } = {}
+    if (Object.keys(data).length > 0) payload.data = data
+    if (deletedKeys.length > 0) payload.deleteKeys = deletedKeys
+    if (!payload.data && !payload.deleteKeys) return
+    updateMutation.mutate(payload)
   }
 
   return (
@@ -472,6 +477,7 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete }: { secret:
               onClick={() => {
                 setEditMode(true)
                 setEditKeys((s.keys || []).map((k: string) => ({ key: k, value: '' })))
+                setDeletedKeys([])
                 setRevealed(null)
               }}
               className="text-xs text-text-tertiary hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
@@ -513,11 +519,20 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete }: { secret:
         <div className="mt-3 border-t border-border pt-3 space-y-3 animate-slide-up">
           <div>
             <label className="label">Update Values</label>
-            <p className="text-[11px] text-text-tertiary mb-2">Enter new values for existing keys. Only keys with values will be updated.</p>
+            <p className="text-[11px] text-text-tertiary mb-2">Update values, add new keys, or remove existing ones.</p>
             <div className="space-y-2">
               {editKeys.map((kv, i) => (
-                <div key={kv.key} className="flex gap-2 items-center">
-                  <span className="font-mono text-xs text-text-secondary w-40 truncate flex-shrink-0">{kv.key}</span>
+                <div key={i} className="flex gap-2 items-center">
+                  {kv.isNew ? (
+                    <input
+                      value={kv.key}
+                      onChange={(e) => { const u = [...editKeys]; u[i].key = e.target.value; setEditKeys(u) }}
+                      placeholder="KEY_NAME"
+                      className="input-field font-mono text-xs w-40 flex-shrink-0"
+                    />
+                  ) : (
+                    <span className="font-mono text-xs text-text-secondary w-40 truncate flex-shrink-0">{kv.key}</span>
+                  )}
                   <RevealableInput
                     value={kv.value}
                     onChange={(e) => { const u = [...editKeys]; u[i].value = e.target.value; setEditKeys(u) }}
@@ -525,12 +540,23 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete }: { secret:
                     type="password"
                     className="input-field flex-1"
                   />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!kv.isNew && kv.key) setDeletedKeys(prev => [...prev, kv.key])
+                      setEditKeys(editKeys.filter((_, idx) => idx !== i))
+                    }}
+                    className="px-2 text-text-tertiary hover:text-status-failed transition-colors flex-shrink-0"
+                    title={`Remove ${kv.key || 'key'}`}
+                  >
+                    &times;
+                  </button>
                 </div>
               ))}
             </div>
             <button
               type="button"
-              onClick={() => setEditKeys([...editKeys, { key: '', value: '' }])}
+              onClick={() => setEditKeys([...editKeys, { key: '', value: '', isNew: true }])}
               className="text-xs text-accent hover:text-accent-glow transition-colors mt-2 font-mono"
             >
               + Add key
@@ -540,12 +566,12 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete }: { secret:
             <button
               type="button"
               onClick={handleEditSubmit}
-              disabled={updateMutation.isPending || !editKeys.some(kv => kv.value)}
+              disabled={updateMutation.isPending || (!editKeys.some(kv => kv.value) && deletedKeys.length === 0)}
               className="btn-primary text-xs"
             >
               {updateMutation.isPending ? 'Saving...' : 'Update'}
             </button>
-            <button type="button" onClick={() => setEditMode(false)} className="btn-ghost text-xs">Cancel</button>
+            <button type="button" onClick={() => { setEditMode(false); setDeletedKeys([]) }} className="btn-ghost text-xs">Cancel</button>
           </div>
           {updateMutation.isError && (
             <p className="text-status-failed text-xs">{(updateMutation.error as Error).message}</p>

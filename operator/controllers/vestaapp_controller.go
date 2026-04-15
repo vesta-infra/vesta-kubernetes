@@ -1226,7 +1226,12 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 
 		podSpec := r.buildPodSpec(app, container, projectPullSecrets, target.Config.ImagePullSecrets)
 		podSpec.ServiceAccountName = app.Name
-		podSpec.RestartPolicy = corev1.RestartPolicyOnFailure
+		switch cj.RestartPolicy {
+		case "Never":
+			podSpec.RestartPolicy = corev1.RestartPolicyNever
+		default:
+			podSpec.RestartPolicy = corev1.RestartPolicyOnFailure
+		}
 
 		cronjobLabels := make(map[string]string)
 		for k, v := range labels {
@@ -1266,6 +1271,19 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 			_, createErr := controllerutil.CreateOrUpdate(ctx, r.Client, cronJob, func() error {
 				cronJob.Labels = cronjobLabels
 				cronJob.Annotations = cronjobAnnotations
+				ttl := int32(60) // cleanup finished job pods after 1 minute
+				jobSpec := batchv1.JobSpec{
+					TTLSecondsAfterFinished: &ttl,
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: cronjobLabels,
+						},
+						Spec: podSpec,
+					},
+				}
+				if cj.BackoffLimit != nil {
+					jobSpec.BackoffLimit = cj.BackoffLimit
+				}
 				cronJob.Spec = batchv1.CronJobSpec{
 					Schedule:                   effectiveSchedule,
 					ConcurrencyPolicy:          batchv1.ForbidConcurrent,
@@ -1275,14 +1293,7 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 						ObjectMeta: metav1.ObjectMeta{
 							Labels: cronjobLabels,
 						},
-						Spec: batchv1.JobSpec{
-							Template: corev1.PodTemplateSpec{
-								ObjectMeta: metav1.ObjectMeta{
-									Labels: cronjobLabels,
-								},
-								Spec: podSpec,
-							},
-						},
+						Spec: jobSpec,
 					},
 				}
 				return nil
@@ -1380,6 +1391,7 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 			totalReady += deploy.Status.ReadyReplicas
 
 			// Check pods for CrashLoopBackOff / ImagePullBackOff
+			// Exclude CronJob/Job pods — they have the "kubernetes.getvesta.sh/cronjob" label
 			var podList corev1.PodList
 			if err := r.List(ctx, &podList,
 				client.InNamespace(target.Namespace),
@@ -1389,6 +1401,10 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 			}
 
 			for _, pod := range podList.Items {
+				// Skip pods that belong to cron jobs
+				if _, isCronPod := pod.Labels["kubernetes.getvesta.sh/cronjob"]; isCronPod {
+					continue
+				}
 				for _, cs := range pod.Status.ContainerStatuses {
 					if cs.State.Waiting != nil {
 						switch cs.State.Waiting.Reason {

@@ -35,12 +35,12 @@ type APITokenCreatedResponse struct {
 }
 
 type APITokenResponse struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
+	ID         string   `json:"id"`
+	Name       string   `json:"name"`
 	Scopes     []string `json:"scopes"`
-	ExpiresAt  *string `json:"expiresAt,omitempty"`
-	LastUsedAt *string `json:"lastUsedAt,omitempty"`
-	CreatedAt  string  `json:"createdAt"`
+	ExpiresAt  *string  `json:"expiresAt,omitempty"`
+	LastUsedAt *string  `json:"lastUsedAt,omitempty"`
+	CreatedAt  string   `json:"createdAt"`
 }
 
 type TeamResponse struct {

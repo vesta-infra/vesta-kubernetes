@@ -196,6 +196,18 @@ spec:
                                 description: NodePort number (only for NodePort/LoadBalancer type).
                             required: [ name, port ]
               git:
+                type: object
+                description: Git source configuration.
+                properties:
+                  provider:
+                    type: string
+                    enum: [ github, gitlab, bitbucket, gitea ]
+                  repository:
+                    type: string
+                  branch:
+                    type: string
+                  autoDeployOnPush:
+                    type: boolean
                     default: false
                 required: [ provider, repository ]
               build:
@@ -321,6 +333,47 @@ spec:
                               description: Storage size for the PVC (e.g. 1Gi, 5Gi, 10Gi). Defaults to 1Gi.
                           required: [ claimName ]
                       required: [ name, mountPath ]
+              service:
+                type: object
+                description: Service configuration for exposing the app. Overrides runtime.port when set.
+                properties:
+                  type:
+                    type: string
+                    enum: [ ClusterIP, NodePort, LoadBalancer ]
+                    default: ClusterIP
+                    description: Kubernetes Service type.
+                  ports:
+                    type: array
+                    description: Ports to expose on the Service.
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                          description: Port name (e.g. http, grpc).
+                        port:
+                          type: integer
+                          format: int32
+                          minimum: 1
+                          maximum: 65535
+                          description: Service port number.
+                        targetPort:
+                          type: integer
+                          format: int32
+                          minimum: 1
+                          maximum: 65535
+                          description: Container port. Defaults to port if omitted.
+                        protocol:
+                          type: string
+                          enum: [ TCP, UDP, SCTP ]
+                          default: TCP
+                        nodePort:
+                          type: integer
+                          format: int32
+                          minimum: 30000
+                          maximum: 32767
+                          description: NodePort number (only for NodePort/LoadBalancer type).
+                      required: [ name, port ]
               scaling:
                 type: object
                 description: Replica count and autoscaling configuration.

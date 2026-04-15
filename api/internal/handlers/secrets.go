@@ -508,10 +508,16 @@ func (h *Handler) UpdateSharedSecret(c *gin.Context) {
 	name := c.Param("name")
 
 	var req struct {
-		Data map[string]string `json:"data" binding:"required"`
+		Data       map[string]string `json:"data"`
+		DeleteKeys []string          `json:"deleteKeys,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
+	if len(req.Data) == 0 && len(req.DeleteKeys) == 0 {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "data or deleteKeys required"})
 		return
 	}
 
@@ -535,6 +541,9 @@ func (h *Handler) UpdateSharedSecret(c *gin.Context) {
 		for k, v := range req.Data {
 			existingData[k] = v
 		}
+		for _, k := range req.DeleteKeys {
+			delete(existingData, k)
+		}
 		spec["data"] = existingData
 		item.Object["spec"] = spec
 		if _, err := h.K8s.UpdateResource(c.Request.Context(), k8s.VestaSecretGVR, item.GetNamespace(), &item); err == nil {
@@ -553,7 +562,7 @@ func (h *Handler) UpdateSharedSecret(c *gin.Context) {
 	}
 
 	h.auditLog(c, "update_shared_secret", "secret", name, name, projectID, "",
-		map[string]interface{}{"updatedKeys": keys})
+		map[string]interface{}{"updatedKeys": keys, "deletedKeys": req.DeleteKeys})
 
 	c.JSON(http.StatusOK, gin.H{"name": name, "message": "shared secret updated", "updatedEnvironments": updated})
 }
