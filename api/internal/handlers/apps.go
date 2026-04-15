@@ -5,6 +5,8 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/client-go/util/retry"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
 	"kubernetes.getvesta.sh/api/internal/services"
@@ -295,44 +297,64 @@ func (h *Handler) GetApp(c *gin.Context) {
 func (h *Handler) UpdateApp(c *gin.Context) {
 	appID := c.Param("appId")
 
-	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
-		return
-	}
-
 	var patch map[string]interface{}
 	if err := c.ShouldBindJSON(&patch); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
 		return
 	}
 
-	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
-
-	// Deep-merge runtime: preserve existing fields (secrets, command, args, env, etc.) not present in the patch
-	if patchRuntime, ok := patch["runtime"].(map[string]interface{}); ok {
-		if existingRuntime, _, _ := unstructuredNestedMap(spec, "runtime"); existingRuntime != nil {
-			for key, val := range existingRuntime {
-				if _, exists := patchRuntime[key]; !exists {
-					patchRuntime[key] = val
-				}
-			}
-			patch["runtime"] = patchRuntime
+	var resultName string
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID)
+		if err != nil {
+			return err
 		}
-	}
 
-	for k, v := range patch {
-		spec[k] = v
-	}
-	existing.Object["spec"] = spec
+		spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+		if spec == nil {
+			spec = make(map[string]interface{})
+		}
 
-	result, err := h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, existing)
+		// Deep-merge runtime: preserve existing fields (secrets, command, args, env, etc.) not present in the patch
+		if patchRuntime, ok := patch["runtime"].(map[string]interface{}); ok {
+			if existingRuntime, _, _ := unstructuredNestedMap(spec, "runtime"); existingRuntime != nil {
+				for key, val := range existingRuntime {
+					if _, exists := patchRuntime[key]; !exists {
+						patchRuntime[key] = val
+					}
+				}
+				patch["runtime"] = patchRuntime
+			}
+		}
+
+		for k, v := range patch {
+			if v == nil {
+				// Delete the key from spec when value is nil (e.g., healthCheck: null)
+				delete(spec, k)
+			} else {
+				spec[k] = v
+			}
+		}
+		existing.Object["spec"] = spec
+
+		result, err := h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, existing)
+		if err != nil {
+			return err
+		}
+		resultName = result.GetName()
+		return nil
+	})
+
 	if err != nil {
+		if errors.IsNotFound(err) {
+			c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"id": result.GetName(), "name": result.GetName()})
+	c.JSON(http.StatusOK, gin.H{"id": resultName, "name": resultName})
 
 	h.auditLog(c, "update_app", "app", appID, appID, "", "", nil)
 }
