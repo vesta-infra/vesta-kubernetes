@@ -127,9 +127,9 @@ func main() {
 		auth.POST("/apps/:appId/cronjobs/:name/trigger", dv, middleware.RequireScope("deploy", "write"), h.TriggerCronJob)
 		auth.GET("/apps/:appId/cronjobs/status", middleware.RequireScope("read"), h.GetCronJobStatuses)
 
-		// Pod file browser
-		auth.GET("/apps/:appId/files", middleware.RequireScope("read"), h.ListPodFiles)
-		auth.GET("/apps/:appId/files/read", middleware.RequireScope("read"), h.ReadPodFile)
+		// Pod file browser (requires developer+ role — exec into pods can expose secrets)
+		auth.GET("/apps/:appId/files", dv, middleware.RequireScope("read"), h.ListPodFiles)
+		auth.GET("/apps/:appId/files/read", dv, middleware.RequireScope("read"), h.ReadPodFile)
 		auth.POST("/apps/:appId/files/write", dv, middleware.RequireScope("write"), h.WritePodFile)
 
 		// Rate limiting

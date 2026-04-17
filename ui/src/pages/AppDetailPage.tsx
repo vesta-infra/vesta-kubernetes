@@ -4671,7 +4671,7 @@ function ScheduledDeploymentsTab({ appId, projectId, environments }: { appId: st
                 type="datetime-local"
                 value={scheduledAt}
                 onChange={e => setScheduledAt(e.target.value)}
-                min={new Date().toISOString().slice(0, 16)}
+                min={(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; })()}
                 className="input-field text-xs"
                 required
               />

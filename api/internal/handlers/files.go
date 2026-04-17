@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -109,6 +108,3 @@ func (h *Handler) WritePodFile(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "file written", "path": req.Path})
 }
-
-// Suppress unused import warning
-var _ = io.EOF

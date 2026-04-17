@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -555,9 +557,43 @@ func (c *Client) GetCronJobStatuses(ctx context.Context, namespace, labelSelecto
 	return results, nil
 }
 
-// ListFiles lists files in a pod at the given path using exec.
-func (c *Client) ListFiles(ctx context.Context, namespace, podName, containerName, path string) (string, error) {
-	return c.execInPod(ctx, namespace, podName, containerName, []string{"ls", "-la", "--color=never", path})
+// FileEntry represents a parsed directory entry.
+type FileEntry struct {
+	Name  string `json:"name"`
+	IsDir bool   `json:"isDir"`
+	Size  string `json:"size"`
+}
+
+// ListFiles lists files in a pod at the given path using exec, returning structured entries.
+func (c *Client) ListFiles(ctx context.Context, namespace, podName, containerName, path string) ([]FileEntry, error) {
+	raw, err := c.execInPod(ctx, namespace, podName, containerName, []string{"ls", "-la", "--color=never", path})
+	if err != nil {
+		return nil, err
+	}
+
+	var entries []FileEntry
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "total ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 9 {
+			continue
+		}
+		name := strings.Join(fields[8:], " ")
+		if name == "." || name == ".." {
+			continue
+		}
+		isDir := strings.HasPrefix(fields[0], "d")
+		size := fields[4]
+		entries = append(entries, FileEntry{
+			Name:  name,
+			IsDir: isDir,
+			Size:  size,
+		})
+	}
+	return entries, nil
 }
 
 // ReadFile reads a file from a pod using exec.
@@ -566,9 +602,24 @@ func (c *Client) ReadFile(ctx context.Context, namespace, podName, containerName
 }
 
 // WriteFile writes content to a file in a pod.
+// Content is base64-encoded to avoid shell injection. Path is validated and single-quoted.
 func (c *Client) WriteFile(ctx context.Context, namespace, podName, containerName, path, content string) error {
-	_, err := c.execInPod(ctx, namespace, podName, containerName, []string{"sh", "-c", fmt.Sprintf("cat > %s", path)})
+	// Validate path: reject shell metacharacters and path traversal
+	if strings.Contains(path, "'") || strings.Contains(path, "..") || strings.Contains(path, ";") ||
+		strings.Contains(path, "|") || strings.Contains(path, "&") || strings.Contains(path, "$") ||
+		strings.Contains(path, "`") || strings.Contains(path, "\n") {
+		return fmt.Errorf("invalid file path")
+	}
+
+	encoded := base64Encode(content)
+	// Use printf to avoid echo interpretation; single-quote path to prevent expansion
+	cmd := fmt.Sprintf("printf '%%s' '%s' | base64 -d > '%s'", encoded, path)
+	_, err := c.execInPod(ctx, namespace, podName, containerName, []string{"sh", "-c", cmd})
 	return err
+}
+
+func base64Encode(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
 }
 
 func (c *Client) execInPod(ctx context.Context, namespace, podName, containerName string, command []string) (string, error) {

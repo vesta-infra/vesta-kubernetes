@@ -173,8 +173,9 @@ func (h *Handler) Register(c *gin.Context) {
 		tokenBytes := make([]byte, 32)
 		rand.Read(tokenBytes)
 		inviteToken = hex.EncodeToString(tokenBytes)
+		tokenHash := db.HashToken(inviteToken)
 		expiresAt := time.Now().Add(7 * 24 * time.Hour) // 7 days
-		if err := h.DB.CreateInviteToken(c.Request.Context(), user.ID, inviteToken, expiresAt); err != nil {
+		if err := h.DB.CreateInviteToken(c.Request.Context(), user.ID, tokenHash, expiresAt); err != nil {
 			// User created but token failed — still return success
 			inviteToken = ""
 		}
@@ -223,7 +224,7 @@ func (h *Handler) AcceptInvite(c *gin.Context) {
 		return
 	}
 
-	user, err := h.DB.GetUserByInviteToken(c.Request.Context(), req.Token)
+	user, err := h.DB.GetUserByInviteToken(c.Request.Context(), db.HashToken(req.Token))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "invalid or expired invite token"})
 		return
@@ -234,7 +235,7 @@ func (h *Handler) AcceptInvite(c *gin.Context) {
 		return
 	}
 
-	if err := h.DB.MarkInviteTokenUsed(c.Request.Context(), req.Token); err != nil {
+	if err := h.DB.MarkInviteTokenUsed(c.Request.Context(), db.HashToken(req.Token)); err != nil {
 		// Password was set, token just wasn't marked — non-critical
 		_ = err
 	}
