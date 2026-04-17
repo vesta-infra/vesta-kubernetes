@@ -36,14 +36,16 @@ Vesta consists of four components:
 - (Optional) cert-manager for TLS
 - (Optional) metrics-server for autoscaling
 
-### 1. Install CRDs
+### 1. Install / Update CRDs
+
+> **Important:** Helm does not update CRDs on `helm upgrade`. You must re-apply CRDs manually when upgrading to pick up schema changes (e.g., healthCheck, per-environment resources).
 
 ```bash
-kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/main/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaapps.yaml
-kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/main/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaprojects.yaml
-kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/main/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaconfigs.yaml
-kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/main/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaenvironments.yaml
-kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/main/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestasecrets.yaml
+kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaapps.yaml
+kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaprojects.yaml
+kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaconfigs.yaml
+kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaenvironments.yaml
+kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestasecrets.yaml
 ```
 
 
@@ -90,9 +92,9 @@ helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
    --reuse-values \
     --set config.ingressClassName=traefik \
-  --set operator.image.tag=0.3.43 \
-  --set api.image.tag=0.3.43 \
-  --set ui.image.tag=0.3.43
+  --set operator.image.tag=0.3.44 \
+  --set api.image.tag=0.3.44 \
+  --set ui.image.tag=0.3.44
 ```
 
 ```bash
