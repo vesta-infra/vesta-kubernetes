@@ -315,16 +315,10 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 			spec = make(map[string]interface{})
 		}
 
-		// Deep-merge runtime: preserve existing fields (secrets, command, args, env, etc.) not present in the patch
-		if patchRuntime, ok := patch["runtime"].(map[string]interface{}); ok {
-			if existingRuntime, _, _ := unstructuredNestedMap(spec, "runtime"); existingRuntime != nil {
-				for key, val := range existingRuntime {
-					if _, exists := patchRuntime[key]; !exists {
-						patchRuntime[key] = val
-					}
-				}
-				patch["runtime"] = patchRuntime
-			}
+		// Capture existing runtime BEFORE applying patch so deep-merge uses the original values
+		var existingRuntime map[string]interface{}
+		if r, _, _ := unstructuredNestedMap(spec, "runtime"); r != nil {
+			existingRuntime = r
 		}
 
 		for k, v := range patch {
@@ -335,6 +329,19 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 				spec[k] = v
 			}
 		}
+
+		// Deep-merge runtime: restore existing fields (secrets, command, args, env, etc.) not in the patch
+		if patchRuntime, ok := patch["runtime"].(map[string]interface{}); ok && existingRuntime != nil {
+			merged := make(map[string]interface{})
+			for k, v := range existingRuntime {
+				merged[k] = v
+			}
+			for k, v := range patchRuntime {
+				merged[k] = v
+			}
+			spec["runtime"] = merged
+		}
+
 		existing.Object["spec"] = spec
 
 		result, err := h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, existing)

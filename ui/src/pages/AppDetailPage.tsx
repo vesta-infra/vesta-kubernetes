@@ -925,9 +925,12 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const [sleepTimeout, setSleepTimeout] = useState(app.spec?.sleep?.inactivityTimeout || '30m')
 
   const mutation = useMutation({
-    mutationFn: (data: any) => api.updateApp(appId, data),
+    mutationFn: async (data: any) => {
+      const result = await api.updateApp(appId, data)
+      await queryClient.invalidateQueries({ queryKey: ['app', appId] })
+      return result
+    },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['app', appId] })
       onClose()
     },
   })

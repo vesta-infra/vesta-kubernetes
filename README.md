@@ -90,9 +90,9 @@ helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
    --reuse-values \
     --set config.ingressClassName=traefik \
-  --set operator.image.tag=0.3.42 \
-  --set api.image.tag=0.3.42 \
-  --set ui.image.tag=0.3.42
+  --set operator.image.tag=0.3.43 \
+  --set api.image.tag=0.3.43 \
+  --set ui.image.tag=0.3.43
 ```
 
 ```bash
