@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -47,6 +48,18 @@ var (
 
 	ConfigMapGVR = schema.GroupVersionResource{
 		Group: "", Version: "v1", Resource: "configmaps",
+	}
+
+	CronJobGVR = schema.GroupVersionResource{
+		Group: "batch", Version: "v1", Resource: "cronjobs",
+	}
+
+	JobGVR = schema.GroupVersionResource{
+		Group: "batch", Version: "v1", Resource: "jobs",
+	}
+
+	IngressGVR = schema.GroupVersionResource{
+		Group: "networking.k8s.io", Version: "v1", Resource: "ingresses",
 	}
 )
 
@@ -447,4 +460,135 @@ func (c *Client) QueryPrometheusHasData(ctx context.Context, prometheusURL, quer
 		return false
 	}
 	return promResp.Status == "success" && len(promResp.Data.Result) > 0
+}
+
+// TriggerCronJob creates a one-off Job from a CronJob's job template.
+func (c *Client) TriggerCronJob(ctx context.Context, namespace, cronJobName string) (string, error) {
+	cronJob, err := c.Clientset.BatchV1().CronJobs(namespace).Get(ctx, cronJobName, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("get cronjob %s: %w", cronJobName, err)
+	}
+
+	jobName := fmt.Sprintf("%s-manual-%d", cronJobName, time.Now().Unix())
+	job := cronJob.Spec.JobTemplate.DeepCopy()
+
+	newJob, err := c.Clientset.BatchV1().Jobs(namespace).Create(ctx, &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "vesta",
+				"vesta.sh/triggered-from":      cronJobName,
+			},
+			Annotations: map[string]string{
+				"cronjob.kubernetes.io/instantiate": "manual",
+			},
+		},
+		Spec: job.Spec,
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return "", fmt.Errorf("create job from cronjob %s: %w", cronJobName, err)
+	}
+
+	return newJob.Name, nil
+}
+
+// CronJobStatus contains status info for a cronjob.
+type CronJobStatus struct {
+	Name              string  `json:"name"`
+	Schedule          string  `json:"schedule"`
+	LastScheduleTime  *string `json:"lastScheduleTime"`
+	LastSuccessfulTime *string `json:"lastSuccessfulTime"`
+	Active            int     `json:"active"`
+	RunCount          int     `json:"runCount"`
+}
+
+// GetCronJobStatuses returns status info for all cronjobs matching a label selector.
+func (c *Client) GetCronJobStatuses(ctx context.Context, namespace, labelSelector string) ([]CronJobStatus, error) {
+	cronJobs, err := c.Clientset.BatchV1().CronJobs(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: labelSelector,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list cronjobs: %w", err)
+	}
+
+	var results []CronJobStatus
+	for _, cj := range cronJobs.Items {
+		status := CronJobStatus{
+			Name:     cj.Name,
+			Schedule: cj.Spec.Schedule,
+			Active:   len(cj.Status.Active),
+		}
+		if cj.Status.LastScheduleTime != nil {
+			t := cj.Status.LastScheduleTime.Format(time.RFC3339)
+			status.LastScheduleTime = &t
+		}
+		if cj.Status.LastSuccessfulTime != nil {
+			t := cj.Status.LastSuccessfulTime.Format(time.RFC3339)
+			status.LastSuccessfulTime = &t
+		}
+
+		// Count completed jobs owned by this cronjob
+		jobs, err := c.Clientset.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("vesta.sh/triggered-from=%s", cj.Name),
+		})
+		if err == nil {
+			status.RunCount = len(jobs.Items)
+		}
+		// Also count jobs with the standard owner reference
+		if status.RunCount == 0 {
+			allJobs, err := c.Clientset.BatchV1().Jobs(namespace).List(ctx, metav1.ListOptions{})
+			if err == nil {
+				for _, j := range allJobs.Items {
+					for _, ref := range j.OwnerReferences {
+						if ref.Name == cj.Name {
+							status.RunCount++
+						}
+					}
+				}
+			}
+		}
+
+		results = append(results, status)
+	}
+
+	return results, nil
+}
+
+// ListFiles lists files in a pod at the given path using exec.
+func (c *Client) ListFiles(ctx context.Context, namespace, podName, containerName, path string) (string, error) {
+	return c.execInPod(ctx, namespace, podName, containerName, []string{"ls", "-la", "--color=never", path})
+}
+
+// ReadFile reads a file from a pod using exec.
+func (c *Client) ReadFile(ctx context.Context, namespace, podName, containerName, path string) (string, error) {
+	return c.execInPod(ctx, namespace, podName, containerName, []string{"cat", path})
+}
+
+// WriteFile writes content to a file in a pod.
+func (c *Client) WriteFile(ctx context.Context, namespace, podName, containerName, path, content string) error {
+	_, err := c.execInPod(ctx, namespace, podName, containerName, []string{"sh", "-c", fmt.Sprintf("cat > %s", path)})
+	return err
+}
+
+func (c *Client) execInPod(ctx context.Context, namespace, podName, containerName string, command []string) (string, error) {
+	req := c.Clientset.CoreV1().RESTClient().Post().
+		Namespace(namespace).
+		Resource("pods").
+		Name(podName).
+		SubResource("exec").
+		Param("container", containerName).
+		Param("stdout", "true").
+		Param("stderr", "true")
+
+	for _, cmd := range command {
+		req.Param("command", cmd)
+	}
+
+	result := req.Do(ctx)
+	raw, err := result.Raw()
+	if err != nil {
+		return "", fmt.Errorf("exec in pod %s: %w", podName, err)
+	}
+	return string(raw), nil
 }

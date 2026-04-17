@@ -228,6 +228,8 @@ export default function ProjectDetailPage() {
       </div>
 
       <NotificationsSection projectId={projectId!} />
+      <AlertRulesSection projectId={projectId!} />
+      <DependencyGraphSection projectId={projectId!} />
     </div>
   )
 }
@@ -1040,6 +1042,7 @@ function NotificationsSection({ projectId }: { projectId: string }) {
   const [showAdd, setShowAdd] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [testingId, setTestingId] = useState<string | null>(null)
+  const [editingEventsId, setEditingEventsId] = useState<string | null>(null)
 
   const { data: channels } = useQuery({
     queryKey: ['notifications', projectId],
@@ -1071,6 +1074,12 @@ function NotificationsSection({ projectId }: { projectId: string }) {
     onSettled: () => setTestingId(null),
   })
 
+  const updateEventsMutation = useMutation({
+    mutationFn: ({ channelId, events }: { channelId: string; events: string[] }) =>
+      api.updateNotificationChannel(projectId, channelId, { events }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['notifications', projectId] }),
+  })
+
   const typeLabel = (type: string) => NOTIFICATION_TYPES.find(t => t.value === type)?.label || type
 
   return (
@@ -1091,36 +1100,79 @@ function NotificationsSection({ projectId }: { projectId: string }) {
       ) : (
         <div className="space-y-2">
           {channels.items.map((ch: any) => (
-            <div key={ch.id} className="flex items-center justify-between py-2 border-b border-border-subtle last:border-0">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${ch.enabled ? 'bg-status-running' : 'bg-text-tertiary'}`} />
-                <div className="min-w-0">
-                  <p className="text-sm text-text-primary truncate">{ch.name}</p>
-                  <span className="text-[11px] font-mono text-text-tertiary">{typeLabel(ch.type)}</span>
+            <div key={ch.id} className="py-2 border-b border-border-subtle last:border-0">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${ch.enabled ? 'bg-status-running' : 'bg-text-tertiary'}`} />
+                  <div className="min-w-0">
+                    <p className="text-sm text-text-primary truncate">{ch.name}</p>
+                    <span className="text-[11px] font-mono text-text-tertiary">{typeLabel(ch.type)}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <button
+                    onClick={() => setEditingEventsId(editingEventsId === ch.id ? null : ch.id)}
+                    className="text-[11px] text-text-tertiary hover:text-accent transition-colors"
+                    title="Edit subscribed events"
+                  >
+                    Events
+                  </button>
+                  <button
+                    onClick={() => testMutation.mutate(ch.id)}
+                    disabled={testingId === ch.id}
+                    className="text-[11px] text-accent hover:text-accent-glow transition-colors disabled:opacity-40"
+                    title="Send test notification"
+                  >
+                    {testingId === ch.id ? '...' : 'Test'}
+                  </button>
+                  <button
+                    onClick={() => toggleMutation.mutate({ channelId: ch.id, enabled: !ch.enabled })}
+                    className={`text-[11px] transition-colors ${ch.enabled ? 'text-status-running hover:text-text-secondary' : 'text-text-tertiary hover:text-status-running'}`}
+                  >
+                    {ch.enabled ? 'On' : 'Off'}
+                  </button>
+                  <button
+                    onClick={() => { if (confirm(`Delete channel "${ch.name}"?`)) deleteMutation.mutate(ch.id) }}
+                    className="text-[11px] text-text-tertiary hover:text-status-failed transition-colors"
+                  >
+                    &times;
+                  </button>
                 </div>
               </div>
-              <div className="flex items-center gap-1.5 flex-shrink-0">
-                <button
-                  onClick={() => testMutation.mutate(ch.id)}
-                  disabled={testingId === ch.id}
-                  className="text-[11px] text-accent hover:text-accent-glow transition-colors disabled:opacity-40"
-                  title="Send test notification"
-                >
-                  {testingId === ch.id ? '...' : 'Test'}
-                </button>
-                <button
-                  onClick={() => toggleMutation.mutate({ channelId: ch.id, enabled: !ch.enabled })}
-                  className={`text-[11px] transition-colors ${ch.enabled ? 'text-status-running hover:text-text-secondary' : 'text-text-tertiary hover:text-status-running'}`}
-                >
-                  {ch.enabled ? 'On' : 'Off'}
-                </button>
-                <button
-                  onClick={() => { if (confirm(`Delete channel "${ch.name}"?`)) deleteMutation.mutate(ch.id) }}
-                  className="text-[11px] text-text-tertiary hover:text-status-failed transition-colors"
-                >
-                  &times;
-                </button>
+              {/* Event subscriptions display */}
+              <div className="mt-1.5 ml-4 flex flex-wrap gap-1">
+                {(ch.events && ch.events.length > 0) ? ch.events.map((evt: string) => (
+                  <span key={evt} className="text-[10px] font-mono bg-accent/10 text-accent px-1.5 py-0.5 rounded">
+                    {EVENT_TYPES.find(e => e.value === evt)?.label || evt}
+                  </span>
+                )) : (
+                  <span className="text-[10px] text-text-tertiary italic">All events</span>
+                )}
               </div>
+              {/* Inline event editor */}
+              {editingEventsId === ch.id && (
+                <div className="mt-2 ml-4 p-2 bg-surface-1 border border-border rounded-lg">
+                  <p className="text-[10px] text-text-tertiary mb-1.5">Select events to subscribe to (none = all):</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {EVENT_TYPES.map(evt => {
+                      const selected = (ch.events || []).includes(evt.value)
+                      return (
+                        <button
+                          key={evt.value}
+                          onClick={() => {
+                            const current: string[] = ch.events || []
+                            const next = selected ? current.filter((e: string) => e !== evt.value) : [...current, evt.value]
+                            updateEventsMutation.mutate({ channelId: ch.id, events: next })
+                          }}
+                          className={`text-[10px] font-mono px-2 py-0.5 rounded border transition-colors ${selected ? 'bg-accent/20 text-accent border-accent/30' : 'bg-surface-2 text-text-tertiary border-border hover:border-accent/30'}`}
+                        >
+                          {evt.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -1274,5 +1326,305 @@ function Spinner() {
         </div>
       </div>
     </div>
+  )
+}
+
+const ALERT_METRICS = [
+  { value: 'cpu', label: 'CPU Usage (%)', unit: '%' },
+  { value: 'memory', label: 'Memory Usage (%)', unit: '%' },
+  { value: 'restarts', label: 'Pod Restarts', unit: '' },
+  { value: 'replicas', label: 'Ready Replicas', unit: '' },
+  { value: 'http_error_rate', label: 'HTTP Error Rate', unit: '%' },
+]
+
+const ALERT_OPERATORS = ['>', '<', '>=', '<=', '=']
+
+function AlertRulesSection({ projectId }: { projectId: string }) {
+  const queryClient = useQueryClient()
+  const [showAdd, setShowAdd] = useState(false)
+  const [name, setName] = useState('')
+  const [metric, setMetric] = useState('cpu')
+  const [operator, setOperator] = useState('>')
+  const [threshold, setThreshold] = useState('')
+  const [duration, setDuration] = useState('60')
+  const [appId, setAppId] = useState('')
+  const [environment, setEnvironment] = useState('')
+
+  const { data: rules } = useQuery({
+    queryKey: ['alertRules', projectId],
+    queryFn: () => api.listAlertRules(projectId),
+  })
+
+  const { data: apps } = useQuery({
+    queryKey: ['apps', projectId],
+    queryFn: () => api.listApps(projectId),
+    enabled: showAdd,
+  })
+
+  const createMutation = useMutation({
+    mutationFn: () => api.createAlertRule(projectId, {
+      appId,
+      name,
+      metric,
+      operator,
+      threshold: parseFloat(threshold),
+      durationSeconds: parseInt(duration) || 60,
+      environment,
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['alertRules', projectId] })
+      setShowAdd(false)
+      setName('')
+      setThreshold('')
+    },
+  })
+
+  const toggleMutation = useMutation({
+    mutationFn: ({ ruleId, enabled }: { ruleId: string; enabled: boolean }) =>
+      api.updateAlertRule(projectId, ruleId, { enabled }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['alertRules', projectId] }),
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (ruleId: string) => api.deleteAlertRule(projectId, ruleId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['alertRules', projectId] }),
+  })
+
+  const metricLabel = (m: string) => ALERT_METRICS.find(a => a.value === m)?.label || m
+
+  return (
+    <section className="card p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="section-title">Alert Rules</h3>
+        <button onClick={() => setShowAdd(!showAdd)} className="text-xs text-accent hover:text-accent-glow transition-colors">
+          {showAdd ? 'Cancel' : '+ Add Rule'}
+        </button>
+      </div>
+
+      {showAdd && (
+        <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate() }} className="bg-surface-1 border border-border rounded-lg p-4 mb-3 space-y-3 animate-slide-up">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Name</label>
+              <input value={name} onChange={e => setName(e.target.value)} placeholder="High CPU alert" className="input-field text-xs" required />
+            </div>
+            <div>
+              <label className="label">App (optional)</label>
+              <select value={appId} onChange={e => setAppId(e.target.value)} className="input-field text-xs">
+                <option value="">All apps</option>
+                {(apps?.items || []).map((a: any) => (
+                  <option key={a.name} value={a.name}>{a.name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-4 gap-3">
+            <div>
+              <label className="label">Metric</label>
+              <select value={metric} onChange={e => setMetric(e.target.value)} className="input-field text-xs">
+                {ALERT_METRICS.map(m => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Operator</label>
+              <select value={operator} onChange={e => setOperator(e.target.value)} className="input-field text-xs font-mono">
+                {ALERT_OPERATORS.map(o => (
+                  <option key={o} value={o}>{o}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Threshold</label>
+              <input type="number" step="any" value={threshold} onChange={e => setThreshold(e.target.value)} placeholder="80" className="input-field text-xs font-mono" required />
+            </div>
+            <div>
+              <label className="label">Duration (sec)</label>
+              <input type="number" min="10" value={duration} onChange={e => setDuration(e.target.value)} placeholder="60" className="input-field text-xs font-mono" />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button type="submit" disabled={createMutation.isPending || !name || !threshold} className="btn-primary text-xs">
+              {createMutation.isPending ? 'Creating...' : 'Create Rule'}
+            </button>
+            <button type="button" onClick={() => setShowAdd(false)} className="btn-ghost text-xs">Cancel</button>
+          </div>
+          {createMutation.isError && <p className="text-xs text-status-failed">{(createMutation.error as Error).message}</p>}
+        </form>
+      )}
+
+      {(!rules?.items || rules.items.length === 0) && !showAdd ? (
+        <p className="text-xs text-text-tertiary">No alert rules configured</p>
+      ) : (
+        <div className="space-y-1.5">
+          {(rules?.items || []).map((rule: any) => (
+            <div key={rule.id} className="flex items-center justify-between py-2 border-b border-border-subtle last:border-0 group">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${rule.enabled ? 'bg-status-running' : 'bg-text-tertiary'}`} />
+                <div className="min-w-0">
+                  <p className="text-sm text-text-primary truncate">{rule.name}</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[10px] font-mono text-accent bg-accent/10 px-1.5 py-0.5 rounded">
+                      {metricLabel(rule.metric)} {rule.operator} {rule.threshold}
+                    </span>
+                    {rule.appId && (
+                      <span className="text-[10px] font-mono text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded">{rule.appId}</span>
+                    )}
+                    <span className="text-[10px] text-text-tertiary">for {rule.durationSeconds}s</span>
+                    {rule.lastTriggeredAt && (
+                      <span className="text-[10px] text-status-failed">Last fired: {new Date(rule.lastTriggeredAt).toLocaleString()}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                <button
+                  onClick={() => toggleMutation.mutate({ ruleId: rule.id, enabled: !rule.enabled })}
+                  className={`text-[11px] transition-colors ${rule.enabled ? 'text-status-running hover:text-text-secondary' : 'text-text-tertiary hover:text-status-running'}`}
+                >
+                  {rule.enabled ? 'On' : 'Off'}
+                </button>
+                <button
+                  onClick={() => { if (confirm(`Delete alert "${rule.name}"?`)) deleteMutation.mutate(rule.id) }}
+                  className="text-[11px] text-text-tertiary hover:text-status-failed transition-colors"
+                >
+                  &times;
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function DependencyGraphSection({ projectId }: { projectId: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['dependencies', projectId],
+    queryFn: () => api.getAppDependencies(projectId),
+  })
+
+  if (isLoading) return null
+
+  const nodes = data?.nodes || []
+  const edges = data?.edges || []
+
+  if (nodes.length === 0) return null
+
+  // Simple force-directed-like layout using circular placement
+  const appNodes = nodes.filter(n => n.type === 'app')
+  const extNodes = nodes.filter(n => n.type === 'external')
+
+  const width = 600
+  const height = 350
+  const cx = width / 2
+  const cy = height / 2
+
+  const positions: Record<string, { x: number; y: number }> = {}
+
+  // Place app nodes in inner circle
+  appNodes.forEach((n, i) => {
+    const angle = (2 * Math.PI * i) / Math.max(appNodes.length, 1) - Math.PI / 2
+    const r = Math.min(appNodes.length > 1 ? 100 : 0, 100)
+    positions[n.id] = { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) }
+  })
+
+  // Place external nodes in outer circle
+  extNodes.forEach((n, i) => {
+    const angle = (2 * Math.PI * i) / Math.max(extNodes.length, 1) - Math.PI / 2
+    const r = 150
+    positions[n.id] = { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) }
+  })
+
+  return (
+    <section className="card p-5">
+      <h3 className="section-title mb-3">Dependency Graph</h3>
+      <div className="overflow-auto">
+        <svg width={width} height={height} className="w-full" viewBox={`0 0 ${width} ${height}`}>
+          <defs>
+            <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" className="fill-accent/60" />
+            </marker>
+          </defs>
+
+          {/* Edges */}
+          {edges.map((edge, i) => {
+            const from = positions[edge.from]
+            const to = positions[edge.to]
+            if (!from || !to) return null
+            // Shorten line to not overlap node circles
+            const dx = to.x - from.x
+            const dy = to.y - from.y
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1
+            const pad = 28
+            return (
+              <g key={i}>
+                <line
+                  x1={from.x + (dx / dist) * pad}
+                  y1={from.y + (dy / dist) * pad}
+                  x2={to.x - (dx / dist) * pad}
+                  y2={to.y - (dy / dist) * pad}
+                  className="stroke-accent/30"
+                  strokeWidth={1.5}
+                  markerEnd="url(#arrowhead)"
+                />
+                <text
+                  x={(from.x + to.x) / 2}
+                  y={(from.y + to.y) / 2 - 5}
+                  className="fill-text-tertiary text-[9px]"
+                  textAnchor="middle"
+                  fontFamily="monospace"
+                >
+                  {edge.label}
+                </text>
+              </g>
+            )
+          })}
+
+          {/* Nodes */}
+          {nodes.map((node) => {
+            const pos = positions[node.id]
+            if (!pos) return null
+            const isApp = node.type === 'app'
+            return (
+              <g key={node.id}>
+                <circle
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={isApp ? 24 : 18}
+                  className={isApp ? 'fill-accent/15 stroke-accent/50' : 'fill-surface-3 stroke-border'}
+                  strokeWidth={1.5}
+                />
+                <text
+                  x={pos.x}
+                  y={pos.y + 1}
+                  textAnchor="middle"
+                  dominantBaseline="middle"
+                  className={`text-[10px] ${isApp ? 'fill-accent' : 'fill-text-secondary'}`}
+                  fontWeight={isApp ? 600 : 400}
+                >
+                  {node.name.length > 12 ? node.name.slice(0, 11) + '…' : node.name}
+                </text>
+                {!isApp && (
+                  <text
+                    x={pos.x}
+                    y={pos.y + 12}
+                    textAnchor="middle"
+                    className="fill-text-tertiary text-[8px]"
+                  >
+                    external
+                  </text>
+                )}
+              </g>
+            )
+          })}
+        </svg>
+      </div>
+      {edges.length === 0 && (
+        <p className="text-xs text-text-tertiary mt-2">No inter-app dependencies detected from environment variables</p>
+      )}
+    </section>
   )
 }

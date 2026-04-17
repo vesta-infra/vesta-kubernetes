@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/Layout'
 import SetupPage from './pages/SetupPage'
 import LoginPage from './pages/LoginPage'
+import AcceptInvitePage from './pages/AcceptInvitePage'
 import DashboardPage from './pages/DashboardPage'
 import ProjectsPage from './pages/ProjectsPage'
 import ProjectDetailPage from './pages/ProjectDetailPage'
@@ -17,6 +18,7 @@ export default function App() {
     <Routes>
       <Route path="/setup" element={<SetupPage />} />
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/accept-invite" element={<AcceptInvitePage />} />
       <Route path="/" element={<Layout />}>
         <Route index element={<DashboardPage />} />
         <Route path="projects" element={<ProjectsPage />} />

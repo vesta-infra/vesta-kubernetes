@@ -128,6 +128,32 @@ func (d *DB) UserCount(ctx context.Context) (int, error) {
 	return count, err
 }
 
+func (d *DB) CreateInviteToken(ctx context.Context, userID, token string, expiresAt time.Time) error {
+	_, err := d.ExecContext(ctx,
+		`INSERT INTO invite_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)`,
+		userID, token, expiresAt)
+	return err
+}
+
+func (d *DB) GetUserByInviteToken(ctx context.Context, token string) (*User, error) {
+	u := &User{}
+	err := d.QueryRowContext(ctx,
+		`SELECT u.id, u.email, u.username, u.password_hash, u.display_name, u.role, u.created_at, u.updated_at
+		 FROM users u JOIN invite_tokens t ON u.id = t.user_id
+		 WHERE t.token = $1 AND t.expires_at > now() AND t.used_at IS NULL`, token,
+	).Scan(&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.DisplayName, &u.Role, &u.CreatedAt, &u.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return u, err
+}
+
+func (d *DB) MarkInviteTokenUsed(ctx context.Context, token string) error {
+	_, err := d.ExecContext(ctx,
+		`UPDATE invite_tokens SET used_at = now() WHERE token = $1`, token)
+	return err
+}
+
 func (d *DB) GetUserTeamIDs(ctx context.Context, userID string) ([]string, error) {
 	rows, err := d.QueryContext(ctx,
 		`SELECT team_id FROM team_members WHERE user_id = $1`, userID)

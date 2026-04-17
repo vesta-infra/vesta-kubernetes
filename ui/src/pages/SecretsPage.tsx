@@ -242,24 +242,50 @@ function SharedSecretsSection() {
   const role = useUserRole()
   const isAdmin = role === 'admin'
   const { data: projects } = useQuery({ queryKey: ['projects'], queryFn: () => api.listProjects() })
-  const [selectedProject, setSelectedProject] = useState('')
+  const [selectedProject, setSelectedProject] = useState('__all__')
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
   const [keys, setKeys] = useState([{ key: '', value: '' }])
+  const [createProject, setCreateProject] = useState('')
 
-  const projectId = selectedProject || projects?.items?.[0]?.name || ''
+  const projectList: string[] = (projects?.items || []).map((p: any) => p.name)
+  const isAllMode = selectedProject === '__all__'
+  const projectId = isAllMode ? '' : (selectedProject || projectList[0] || '')
 
-  const { data, isLoading } = useQuery({
+  // For "All" mode: fetch shared secrets from every project
+  const allProjectQueries = useQuery({
+    queryKey: ['sharedSecrets', '__all__', projectList.join(',')],
+    queryFn: async () => {
+      const results = await Promise.all(
+        projectList.map(async (pName: string) => {
+          try {
+            const res = await api.listSharedSecrets(pName)
+            return (res?.items || []).map((s: any) => ({ ...s, _project: pName }))
+          } catch { return [] }
+        })
+      )
+      return { items: results.flat() }
+    },
+    enabled: isAllMode && projectList.length > 0,
+  })
+
+  const singleProjectQuery = useQuery({
     queryKey: ['sharedSecrets', projectId],
     queryFn: () => api.listSharedSecrets(projectId),
-    enabled: !!projectId,
+    enabled: !isAllMode && !!projectId,
   })
+
+  const data = isAllMode ? allProjectQueries.data : singleProjectQuery.data
+  const isLoading = isAllMode ? allProjectQueries.isLoading : singleProjectQuery.isLoading
+
+  // For create form, use a separate project selector
+  const effectiveCreateProject = createProject || projectList[0] || ''
 
   const createMutation = useMutation({
     mutationFn: () => {
       const secretData: Record<string, string> = {}
       keys.forEach(kv => { if (kv.key) secretData[kv.key] = kv.value })
-      return api.createSharedSecret(projectId, { name, data: secretData })
+      return api.createSharedSecret(effectiveCreateProject, { name, data: secretData })
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['sharedSecrets'] })
@@ -270,7 +296,7 @@ function SharedSecretsSection() {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (n: string) => api.deleteSharedSecret(projectId, n),
+    mutationFn: ({ project, name }: { project: string; name: string }) => api.deleteSharedSecret(project, name),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['sharedSecrets'] }),
   })
 
@@ -288,16 +314,17 @@ function SharedSecretsSection() {
         <div className="flex items-center gap-3">
           {(projects?.items?.length ?? 0) > 0 && (
             <select
-              value={projectId}
+              value={selectedProject}
               onChange={(e) => setSelectedProject(e.target.value)}
               className="input-field text-xs"
             >
+              <option value="__all__">All Projects</option>
               {projects?.items?.map((p: any) => (
                 <option key={p.name} value={p.name}>{p.name}</option>
               ))}
             </select>
           )}
-          <button onClick={() => setShowCreate(!showCreate)} className="btn-primary whitespace-nowrap" disabled={!projectId}>
+          <button onClick={() => setShowCreate(!showCreate)} className="btn-primary whitespace-nowrap" disabled={projectList.length === 0}>
             <span className="flex items-center gap-2">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
@@ -311,10 +338,20 @@ function SharedSecretsSection() {
       {showCreate && (
         <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate() }} className="card p-5 space-y-4 animate-slide-up">
           <h3 className="section-title">Create Shared Secret</h3>
-          <div>
-            <label className="label">Secret Name</label>
-            <input value={name} onChange={(e) => setName(e.target.value)} className="input-field" placeholder="redis-config" required />
-            <p className="text-[11px] text-text-tertiary mt-1">Apps will reference this name when binding</p>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">Project</label>
+              <select value={effectiveCreateProject} onChange={(e) => setCreateProject(e.target.value)} className="input-field" required>
+                {projectList.map((p: string) => (
+                  <option key={p} value={p}>{p}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Secret Name</label>
+              <input value={name} onChange={(e) => setName(e.target.value)} className="input-field" placeholder="redis-config" required />
+              <p className="text-[11px] text-text-tertiary mt-1">Apps will reference this name when binding</p>
+            </div>
           </div>
           <div>
             <label className="label mb-2">Key-Value Pairs</label>
@@ -360,26 +397,33 @@ function SharedSecretsSection() {
 
       {isLoading && <Spinner />}
 
-      {!isLoading && (!data?.items || data.items.length === 0) && projectId && (
+      {!isLoading && (!data?.items || data.items.length === 0) && (projectId || isAllMode) && (
         <div className="card px-6 py-12 text-center">
           <div className="w-10 h-10 rounded-xl bg-surface-3 flex items-center justify-center mx-auto mb-3">
             <svg className="w-5 h-5 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
             </svg>
           </div>
-          <p className="text-sm text-text-secondary">No shared secrets in {projectId}</p>
+          <p className="text-sm text-text-secondary">No shared secrets{!isAllMode ? ` in ${projectId}` : ''}</p>
           <p className="text-xs text-text-tertiary mt-1">Create a shared secret and bind it to apps that need it</p>
         </div>
       )}
 
       {data?.items?.map((s: any) => (
-        <SharedSecretItem key={s.name} secret={s} projectId={projectId} isAdmin={isAdmin} onDelete={(n) => deleteMutation.mutate(n)} />
+        <SharedSecretItem
+          key={`${s._project || projectId}-${s.name}`}
+          secret={s}
+          projectId={s._project || projectId}
+          isAdmin={isAdmin}
+          onDelete={(n) => deleteMutation.mutate({ project: s._project || projectId, name: n })}
+          showProject={isAllMode}
+        />
       ))}
     </div>
   )
 }
 
-function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete }: { secret: any; projectId: string; isAdmin: boolean; onDelete: (name: string) => void }) {
+function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete, showProject }: { secret: any; projectId: string; isAdmin: boolean; onDelete: (name: string) => void; showProject?: boolean }) {
   const queryClient = useQueryClient()
   const [revealed, setRevealed] = useState<Record<string, string> | null>(null)
   const [revealLoading, setRevealLoading] = useState(false)
@@ -437,6 +481,9 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete }: { secret:
           </div>
           <div>
             <p className="text-sm font-medium text-text-primary font-mono">{s.name}</p>
+            {showProject && (
+              <span className="text-[11px] text-accent font-mono">{projectId}</span>
+            )}
             {!revealed && (
               <div className="flex items-center gap-3 mt-1 flex-wrap">
                 {s.keys?.map((k: string) => (
