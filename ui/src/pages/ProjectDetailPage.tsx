@@ -1348,7 +1348,7 @@ function AlertRulesSection({ projectId }: { projectId: string }) {
   const [threshold, setThreshold] = useState('')
   const [duration, setDuration] = useState('60')
   const [appId, setAppId] = useState('')
-  const [environment, setEnvironment] = useState('')
+  const [environment] = useState('')
 
   const { data: rules } = useQuery({
     queryKey: ['alertRules', projectId],
@@ -1357,7 +1357,7 @@ function AlertRulesSection({ projectId }: { projectId: string }) {
 
   const { data: apps } = useQuery({
     queryKey: ['apps', projectId],
-    queryFn: () => api.listApps(projectId),
+    queryFn: () => api.listProjectApps(projectId),
     enabled: showAdd,
   })
 

@@ -2194,8 +2194,6 @@ function RateLimitSection({ appId, environments, role }: { appId: string; enviro
     },
   })
 
-  const hasLimits = data?.limits && Object.values(data.limits).some((v: any) => v)
-
   return (
     <section className="card p-5">
       <div className="flex items-center justify-between mb-3">
@@ -2279,7 +2277,7 @@ function PodFileBrowser({ appId, environments }: { appId: string; environments: 
     if (pods.length > 0 && !pod) setPod(pods[0])
   }, [pods, pod])
 
-  const { data: filesData, isLoading: filesLoading, refetch: refetchFiles } = useQuery({
+  const { data: filesData, isLoading: filesLoading } = useQuery({
     queryKey: ['podFiles', appId, env, pod, currentPath],
     queryFn: () => api.listPodFiles(appId, env, pod, currentPath),
     enabled: !!env && !!pod,
