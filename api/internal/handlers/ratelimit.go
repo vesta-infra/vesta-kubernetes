@@ -128,5 +128,9 @@ func (h *Handler) UpdateRateLimits(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "rate limits updated", "limits": req.Limits})
 
-	h.auditLog(c, "update_rate_limits", "app", appID, appID, project, req.Environment, req.Limits)
+	meta := make(map[string]interface{}, len(req.Limits))
+	for k, v := range req.Limits {
+		meta[k] = v
+	}
+	h.auditLog(c, "update_rate_limits", "app", appID, appID, project, req.Environment, meta)
 }

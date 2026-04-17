@@ -34,7 +34,7 @@ func (w *ScheduledDeploymentWorker) Start(ctx context.Context) {
 }
 
 func (w *ScheduledDeploymentWorker) processPending() {
-	items, err := w.DB.GetPendingScheduledDeployments()
+	items, err := w.DB.GetPendingScheduledDeployments(context.Background())
 	if err != nil {
 		log.Printf("[scheduler] Error fetching pending deployments: %v", err)
 		return
@@ -48,7 +48,10 @@ func (w *ScheduledDeploymentWorker) processPending() {
 func (w *ScheduledDeploymentWorker) execute(sd db.ScheduledDeployment) {
 	log.Printf("[scheduler] Executing scheduled deployment %s for app %s", sd.ID, sd.AppID)
 
-	if err := w.DB.UpdateScheduledDeploymentStatus(sd.ID, "running", ""); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := w.DB.UpdateScheduledDeploymentStatus(ctx, sd.ID, "running", ""); err != nil {
 		log.Printf("[scheduler] Error updating status to running: %v", err)
 		return
 	}
@@ -62,18 +65,15 @@ func (w *ScheduledDeploymentWorker) execute(sd db.ScheduledDeployment) {
 	// Patch the VestaApp to update the image (triggers reconciliation by operator)
 	patch := fmt.Sprintf(`{"spec":{"image":{"repository":"%s","tag":"%s"}}}`, image, tag)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
 	_, err := w.K8s.PatchResource(ctx, k8s.VestaAppGVR, vestaSystemNS, sd.AppID, []byte(patch))
 	if err != nil {
 		msg := fmt.Sprintf("Failed to deploy: %v", err)
 		log.Printf("[scheduler] %s", msg)
-		_ = w.DB.UpdateScheduledDeploymentStatus(sd.ID, "failed", msg)
+		_ = w.DB.UpdateScheduledDeploymentStatus(ctx, sd.ID, "failed", msg)
 		return
 	}
 
 	deployed := fmt.Sprintf("%s:%s", image, tag)
-	_ = w.DB.UpdateScheduledDeploymentStatus(sd.ID, "completed", "Deployed "+deployed)
+	_ = w.DB.UpdateScheduledDeploymentStatus(ctx, sd.ID, "completed", "Deployed "+deployed)
 	log.Printf("[scheduler] Completed scheduled deployment %s", sd.ID)
 }

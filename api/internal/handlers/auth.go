@@ -240,20 +240,15 @@ func (h *Handler) AcceptInvite(c *gin.Context) {
 	}
 
 	// Generate JWT so user is logged in immediately
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"userId":   user.ID,
-		"username": user.Username,
-		"role":     user.Role,
-		"exp":      time.Now().Add(24 * time.Hour).Unix(),
-	})
-	tokenString, err := token.SignedString([]byte(middleware.JWTSecret()))
+	tokenString, expiresAt, err := h.generateJWT(user)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to generate token"})
 		return
 	}
 
-	c.JSON(http.StatusOK, models.AuthResponse{
-		Token: tokenString,
+	c.JSON(http.StatusOK, models.AuthTokenResponse{
+		Token:     tokenString,
+		ExpiresAt: expiresAt.Format(time.RFC3339),
 		User: models.UserResponse{
 			ID:          user.ID,
 			Username:    user.Username,

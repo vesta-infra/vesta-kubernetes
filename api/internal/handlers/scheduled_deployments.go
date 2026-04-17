@@ -40,13 +40,12 @@ func (h *Handler) CreateScheduledDeployment(c *gin.Context) {
 		CreatedBy:   userID.(string),
 	}
 
-	if err := h.DB.CreateScheduledDeployment(sd); err != nil {
+	if err := h.DB.CreateScheduledDeployment(c.Request.Context(), sd); err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
 	}
 
-	go auditLog(h.DB, userID.(string), "schedule_deploy", "app", req.AppID, projectID, map[string]string{
-		"environment": req.Environment,
+	h.auditLog(c, "schedule_deploy", "app", req.AppID, req.AppID, projectID, req.Environment, map[string]interface{}{
 		"image":       req.Image,
 		"tag":         req.Tag,
 		"scheduledAt": req.ScheduledAt.Format(time.RFC3339),
@@ -58,7 +57,7 @@ func (h *Handler) CreateScheduledDeployment(c *gin.Context) {
 func (h *Handler) ListScheduledDeployments(c *gin.Context) {
 	projectID := c.Param("projectId")
 
-	items, err := h.DB.ListScheduledDeployments(projectID)
+	items, err := h.DB.ListScheduledDeployments(c.Request.Context(), projectID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
@@ -74,13 +73,12 @@ func (h *Handler) ListScheduledDeployments(c *gin.Context) {
 func (h *Handler) CancelScheduledDeployment(c *gin.Context) {
 	id := c.Param("deploymentId")
 
-	if err := h.DB.CancelScheduledDeployment(id); err != nil {
+	if err := h.DB.CancelScheduledDeployment(c.Request.Context(), id); err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
 	}
 
-	userID, _ := c.Get("userId")
-	go auditLog(h.DB, userID.(string), "cancel_scheduled_deploy", "scheduled_deployment", id, c.Param("projectId"), nil)
+	h.auditLog(c, "cancel_scheduled_deploy", "scheduled_deployment", id, id, c.Param("projectId"), "", nil)
 
 	c.JSON(http.StatusOK, gin.H{"status": "cancelled"})
 }
