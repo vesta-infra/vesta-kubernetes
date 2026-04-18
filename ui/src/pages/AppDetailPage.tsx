@@ -75,15 +75,19 @@ export default function AppDetailPage() {
   })
 
   const restartMutation = useMutation({
-    mutationFn: (env: string) => api.restart(appId!, env),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['app', appId] }),
+    mutationFn: async (env: string) => {
+      const result = await api.restart(appId!, env)
+      await queryClient.invalidateQueries({ queryKey: ['app', appId] })
+      return result
+    },
   })
 
   const rollbackMutation = useMutation({
-    mutationFn: ({ version, environment }: { version: number; environment: string }) => api.rollback(appId!, version, environment),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['app', appId] })
-      queryClient.invalidateQueries({ queryKey: ['deployments', appId] })
+    mutationFn: async ({ version, environment }: { version: number; environment: string }) => {
+      const result = await api.rollback(appId!, version, environment)
+      await queryClient.invalidateQueries({ queryKey: ['app', appId] })
+      await queryClient.invalidateQueries({ queryKey: ['deployments', appId] })
+      return result
     },
   })
 
@@ -401,7 +405,6 @@ export default function AppDetailPage() {
                         appEnvConfig={rawEnvs.find((e: any) => (typeof e === 'string' ? e : e.name) === env)}
                         appImage={app.spec?.image}
                         projectId={projectId}
-                        appName={app.name}
                         appGitRepo={app.spec?.git?.repository || ''}
                         canRemove={appEnvironments.length > 1}
                         role={role}
@@ -748,8 +751,8 @@ export default function AppDetailPage() {
   )
 }
 
-function EnvironmentRow({ env, envConfig, appEnvConfig, appImage, projectId, appName, appGitRepo, canRemove, role, onRestart, onRemove, restartPending, removePending }: {
-  env: string; envConfig: any; appEnvConfig: any; appImage: any; projectId: string; appName: string; appGitRepo: string; canRemove: boolean; role: string
+function EnvironmentRow({ env, envConfig, appEnvConfig, appImage, projectId, appGitRepo, canRemove, role, onRestart, onRemove, restartPending, removePending }: {
+  env: string; envConfig: any; appEnvConfig: any; appImage: any; projectId: string; appGitRepo: string; canRemove: boolean; role: string
   onRestart: () => void; onRemove: () => void; restartPending: boolean; removePending: boolean
 }) {
   const queryClient = useQueryClient()
@@ -807,7 +810,7 @@ function EnvironmentRow({ env, envConfig, appEnvConfig, appImage, projectId, app
           )}
           {role !== 'viewer' && (
             <button
-              onClick={() => { if (confirm(`Restart "${appName}" in "${env}"?`)) onRestart() }}
+              onClick={onRestart}
               disabled={restartPending}
               className="text-xs text-text-tertiary hover:text-accent transition-colors"
             >
@@ -816,7 +819,7 @@ function EnvironmentRow({ env, envConfig, appEnvConfig, appImage, projectId, app
           )}
           {canRemove && role !== 'viewer' && (
             <button
-              onClick={() => { if (confirm(`Remove "${appName}" from "${env}"?`)) onRemove() }}
+              onClick={onRemove}
               disabled={removePending}
               className="text-xs text-text-tertiary hover:text-status-failed transition-colors"
             >
