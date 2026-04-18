@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -22,7 +23,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 )
@@ -624,22 +627,38 @@ func base64Encode(s string) string {
 
 func (c *Client) execInPod(ctx context.Context, namespace, podName, containerName string, command []string) (string, error) {
 	req := c.Clientset.CoreV1().RESTClient().Post().
-		Namespace(namespace).
 		Resource("pods").
 		Name(podName).
-		SubResource("exec").
-		Param("container", containerName).
-		Param("stdout", "true").
-		Param("stderr", "true")
+		Namespace(namespace).
+		SubResource("exec")
 
-	for _, cmd := range command {
-		req.Param("command", cmd)
-	}
+	req.VersionedParams(&corev1.PodExecOptions{
+		Container: containerName,
+		Command:   command,
+		Stdout:    true,
+		Stderr:    true,
+	}, scheme.ParameterCodec)
 
-	result := req.Do(ctx)
-	raw, err := result.Raw()
+	executor, err := remotecommand.NewSPDYExecutor(c.Config, http.MethodPost, req.URL())
 	if err != nil {
 		return "", fmt.Errorf("exec in pod %s: %w", podName, err)
 	}
-	return string(raw), nil
+
+	var stdout, stderr bytes.Buffer
+	err = executor.StreamWithContext(ctx, remotecommand.StreamOptions{
+		Stdout: &stdout,
+		Stderr: &stderr,
+	})
+	if err != nil {
+		if stderr.Len() > 0 {
+			return "", fmt.Errorf("exec in pod %s: %w: %s", podName, err, strings.TrimSpace(stderr.String()))
+		}
+		return "", fmt.Errorf("exec in pod %s: %w", podName, err)
+	}
+
+	if stderr.Len() > 0 {
+		return "", fmt.Errorf("exec in pod %s: %s", podName, strings.TrimSpace(stderr.String()))
+	}
+
+	return stdout.String(), nil
 }
