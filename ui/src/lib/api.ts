@@ -64,6 +64,12 @@ export const api = {
       body: JSON.stringify({ token, newPassword }),
     }),
 
+  acceptInvite: (token: string, password: string) =>
+    request<{ token: string; user: any }>('/auth/accept-invite', {
+      method: 'POST',
+      body: JSON.stringify({ token, password }),
+    }),
+
   // User
   getCurrentUser: () =>
     request<{ id: string; username: string; email: string; displayName: string; role: string; teamIds: string[] }>('/users/me'),
@@ -356,6 +362,28 @@ export const api = {
     return request<{ items: any[]; total: number }>(`/projects/${projectId}/notifications/history${qs}`)
   },
 
+  // Alert rules
+  createAlertRule: (projectId: string, data: any) =>
+    request<any>(`/projects/${projectId}/alerts`, { method: 'POST', body: JSON.stringify(data) }),
+  listAlertRules: (projectId: string) =>
+    request<{ items: any[]; total: number }>(`/projects/${projectId}/alerts`),
+  updateAlertRule: (projectId: string, ruleId: string, data: { enabled: boolean }) =>
+    request<any>(`/projects/${projectId}/alerts/${ruleId}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteAlertRule: (projectId: string, ruleId: string) =>
+    request<any>(`/projects/${projectId}/alerts/${ruleId}`, { method: 'DELETE' }),
+
+  // Dependencies
+  getAppDependencies: (projectId: string) =>
+    request<{ nodes: any[]; edges: any[] }>(`/projects/${projectId}/dependencies`),
+
+  // Scheduled deployments
+  createScheduledDeployment: (projectId: string, data: any) =>
+    request<any>(`/projects/${projectId}/scheduled-deployments`, { method: 'POST', body: JSON.stringify(data) }),
+  listScheduledDeployments: (projectId: string) =>
+    request<{ items: any[]; total: number }>(`/projects/${projectId}/scheduled-deployments`),
+  cancelScheduledDeployment: (projectId: string, deploymentId: string) =>
+    request<any>(`/projects/${projectId}/scheduled-deployments/${deploymentId}`, { method: 'DELETE' }),
+
   // Audit Log
   listAuditLogs: (params?: { projectId?: string; appId?: string; action?: string; userId?: string; resourceType?: string; from?: string; to?: string; limit?: number; offset?: number }) => {
     const qs = new URLSearchParams()
@@ -401,12 +429,50 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
-  // Sleep / Wake
+  // Sleep / Wake / Stop / Start
   sleepApp: (appId: string) =>
     request<any>(`/apps/${appId}/sleep`, { method: 'POST' }),
 
   wakeApp: (appId: string) =>
     request<any>(`/apps/${appId}/wake`, { method: 'POST' }),
+
+  stopApp: (appId: string) =>
+    request<any>(`/apps/${appId}/stop`, { method: 'POST' }),
+
+  startApp: (appId: string) =>
+    request<any>(`/apps/${appId}/start`, { method: 'POST' }),
+
+  // Cronjob management
+  triggerCronJob: (appId: string, name: string, environment: string) =>
+    request<any>(`/apps/${appId}/cronjobs/${name}/trigger`, {
+      method: 'POST',
+      body: JSON.stringify({ environment }),
+    }),
+
+  getCronJobStatuses: (appId: string, environment?: string) => {
+    const qs = environment ? `?environment=${environment}` : ''
+    return request<any>(`/apps/${appId}/cronjobs/status${qs}`)
+  },
+
+  // Pod file browser
+  listPodFiles: (appId: string, environment: string, pod: string, path: string, container?: string) => {
+    const qs = new URLSearchParams({ environment, pod, path })
+    if (container) qs.set('container', container)
+    return request<any>(`/apps/${appId}/files?${qs}`)
+  },
+  readPodFile: (appId: string, environment: string, pod: string, path: string, container?: string) => {
+    const qs = new URLSearchParams({ environment, pod, path })
+    if (container) qs.set('container', container)
+    return request<any>(`/apps/${appId}/files/read?${qs}`)
+  },
+  writePodFile: (appId: string, data: { environment: string; pod: string; path: string; content: string; container?: string }) =>
+    request<any>(`/apps/${appId}/files/write`, { method: 'POST', body: JSON.stringify(data) }),
+
+  // Rate limiting
+  getRateLimits: (appId: string, environment: string) =>
+    request<any>(`/apps/${appId}/rate-limits?environment=${environment}`),
+  updateRateLimits: (appId: string, data: { environment: string; limits: Record<string, string> }) =>
+    request<any>(`/apps/${appId}/rate-limits`, { method: 'PUT', body: JSON.stringify(data) }),
 
   // Environment Cloning
   cloneEnvironment: (projectId: string, envName: string, data: { name: string; branch?: string }) =>

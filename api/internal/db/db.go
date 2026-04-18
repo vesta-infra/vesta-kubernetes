@@ -187,4 +187,50 @@ CREATE INDEX IF NOT EXISTS idx_builds_app ON builds(app_id);
 CREATE INDEX IF NOT EXISTS idx_builds_project ON builds(project_id);
 CREATE INDEX IF NOT EXISTS idx_builds_status ON builds(status);
 CREATE INDEX IF NOT EXISTS idx_builds_created ON builds(created_at);
+
+CREATE TABLE IF NOT EXISTS invite_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL UNIQUE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_invite_tokens_hash ON invite_tokens(token_hash);
+
+CREATE TABLE IF NOT EXISTS alert_rules (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id TEXT NOT NULL,
+    app_id TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL,
+    metric TEXT NOT NULL CHECK (metric IN ('cpu', 'memory', 'restarts', 'replicas', 'http_error_rate')),
+    operator TEXT NOT NULL CHECK (operator IN ('>', '<', '>=', '<=', '=')),
+    threshold DOUBLE PRECISION NOT NULL,
+    duration_seconds INT NOT NULL DEFAULT 60,
+    environment TEXT NOT NULL DEFAULT '',
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    last_triggered_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_rules_project ON alert_rules(project_id);
+CREATE INDEX IF NOT EXISTS idx_alert_rules_app ON alert_rules(app_id);
+
+CREATE TABLE IF NOT EXISTS scheduled_deployments (
+    id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    app_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT '',
+    image TEXT NOT NULL DEFAULT '',
+    tag TEXT NOT NULL DEFAULT '',
+    scheduled_at TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','completed','failed','cancelled')),
+    result_message TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduled_deployments_project ON scheduled_deployments(project_id);
+CREATE INDEX IF NOT EXISTS idx_scheduled_deployments_status ON scheduled_deployments(status, scheduled_at);
 `

@@ -501,6 +501,11 @@ func (h *Handler) WakeApp(c *gin.Context) {
 	appId := c.Param("appId")
 
 	patch := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"sleep": map[string]interface{}{
+				"enabled": false,
+			},
+		},
 		"status": map[string]interface{}{
 			"phase": "Pending",
 		},
@@ -514,4 +519,134 @@ func (h *Handler) WakeApp(c *gin.Context) {
 
 	h.auditLog(c, "app.woken", "app", appId, appId, "", "", nil)
 	c.JSON(http.StatusOK, gin.H{"status": "waking", "app": appId})
+}
+
+// StopApp stops an app by scaling to zero replicas.
+func (h *Handler) StopApp(c *gin.Context) {
+	appId := c.Param("appId")
+
+	patch := map[string]interface{}{
+		"status": map[string]interface{}{
+			"phase": "Stopped",
+		},
+	}
+	patchBytes, _ := json.Marshal(patch)
+	_, err := h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId, patchBytes)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to stop app: %v", err)})
+		return
+	}
+
+	h.auditLog(c, "app.stopped", "app", appId, appId, "", "", nil)
+	c.JSON(http.StatusOK, gin.H{"status": "stopped", "app": appId})
+}
+
+// StartApp starts a stopped app by restoring its configured replicas.
+func (h *Handler) StartApp(c *gin.Context) {
+	appId := c.Param("appId")
+
+	patch := map[string]interface{}{
+		"status": map[string]interface{}{
+			"phase": "Pending",
+		},
+	}
+	patchBytes, _ := json.Marshal(patch)
+	_, err := h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId, patchBytes)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to start app: %v", err)})
+		return
+	}
+
+	h.auditLog(c, "app.started", "app", appId, appId, "", "", nil)
+	c.JSON(http.StatusOK, gin.H{"status": "starting", "app": appId})
+}
+
+// TriggerCronJob manually triggers a cronjob by creating a one-off Job.
+func (h *Handler) TriggerCronJob(c *gin.Context) {
+	appId := c.Param("appId")
+	cronJobName := c.Param("name")
+
+	var req struct {
+		Environment string `json:"environment" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
+	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
+		return
+	}
+
+	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+	project := getNestedString(spec, "project")
+	targetNS := fmt.Sprintf("%s-%s", project, req.Environment)
+
+	fullCronJobName := fmt.Sprintf("%s-%s", appId, cronJobName)
+	jobName, err := h.K8s.TriggerCronJob(c.Request.Context(), targetNS, fullCronJobName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to trigger cronjob: %v", err)})
+		return
+	}
+
+	h.auditLog(c, "trigger_cronjob", "cronjob", fullCronJobName, cronJobName, project, req.Environment,
+		map[string]interface{}{"job": jobName})
+
+	c.JSON(http.StatusAccepted, gin.H{"status": "triggered", "job": jobName, "cronjob": cronJobName})
+}
+
+// GetCronJobStatuses returns status info for all cronjobs of an app.
+func (h *Handler) GetCronJobStatuses(c *gin.Context) {
+	appId := c.Param("appId")
+	env := c.Query("environment")
+
+	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
+		return
+	}
+
+	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
+	project := getNestedString(spec, "project")
+
+	environments := []string{}
+	if env != "" {
+		environments = append(environments, env)
+	} else {
+		rawEnvs, _, _ := unstructuredNestedSlice(existing.Object, "spec", "environments")
+		for _, e := range rawEnvs {
+			switch v := e.(type) {
+			case map[string]interface{}:
+				if name, _ := v["name"].(string); name != "" {
+					environments = append(environments, name)
+				}
+			case string:
+				environments = append(environments, v)
+			}
+		}
+	}
+
+	var allStatuses []map[string]interface{}
+	for _, envName := range environments {
+		targetNS := fmt.Sprintf("%s-%s", project, envName)
+		statuses, err := h.K8s.GetCronJobStatuses(c.Request.Context(), targetNS, fmt.Sprintf("app.kubernetes.io/name=%s", appId))
+		if err != nil {
+			continue
+		}
+		for _, s := range statuses {
+			allStatuses = append(allStatuses, map[string]interface{}{
+				"environment":        envName,
+				"name":               s.Name,
+				"schedule":           s.Schedule,
+				"lastScheduleTime":   s.LastScheduleTime,
+				"lastSuccessfulTime": s.LastSuccessfulTime,
+				"active":             s.Active,
+				"runCount":           s.RunCount,
+			})
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"items": allStatuses})
 }

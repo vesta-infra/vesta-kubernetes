@@ -402,6 +402,12 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 		}
 	}
 
+	// Stopped: if the app is explicitly stopped, set replicas to 0
+	if app.Status.Phase == "Stopped" {
+		replicas = 0
+		sleepActive = true // reuse the sleepActive flag to force replicas
+	}
+
 	// Fetch project for imagePullSecrets
 	var project vestav1alpha1.VestaProject
 	var projectPullSecrets []corev1.LocalObjectReference

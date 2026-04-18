@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 
@@ -56,6 +57,7 @@ func main() {
 	v1.GET("/auth/forgot-password/status", h.ForgotPasswordStatus)
 	v1.POST("/auth/forgot-password", h.ForgotPassword)
 	v1.POST("/auth/reset-password", h.ResetPassword)
+	v1.POST("/auth/accept-invite", h.AcceptInvite)
 
 	// Webhooks (unauthenticated, verified by signature)
 	v1.POST("/webhooks/:provider", h.ReceiveWebhook)
@@ -118,6 +120,21 @@ func main() {
 		auth.POST("/apps/:appId/scale", dv, middleware.RequireScope("deploy", "write"), h.ScaleApp)
 		auth.POST("/apps/:appId/sleep", dv, middleware.RequireScope("deploy", "write"), h.SleepApp)
 		auth.POST("/apps/:appId/wake", dv, middleware.RequireScope("deploy", "write"), h.WakeApp)
+		auth.POST("/apps/:appId/stop", dv, middleware.RequireScope("deploy", "write"), h.StopApp)
+		auth.POST("/apps/:appId/start", dv, middleware.RequireScope("deploy", "write"), h.StartApp)
+
+		// Cronjob management
+		auth.POST("/apps/:appId/cronjobs/:name/trigger", dv, middleware.RequireScope("deploy", "write"), h.TriggerCronJob)
+		auth.GET("/apps/:appId/cronjobs/status", middleware.RequireScope("read"), h.GetCronJobStatuses)
+
+		// Pod file browser (requires developer+ role — exec into pods can expose secrets)
+		auth.GET("/apps/:appId/files", dv, middleware.RequireScope("read"), h.ListPodFiles)
+		auth.GET("/apps/:appId/files/read", dv, middleware.RequireScope("read"), h.ReadPodFile)
+		auth.POST("/apps/:appId/files/write", dv, middleware.RequireScope("write"), h.WritePodFile)
+
+		// Rate limiting
+		auth.GET("/apps/:appId/rate-limits", middleware.RequireScope("read"), h.GetRateLimits)
+		auth.PUT("/apps/:appId/rate-limits", dv, middleware.RequireScope("write"), h.UpdateRateLimits)
 
 		// Builds
 		auth.POST("/apps/:appId/builds", dv, middleware.RequireScope("deploy", "write"), h.TriggerBuild)
@@ -177,6 +194,20 @@ func main() {
 		auth.POST("/projects/:projectId/notifications/:channelId/test", dv, h.TestNotificationChannel)
 		auth.GET("/projects/:projectId/notifications/history", h.ListNotificationHistory)
 
+		// Alert rules
+		auth.POST("/projects/:projectId/alerts", dv, h.CreateAlertRule)
+		auth.GET("/projects/:projectId/alerts", h.ListAlertRules)
+		auth.PUT("/projects/:projectId/alerts/:ruleId", dv, h.UpdateAlertRule)
+		auth.DELETE("/projects/:projectId/alerts/:ruleId", dv, h.DeleteAlertRule)
+
+		// Dependencies
+		auth.GET("/projects/:projectId/dependencies", h.GetAppDependencies)
+
+		// Scheduled deployments
+		auth.POST("/projects/:projectId/scheduled-deployments", dv, h.CreateScheduledDeployment)
+		auth.GET("/projects/:projectId/scheduled-deployments", h.ListScheduledDeployments)
+		auth.DELETE("/projects/:projectId/scheduled-deployments/:deploymentId", dv, h.CancelScheduledDeployment)
+
 		// API tokens
 		auth.GET("/auth/tokens", h.ListAPITokens)
 		auth.POST("/auth/tokens", h.CreateAPIToken)
@@ -201,6 +232,11 @@ func main() {
 	}
 
 	log.Printf("Vesta API server starting on :%s", port)
+
+	// Start scheduled deployment worker
+	scheduler := &services.ScheduledDeploymentWorker{DB: database, K8s: kc}
+	go scheduler.Start(context.Background())
+
 	if err := r.Run(":" + port); err != nil {
 		log.Fatal(err)
 	}

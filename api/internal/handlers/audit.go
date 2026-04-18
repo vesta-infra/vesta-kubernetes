@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -113,6 +115,13 @@ func (h *Handler) auditLog(c *gin.Context, action, resourceType, resourceID, res
 		IPAddress:    c.ClientIP(),
 		AuthMethod:   c.GetString("authType"),
 	}
-	// Fire and forget — don't block the request
-	go h.DB.InsertAuditLog(c.Request.Context(), entry)
+	// Fire and forget — use a detached context so the insert completes
+	// even after the HTTP response is sent (request context gets cancelled).
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := h.DB.InsertAuditLog(ctx, entry); err != nil {
+			log.Printf("audit: failed to insert log entry: %v", err)
+		}
+	}()
 }

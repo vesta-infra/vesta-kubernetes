@@ -148,7 +148,16 @@ func (h *Handler) Register(c *gin.Context) {
 		displayName = req.Username
 	}
 
-	user, err := h.DB.CreateUser(c.Request.Context(), req.Email, req.Username, req.Password, displayName, role)
+	// If no password provided, create with a random one (user will set via invite link)
+	password := req.Password
+	isInvite := password == ""
+	if isInvite {
+		tokenBytes := make([]byte, 32)
+		rand.Read(tokenBytes)
+		password = hex.EncodeToString(tokenBytes) // Placeholder password — will be reset
+	}
+
+	user, err := h.DB.CreateUser(c.Request.Context(), req.Email, req.Username, password, displayName, role)
 	if err != nil {
 		if errors.Is(err, db.ErrDuplicate) {
 			c.JSON(http.StatusConflict, models.ErrorResponse{Code: 409, Message: "user already exists"})
@@ -158,18 +167,39 @@ func (h *Handler) Register(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, models.UserResponse{
-		ID:          user.ID,
-		Username:    user.Username,
-		Email:       user.Email,
-		DisplayName: user.DisplayName,
-		Role:        user.Role,
-	})
+	// Generate invite token if this is a passwordless invite
+	var inviteToken string
+	if isInvite {
+		tokenBytes := make([]byte, 32)
+		rand.Read(tokenBytes)
+		inviteToken = hex.EncodeToString(tokenBytes)
+		tokenHash := db.HashToken(inviteToken)
+		expiresAt := time.Now().Add(7 * 24 * time.Hour) // 7 days
+		if err := h.DB.CreateInviteToken(c.Request.Context(), user.ID, tokenHash, expiresAt); err != nil {
+			// User created but token failed — still return success
+			inviteToken = ""
+		}
+	}
+
+	resp := gin.H{
+		"id":          user.ID,
+		"username":    user.Username,
+		"email":       user.Email,
+		"displayName": user.DisplayName,
+		"role":        user.Role,
+	}
+	if inviteToken != "" {
+		resp["inviteToken"] = inviteToken
+	}
+	c.JSON(http.StatusCreated, resp)
 
 	// Send invite email asynchronously if an email channel is configured
 	loginURL := ""
 	if origin := c.Request.Header.Get("Origin"); origin != "" {
 		loginURL = origin
+		if inviteToken != "" {
+			loginURL = origin + "/accept-invite?token=" + inviteToken
+		}
 	}
 	go func() {
 		if err := h.Notifier.SendInviteEmail(user.Email, user.Username, user.Role, loginURL); err != nil {
@@ -177,6 +207,57 @@ func (h *Handler) Register(c *gin.Context) {
 			_ = err
 		}
 	}()
+}
+
+func (h *Handler) AcceptInvite(c *gin.Context) {
+	var req struct {
+		Token    string `json:"token" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
+	if len(req.Password) < 8 {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "password must be at least 8 characters"})
+		return
+	}
+
+	user, err := h.DB.GetUserByInviteToken(c.Request.Context(), db.HashToken(req.Token))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "invalid or expired invite token"})
+		return
+	}
+
+	if err := h.DB.UpdateUserPassword(c.Request.Context(), user.ID, req.Password); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to set password"})
+		return
+	}
+
+	if err := h.DB.MarkInviteTokenUsed(c.Request.Context(), db.HashToken(req.Token)); err != nil {
+		// Password was set, token just wasn't marked — non-critical
+		_ = err
+	}
+
+	// Generate JWT so user is logged in immediately
+	tokenString, expiresAt, err := h.generateJWT(user)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to generate token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.AuthTokenResponse{
+		Token:     tokenString,
+		ExpiresAt: expiresAt.Format(time.RFC3339),
+		User: models.UserResponse{
+			ID:          user.ID,
+			Username:    user.Username,
+			Email:       user.Email,
+			DisplayName: user.DisplayName,
+			Role:        user.Role,
+		},
+	})
 }
 
 func (h *Handler) GetCurrentUser(c *gin.Context) {

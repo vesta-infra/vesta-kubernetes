@@ -1,13 +1,33 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
 )
+
+// restartDeployment patches a deployment to trigger a rolling restart after config changes.
+func (h *Handler) restartDeployment(c *gin.Context, namespace, deployName string) {
+	now := time.Now().Format(time.RFC3339)
+	patch := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"template": map[string]interface{}{
+				"metadata": map[string]interface{}{
+					"annotations": map[string]interface{}{
+						"kubernetes.getvesta.sh/restartedAt": now,
+					},
+				},
+			},
+		},
+	}
+	patchBytes, _ := json.Marshal(patch)
+	h.K8s.PatchResource(c.Request.Context(), k8s.DeploymentGVR, namespace, deployName, patchBytes)
+}
 
 func (h *Handler) CreateAppEnvSecret(c *gin.Context) {
 	appID := c.Param("appId")
@@ -101,6 +121,8 @@ func (h *Handler) CreateAppEnvSecret(c *gin.Context) {
 		"keys":        keys,
 	})
 
+	h.restartDeployment(c, namespace, appID)
+
 	h.auditLog(c, "create_secret", "secret", secretName, secretName, project, env,
 		map[string]interface{}{"app": appID, "keyCount": len(keys)})
 }
@@ -141,6 +163,8 @@ func (h *Handler) DeleteAppEnvSecretKey(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
 	}
+
+	h.restartDeployment(c, namespace, appID)
 
 	c.Status(http.StatusNoContent)
 }
@@ -314,6 +338,12 @@ func (h *Handler) UpdateSecret(c *gin.Context) {
 	if _, err := h.K8s.UpdateResource(c.Request.Context(), k8s.VestaSecretGVR, namespace, existing); err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
+	}
+
+	// Restart deployment — secretID is typically "{appId}-secrets"
+	appID := getNestedString(spec, "app")
+	if appID != "" {
+		h.restartDeployment(c, namespace, appID)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"id": secretID, "message": "secret updated"})

@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect, useMemo } from 'react'
-import { useParams, Link, useNavigate, useLocation } from 'react-router-dom'
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
+import { useParams, Link, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
 import { api } from '../lib/api'
@@ -30,7 +30,14 @@ export default function AppDetailPage() {
   const [deployEnv, setDeployEnv] = useState('')
   const [secretEnv, setSecretEnv] = useState('')
   const [editing, setEditing] = useState(false)
-  const [activeTab, setActiveTab] = useState<'overview' | 'builds' | 'secrets' | 'logs' | 'terminal' | 'metrics' | 'cronjobs'>('overview')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const validTabs = ['overview', 'builds', 'secrets', 'logs', 'terminal', 'metrics', 'cronjobs', 'files', 'schedule'] as const
+  type TabType = typeof validTabs[number]
+  const tabParam = searchParams.get('tab') as TabType | null
+  const activeTab: TabType = tabParam && validTabs.includes(tabParam) ? tabParam : 'overview'
+  const setActiveTab = useCallback((tab: TabType) => {
+    setSearchParams(prev => { prev.set('tab', tab); return prev }, { replace: true })
+  }, [setSearchParams])
   const [showCloneModal, setShowCloneModal] = useState(false)
   const [historyEnvFilter, setHistoryEnvFilter] = useState('')
   const role = useUserRole()
@@ -104,6 +111,16 @@ export default function AppDetailPage() {
 
   const sleepMutation = useMutation({
     mutationFn: () => api.sleepApp(appId!),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['app', appId] }),
+  })
+
+  const stopMutation = useMutation({
+    mutationFn: () => api.stopApp(appId!),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['app', appId] }),
+  })
+
+  const startMutation = useMutation({
+    mutationFn: () => api.startApp(appId!),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['app', appId] }),
   })
 
@@ -187,6 +204,24 @@ export default function AppDetailPage() {
             {wakeMutation.isPending ? 'Waking...' : 'Wake Up'}
           </button>
           )}
+          {role !== 'viewer' && phase === 'Stopped' && (
+          <button
+            onClick={() => startMutation.mutate()}
+            disabled={startMutation.isPending}
+            className="btn-primary text-xs"
+          >
+            {startMutation.isPending ? 'Starting...' : 'Start'}
+          </button>
+          )}
+          {role !== 'viewer' && phase === 'Running' && (
+          <button
+            onClick={() => stopMutation.mutate()}
+            disabled={stopMutation.isPending}
+            className="btn-ghost text-xs text-status-failed"
+          >
+            {stopMutation.isPending ? 'Stopping...' : 'Stop'}
+          </button>
+          )}
           {role !== 'viewer' && phase === 'Running' && app.spec?.sleep?.enabled && (
           <button
             onClick={() => sleepMutation.mutate()}
@@ -244,7 +279,7 @@ export default function AppDetailPage() {
       )}
 
       <div className="flex border-b border-border">
-        {(['overview', 'builds', ...(role !== 'viewer' ? ['secrets' as const, 'cronjobs' as const, 'logs' as const, 'terminal' as const] : ['logs' as const]), 'metrics'] as const).map((tab) => (
+        {(['overview', 'builds', ...(role !== 'viewer' ? ['secrets' as const, 'cronjobs' as const, 'logs' as const, 'terminal' as const] : ['logs' as const]), 'metrics', 'files', 'schedule'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
@@ -296,6 +331,42 @@ export default function AppDetailPage() {
                 )}
               </div>
             </section>
+
+            {appEnvironments.length > 0 && (
+            <section className="card p-5">
+              <h3 className="section-title mb-4">Service Discovery</h3>
+              <div className="space-y-3">
+                {appEnvironments.map((env: string) => {
+                  const namespace = `${projectId}-${env}`
+                  const svcName = app.name || appId
+                  const port = app.spec?.runtime?.port || app.spec?.service?.ports?.[0]?.port || ''
+                  return (
+                    <div key={env} className="bg-surface-1 border border-border rounded-lg p-3">
+                      <p className="text-xs font-medium text-text-secondary mb-2">{env}</p>
+                      <div className="space-y-1.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] text-text-tertiary w-28 flex-shrink-0">Service</span>
+                          <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all">{svcName}</code>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] text-text-tertiary w-28 flex-shrink-0">Namespace DNS</span>
+                          <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all">{svcName}.{namespace}</code>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[11px] text-text-tertiary w-28 flex-shrink-0">Cluster DNS</span>
+                          <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all">{svcName}.{namespace}.svc.cluster.local{port ? `:${port}` : ''}</code>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </section>
+            )}
+
+            {appEnvironments.length > 0 && (
+            <RateLimitSection appId={appId!} environments={appEnvironments} role={role} />
+            )}
 
             <section className="card p-5">
               <div className="flex items-center justify-between mb-4">
@@ -665,6 +736,14 @@ export default function AppDetailPage() {
       {activeTab === 'builds' && (
         <AppBuilds appId={appId!} environments={appEnvironments} gitRepo={app?.spec?.git?.repository || ''} deployments={deployments} role={role} onRollback={(version, env) => rollbackMutation.mutate({ version, environment: env })} />
       )}
+
+      {activeTab === 'files' && (
+        <PodFileBrowser appId={appId!} environments={appEnvironments} />
+      )}
+
+      {activeTab === 'schedule' && (
+        <ScheduledDeploymentsTab appId={appId!} projectId={app?.spec?.project || app?.metadata?.labels?.['kubernetes.getvesta.sh/project'] || ''} environments={appEnvironments} />
+      )}
     </div>
   )
 }
@@ -844,7 +923,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
-  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string }>>(() => {
+  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
       const env = typeof e === 'string' ? { name: e } : e
@@ -857,6 +936,10 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         targetCPU: env.autoscale?.metrics?.[0]?.targetAverageUtilization || env.autoscale?.targetCPU || 80,
         imageRepo: env.image?.repository || '',
         imageTag: env.image?.tag || '',
+        cpuRequest: env.resources?.requests?.cpu || '',
+        cpuLimit: env.resources?.limits?.cpu || '',
+        memoryRequest: env.resources?.requests?.memory || '',
+        memoryLimit: env.resources?.limits?.memory || '',
       }
     }
     return configs
@@ -1014,6 +1097,21 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       }
       if (cfg.podSize) {
         env.resources = { size: cfg.podSize }
+      } else if (cfg.cpuRequest || cfg.cpuLimit || cfg.memoryRequest || cfg.memoryLimit) {
+        env.resources = {
+          ...(cfg.cpuRequest || cfg.memoryRequest ? {
+            requests: {
+              ...(cfg.cpuRequest && { cpu: cfg.cpuRequest }),
+              ...(cfg.memoryRequest && { memory: cfg.memoryRequest }),
+            }
+          } : {}),
+          ...(cfg.cpuLimit || cfg.memoryLimit ? {
+            limits: {
+              ...(cfg.cpuLimit && { cpu: cfg.cpuLimit }),
+              ...(cfg.memoryLimit && { memory: cfg.memoryLimit }),
+            }
+          } : {}),
+        }
       }
       if (cfg.imageRepo || cfg.imageTag) {
         env.image = {
@@ -1335,12 +1433,72 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                       onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], podSize: e.target.value } }))}
                       className="input-field w-64 mt-1"
                     >
-                      <option value="">Default</option>
+                      <option value="">Custom / Default</option>
                       {podSizes?.items?.map((s: any) => (
                         <option key={s.name} value={s.name}>{s.name} ({s.cpu}/{s.memory} → {s.cpuLimit}/{s.memoryLimit})</option>
                       ))}
                     </select>
                   </div>
+                  {!cfg.podSize && (
+                  <div className="w-full mt-2 grid grid-cols-4 gap-2">
+                    <div>
+                      <label className="text-[10px] text-text-tertiary">CPU Request</label>
+                      <input
+                        value={cfg.cpuRequest}
+                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], cpuRequest: e.target.value } }))}
+                        className="input-field font-mono text-xs mt-0.5"
+                        placeholder="100m"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-text-tertiary">CPU Limit</label>
+                      <input
+                        value={cfg.cpuLimit}
+                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], cpuLimit: e.target.value } }))}
+                        className="input-field font-mono text-xs mt-0.5"
+                        placeholder="500m"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-text-tertiary">Memory Request</label>
+                      <input
+                        value={cfg.memoryRequest}
+                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], memoryRequest: e.target.value } }))}
+                        className="input-field font-mono text-xs mt-0.5"
+                        placeholder="128Mi"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-text-tertiary">Memory Limit</label>
+                      <input
+                        value={cfg.memoryLimit}
+                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], memoryLimit: e.target.value } }))}
+                        className="input-field font-mono text-xs mt-0.5"
+                        placeholder="256Mi"
+                      />
+                    </div>
+                    <div className="col-span-4 flex gap-1.5">
+                      {[
+                        { label: 'Small', cpu: '100m', cpuL: '250m', mem: '128Mi', memL: '256Mi' },
+                        { label: 'Medium', cpu: '250m', cpuL: '500m', mem: '256Mi', memL: '512Mi' },
+                        { label: 'Large', cpu: '500m', cpuL: '1000m', mem: '512Mi', memL: '1Gi' },
+                        { label: 'XLarge', cpu: '1000m', cpuL: '2000m', mem: '1Gi', memL: '2Gi' },
+                      ].map(preset => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => setEnvConfigs(prev => ({
+                            ...prev,
+                            [envName]: { ...prev[envName], cpuRequest: preset.cpu, cpuLimit: preset.cpuL, memoryRequest: preset.mem, memoryLimit: preset.memL }
+                          }))}
+                          className="text-[10px] px-2 py-0.5 rounded bg-surface-2 text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors"
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  )}
                   <div>
                     <label className="text-xs text-text-tertiary">Replicas</label>
                     <input
@@ -1602,10 +1760,24 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
   const [restartPolicy, setRestartPolicy] = useState('OnFailure')
   const [backoffLimit, setBackoffLimit] = useState('')
   const [envOverrides, setEnvOverrides] = useState<{ name: string; enabled: boolean; schedule: string }[]>([])
+  const [triggerEnv, setTriggerEnv] = useState(environments[0] || '')
 
   const { data: podSizes } = useQuery({
     queryKey: ['podSizes'],
     queryFn: () => api.listPodSizes(),
+  })
+
+  const { data: cronJobStatuses } = useQuery({
+    queryKey: ['cronJobStatuses', appId],
+    queryFn: () => api.getCronJobStatuses(appId),
+    refetchInterval: 15000,
+  })
+
+  const triggerMutation = useMutation({
+    mutationFn: ({ name, env }: { name: string; env: string }) => api.triggerCronJob(appId, name, env),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['cronJobStatuses', appId] })
+    },
   })
 
   const cronjobs: any[] = app.spec?.cronjobs || []
@@ -1904,6 +2076,33 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
                       )}
                     </div>
                     <p className="text-xs font-mono text-text-secondary mt-1 truncate">{cj.command}</p>
+                    {(() => {
+                      const statusItems = cronJobStatuses?.items?.filter((s: any) => s.name === `${appId}-${cj.name}` || s.name?.endsWith(`-${cj.name}`)) || []
+                      const lastRun = statusItems.reduce((latest: string | null, s: any) => {
+                        const t = s.lastScheduleTime
+                        if (!t) return latest
+                        if (!latest) return t
+                        return new Date(t) > new Date(latest) ? t : latest
+                      }, null)
+                      const totalRuns = statusItems.reduce((sum: number, s: any) => sum + (s.runCount || 0), 0)
+                      return (lastRun || totalRuns > 0) ? (
+                        <div className="flex items-center gap-3 mt-1.5">
+                          {lastRun && (
+                            <span className="text-[10px] text-text-tertiary">
+                              Last ran: <span className="text-text-secondary">{new Date(lastRun).toLocaleString()}</span>
+                            </span>
+                          )}
+                          {totalRuns > 0 && (
+                            <span className="text-[10px] text-text-tertiary">
+                              Total runs: <span className="text-text-secondary">{totalRuns}</span>
+                            </span>
+                          )}
+                          {statusItems.some((s: any) => s.active > 0) && (
+                            <span className="text-[10px] text-status-running font-mono">Running</span>
+                          )}
+                        </div>
+                      ) : null
+                    })()}
                     {cj.environments?.length > 0 && (
                       <div className="flex flex-wrap gap-1.5 mt-2">
                         {cj.environments.map((envOvr: any) => (
@@ -1916,6 +2115,25 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
                   </div>
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0">
+                  <select
+                    value={triggerEnv}
+                    onChange={(e) => setTriggerEnv(e.target.value)}
+                    className="input-field text-[11px] w-auto opacity-0 group-hover:opacity-100 transition-opacity py-1"
+                  >
+                    {environments.map(env => (
+                      <option key={env} value={env}>{env}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => {
+                      if (confirm(`Run "${cj.name}" now in ${triggerEnv}?`))
+                        triggerMutation.mutate({ name: cj.name, env: triggerEnv })
+                    }}
+                    disabled={triggerMutation.isPending || !triggerEnv}
+                    className="text-xs text-accent hover:text-accent-glow transition-colors opacity-0 group-hover:opacity-100 whitespace-nowrap"
+                  >
+                    {triggerMutation.isPending ? 'Running...' : 'Run Now'}
+                  </button>
                   <button
                     onClick={() => startEdit(i)}
                     className="text-xs text-text-tertiary hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
@@ -1939,6 +2157,276 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
   )
 }
 
+function RateLimitSection({ appId, environments, role }: { appId: string; environments: string[]; role: string }) {
+  const queryClient = useQueryClient()
+  const [env, setEnv] = useState(environments[0] || '')
+  const [editing, setEditing] = useState(false)
+  const [rps, setRps] = useState('')
+  const [rpm, setRpm] = useState('')
+  const [connections, setConnections] = useState('')
+
+  const { data } = useQuery({
+    queryKey: ['rateLimits', appId, env],
+    queryFn: () => api.getRateLimits(appId, env),
+    enabled: !!env,
+  })
+
+  useEffect(() => {
+    if (data?.limits) {
+      setRps(data.limits['nginx.ingress.kubernetes.io/limit-rps'] || '')
+      setRpm(data.limits['nginx.ingress.kubernetes.io/limit-rpm'] || '')
+      setConnections(data.limits['nginx.ingress.kubernetes.io/limit-connections'] || '')
+    }
+  }, [data])
+
+  const mutation = useMutation({
+    mutationFn: () => api.updateRateLimits(appId, {
+      environment: env,
+      limits: {
+        'nginx.ingress.kubernetes.io/limit-rps': rps,
+        'nginx.ingress.kubernetes.io/limit-rpm': rpm,
+        'nginx.ingress.kubernetes.io/limit-connections': connections,
+      },
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['rateLimits', appId, env] })
+      setEditing(false)
+    },
+  })
+
+  return (
+    <section className="card p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="section-title">Rate Limiting</h3>
+        <div className="flex items-center gap-2">
+          <select value={env} onChange={(e) => setEnv(e.target.value)} className="input-field text-[11px] w-auto">
+            {environments.map(e => <option key={e} value={e}>{e}</option>)}
+          </select>
+          {role !== 'viewer' && data?.ingressFound && (
+            <button onClick={() => setEditing(!editing)} className="text-[11px] text-accent hover:text-accent-glow">
+              {editing ? 'Cancel' : 'Configure'}
+            </button>
+          )}
+        </div>
+      </div>
+      {!data?.ingressFound && (
+        <p className="text-xs text-text-tertiary">No ingress found for this environment</p>
+      )}
+      {data?.ingressFound && !editing && (
+        <div className="flex flex-wrap gap-3">
+          <div className="bg-surface-1 border border-border rounded-lg px-3 py-2">
+            <p className="text-[10px] text-text-tertiary">Req/sec</p>
+            <p className="text-sm font-mono text-text-primary">{data.limits?.['nginx.ingress.kubernetes.io/limit-rps'] || '∞'}</p>
+          </div>
+          <div className="bg-surface-1 border border-border rounded-lg px-3 py-2">
+            <p className="text-[10px] text-text-tertiary">Req/min</p>
+            <p className="text-sm font-mono text-text-primary">{data.limits?.['nginx.ingress.kubernetes.io/limit-rpm'] || '∞'}</p>
+          </div>
+          <div className="bg-surface-1 border border-border rounded-lg px-3 py-2">
+            <p className="text-[10px] text-text-tertiary">Max Connections</p>
+            <p className="text-sm font-mono text-text-primary">{data.limits?.['nginx.ingress.kubernetes.io/limit-connections'] || '∞'}</p>
+          </div>
+        </div>
+      )}
+      {editing && (
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="label">Requests/sec</label>
+              <input type="number" min="0" value={rps} onChange={e => setRps(e.target.value)} placeholder="Unlimited" className="input-field font-mono text-xs" />
+            </div>
+            <div>
+              <label className="label">Requests/min</label>
+              <input type="number" min="0" value={rpm} onChange={e => setRpm(e.target.value)} placeholder="Unlimited" className="input-field font-mono text-xs" />
+            </div>
+            <div>
+              <label className="label">Max Connections</label>
+              <input type="number" min="0" value={connections} onChange={e => setConnections(e.target.value)} placeholder="Unlimited" className="input-field font-mono text-xs" />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => mutation.mutate()} disabled={mutation.isPending} className="btn-primary text-xs">
+              {mutation.isPending ? 'Saving...' : 'Save'}
+            </button>
+            <button onClick={() => setEditing(false)} className="btn-ghost text-xs">Cancel</button>
+          </div>
+          {mutation.isError && <p className="text-xs text-status-failed">{(mutation.error as Error).message}</p>}
+        </div>
+      )}
+    </section>
+  )
+}
+
+function PodFileBrowser({ appId, environments }: { appId: string; environments: string[] }) {
+  const [env, setEnv] = useState(environments[0] || '')
+  const [pod, setPod] = useState('')
+  const [currentPath, setCurrentPath] = useState('/')
+  const [selectedFile, setSelectedFile] = useState<string | null>(null)
+  const [editContent, setEditContent] = useState('')
+  const [editing, setEditing] = useState(false)
+
+  const { data: metricsData } = useQuery({
+    queryKey: ['appMetrics', appId, env],
+    queryFn: () => api.getAppMetrics(appId, env),
+    enabled: !!env,
+  })
+
+  const pods: string[] = (metricsData?.pods || []).map((p: any) => p.name)
+
+  useEffect(() => {
+    if (pods.length > 0 && !pod) setPod(pods[0])
+  }, [pods, pod])
+
+  const { data: filesData, isLoading: filesLoading } = useQuery({
+    queryKey: ['podFiles', appId, env, pod, currentPath],
+    queryFn: () => api.listPodFiles(appId, env, pod, currentPath),
+    enabled: !!env && !!pod,
+  })
+
+  const { data: fileContent, isLoading: fileLoading } = useQuery({
+    queryKey: ['podFileContent', appId, env, pod, selectedFile],
+    queryFn: () => api.readPodFile(appId, env, pod, selectedFile!),
+    enabled: !!selectedFile && !!pod,
+  })
+
+  useEffect(() => {
+    if (fileContent?.content !== undefined) setEditContent(fileContent.content)
+  }, [fileContent])
+
+  const writeMutation = useMutation({
+    mutationFn: () => api.writePodFile(appId, { environment: env, pod, path: selectedFile!, content: editContent }),
+    onSuccess: () => setEditing(false),
+  })
+
+  const navigateTo = (path: string) => {
+    setSelectedFile(null)
+    setCurrentPath(path)
+  }
+
+  const pathParts = currentPath.split('/').filter(Boolean)
+
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-4">
+        <select value={env} onChange={(e) => { setEnv(e.target.value); setPod('') }} className="input-field text-xs w-40">
+          {environments.map(e => <option key={e} value={e}>{e}</option>)}
+        </select>
+        <select value={pod} onChange={(e) => setPod(e.target.value)} className="input-field text-xs w-auto font-mono">
+          {pods.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
+      </div>
+
+      {!pod && (
+        <div className="card p-5 text-center">
+          <p className="text-sm text-text-tertiary">No running pods found</p>
+        </div>
+      )}
+
+      {pod && (
+        <div className="grid grid-cols-3 gap-4" style={{ minHeight: 400 }}>
+          {/* File tree panel */}
+          <div className="card overflow-hidden">
+            {/* Breadcrumbs */}
+            <div className="px-3 py-2 border-b border-border bg-surface-1 flex items-center gap-1 text-[11px] font-mono overflow-x-auto">
+              <button onClick={() => navigateTo('/')} className="text-accent hover:underline">/</button>
+              {pathParts.map((part, i) => (
+                <span key={i} className="flex items-center gap-1">
+                  <span className="text-text-tertiary">/</span>
+                  <button
+                    onClick={() => navigateTo('/' + pathParts.slice(0, i + 1).join('/') + '/')}
+                    className="text-accent hover:underline"
+                  >{part}</button>
+                </span>
+              ))}
+            </div>
+            <div className="overflow-y-auto" style={{ maxHeight: 500 }}>
+              {filesLoading && <p className="p-3 text-xs text-text-tertiary">Loading...</p>}
+              {currentPath !== '/' && (
+                <button
+                  onClick={() => navigateTo('/' + pathParts.slice(0, -1).join('/') + (pathParts.length > 1 ? '/' : ''))}
+                  className="w-full text-left px-3 py-1.5 text-xs font-mono text-text-tertiary hover:bg-surface-1 flex items-center gap-2"
+                >
+                  <span>📁</span> ..
+                </button>
+              )}
+              {(filesData?.items || []).map((f: any) => (
+                <button
+                  key={f.name}
+                  onClick={() => {
+                    if (f.isDir) {
+                      navigateTo(currentPath + f.name + '/')
+                    } else {
+                      setSelectedFile(currentPath + f.name)
+                      setEditing(false)
+                    }
+                  }}
+                  className={`w-full text-left px-3 py-1.5 text-xs font-mono hover:bg-surface-1 flex items-center gap-2 ${selectedFile === currentPath + f.name ? 'bg-accent/10 text-accent' : 'text-text-secondary'}`}
+                >
+                  <span>{f.isDir ? '📁' : '📄'}</span>
+                  <span className="truncate">{f.name}</span>
+                  {f.size && !f.isDir && <span className="text-[10px] text-text-tertiary ml-auto flex-shrink-0">{f.size}</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* File content panel */}
+          <div className="col-span-2 card overflow-hidden">
+            {!selectedFile && (
+              <div className="flex items-center justify-center h-full text-sm text-text-tertiary">
+                Select a file to view
+              </div>
+            )}
+            {selectedFile && (
+              <div className="flex flex-col h-full">
+                <div className="px-3 py-2 border-b border-border bg-surface-1 flex items-center justify-between">
+                  <span className="text-[11px] font-mono text-text-secondary truncate">{selectedFile}</span>
+                  <div className="flex items-center gap-2 flex-shrink-0">
+                    {editing ? (
+                      <>
+                        <button
+                          onClick={() => writeMutation.mutate()}
+                          disabled={writeMutation.isPending}
+                          className="text-[11px] text-accent hover:text-accent-glow"
+                        >
+                          {writeMutation.isPending ? 'Saving...' : 'Save'}
+                        </button>
+                        <button onClick={() => { setEditing(false); setEditContent(fileContent?.content || '') }} className="text-[11px] text-text-tertiary hover:text-text-secondary">
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button onClick={() => setEditing(true)} className="text-[11px] text-text-tertiary hover:text-accent">
+                        Edit
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="flex-1 overflow-auto">
+                  {fileLoading && <p className="p-3 text-xs text-text-tertiary">Loading...</p>}
+                  {!fileLoading && editing ? (
+                    <textarea
+                      value={editContent}
+                      onChange={(e) => setEditContent(e.target.value)}
+                      className="w-full h-full bg-transparent text-xs font-mono text-text-primary p-3 resize-none outline-none"
+                      spellCheck={false}
+                    />
+                  ) : !fileLoading ? (
+                    <pre className="p-3 text-xs font-mono text-text-secondary whitespace-pre-wrap break-all">{fileContent?.content || ''}</pre>
+                  ) : null}
+                </div>
+                {writeMutation.isError && (
+                  <p className="px-3 py-1 text-[11px] text-status-failed border-t border-border">{(writeMutation.error as Error).message}</p>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function CloneAppModal({ appName, isPending, error, onClone, onClose }: {
   appName: string
   isPending: boolean
@@ -1947,6 +2435,12 @@ function CloneAppModal({ appName, isPending, error, onClone, onClose }: {
   onClose: () => void
 }) {
   const [name, setName] = useState(`${appName}-clone`)
+  const [targetProject, setTargetProject] = useState('')
+
+  const { data: projects } = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => api.listProjects(),
+  })
 
   return (
     <div className="card p-5 animate-slide-up">
@@ -1954,7 +2448,7 @@ function CloneAppModal({ appName, isPending, error, onClone, onClose }: {
       <p className="text-xs text-text-tertiary mb-4">
         Create a copy of <span className="font-mono text-text-secondary">{appName}</span> with the same configuration.
       </p>
-      <form onSubmit={(e) => { e.preventDefault(); onClone({ name }) }}>
+      <form onSubmit={(e) => { e.preventDefault(); onClone({ name, ...(targetProject && { project: targetProject }) }) }}>
         <div className="mb-4">
           <label className="label">New App Name</label>
           <input
@@ -1964,6 +2458,20 @@ function CloneAppModal({ appName, isPending, error, onClone, onClose }: {
             placeholder="my-app-clone"
             required
           />
+        </div>
+        <div className="mb-4">
+          <label className="label">Target Project</label>
+          <select
+            value={targetProject}
+            onChange={(e) => setTargetProject(e.target.value)}
+            className="input-field text-xs"
+          >
+            <option value="">Same project</option>
+            {(projects?.items || []).map((p: any) => (
+              <option key={p.name} value={p.name}>{p.name}</option>
+            ))}
+          </select>
+          <p className="text-[10px] text-text-tertiary mt-1">Clone to a different project or keep in the same one</p>
         </div>
         <div className="flex gap-3">
           <button type="submit" disabled={isPending || !name} className="btn-primary">
@@ -2768,6 +3276,7 @@ function AppMetrics({ appId, environments }: { appId: string; environments: stri
   const [env, setEnv] = useState(environments[0] || '')
   const [expandedPod, setExpandedPod] = useState<string | null>(null)
   const [promRange, setPromRange] = useState<string>('1h')
+  const [metricsExpanded, setMetricsExpanded] = useState(false)
 
   const { data, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['appMetrics', appId, env],
@@ -2880,32 +3389,48 @@ function AppMetrics({ appId, environments }: { appId: string; environments: stri
 
           {/* Prometheus Time-Series Charts */}
           {promStatus?.available && env && (
-            <div className="bg-surface-1 border border-border rounded-lg p-4">
+            <div className={`bg-surface-1 border border-border rounded-lg p-4 ${metricsExpanded ? 'fixed inset-4 z-50 overflow-auto' : ''}`}>
+              {metricsExpanded && <div className="fixed inset-0 bg-black/60 -z-10" onClick={() => setMetricsExpanded(false)} />}
               <div className="flex items-center justify-between mb-3">
                 <h4 className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">Historical Metrics</h4>
-                <div className="flex gap-1">
-                  {(['1h', '6h', '24h', '7d'] as const).map((r) => (
-                    <button
-                      key={r}
-                      onClick={() => setPromRange(r)}
-                      className={`px-2 py-0.5 text-[10px] font-mono rounded ${promRange === r ? 'bg-accent text-white' : 'bg-surface-2 text-text-tertiary hover:text-text-secondary'}`}
-                    >
-                      {r}
-                    </button>
-                  ))}
+                <div className="flex items-center gap-3">
+                  <div className="flex gap-1">
+                    {(['1h', '6h', '24h', '7d'] as const).map((r) => (
+                      <button
+                        key={r}
+                        onClick={() => setPromRange(r)}
+                        className={`px-2 py-0.5 text-[10px] font-mono rounded ${promRange === r ? 'bg-accent text-white' : 'bg-surface-2 text-text-tertiary hover:text-text-secondary'}`}
+                      >
+                        {r}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    onClick={() => setMetricsExpanded(!metricsExpanded)}
+                    className="text-text-tertiary hover:text-accent transition-colors"
+                    title={metricsExpanded ? 'Collapse' : 'Expand'}
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      {metricsExpanded ? (
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25" />
+                      ) : (
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+                      )}
+                    </svg>
+                  </button>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <PrometheusChart appId={appId} env={env} metric="cpu" range={promRange} label="CPU Usage" unit="cores" color="#6366f1" />
-                <PrometheusChart appId={appId} env={env} metric="memory" range={promRange} label="Memory Usage" unit="bytes" color="#06b6d4" />
-                <PrometheusChart appId={appId} env={env} metric="network_rx" range={promRange} label="Network Receive" unit="bytes/s" color="#10b981" />
-                <PrometheusChart appId={appId} env={env} metric="network_tx" range={promRange} label="Network Transmit" unit="bytes/s" color="#f59e0b" />
+              <div className={`grid ${metricsExpanded ? 'grid-cols-2 gap-6' : 'grid-cols-2 gap-4'}`}>
+                <PrometheusChart appId={appId} env={env} metric="cpu" range={promRange} label="CPU Usage" unit="cores" color="#6366f1" expanded={metricsExpanded} />
+                <PrometheusChart appId={appId} env={env} metric="memory" range={promRange} label="Memory Usage" unit="bytes" color="#06b6d4" expanded={metricsExpanded} />
+                <PrometheusChart appId={appId} env={env} metric="network_rx" range={promRange} label="Network Receive" unit="bytes/s" color="#10b981" expanded={metricsExpanded} />
+                <PrometheusChart appId={appId} env={env} metric="network_tx" range={promRange} label="Network Transmit" unit="bytes/s" color="#f59e0b" expanded={metricsExpanded} />
               </div>
               {promStatus?.httpAvailable ? (
-                <div className="grid grid-cols-3 gap-4 mt-4">
-                  <PrometheusChart appId={appId} env={env} metric="http_rate" range={promRange} label="Request Rate" unit="req/s" color="#8b5cf6" />
-                  <PrometheusChart appId={appId} env={env} metric="http_errors" range={promRange} label="Error Rate" unit="%" color="#ef4444" />
-                  <PrometheusChart appId={appId} env={env} metric="http_latency_p95" range={promRange} label="Latency (p95)" unit="s" color="#f97316" />
+                <div className={`grid ${metricsExpanded ? 'grid-cols-3 gap-6' : 'grid-cols-3 gap-4'} mt-4`}>
+                  <PrometheusChart appId={appId} env={env} metric="http_rate" range={promRange} label="Request Rate" unit="req/s" color="#8b5cf6" expanded={metricsExpanded} />
+                  <PrometheusChart appId={appId} env={env} metric="http_errors" range={promRange} label="Error Rate" unit="%" color="#ef4444" expanded={metricsExpanded} />
+                  <PrometheusChart appId={appId} env={env} metric="http_latency_p95" range={promRange} label="Latency (p95)" unit="s" color="#f97316" expanded={metricsExpanded} />
                 </div>
               ) : (
                 <div className="mt-4 px-3 py-2 bg-surface-2/50 rounded-lg">
@@ -3121,8 +3646,8 @@ function formatMetricValue(value: number, unit: string): string {
   }
 }
 
-function PrometheusChart({ appId, env, metric, range: timeRange, label, unit, color }: {
-  appId: string; env: string; metric: string; range: string; label: string; unit: string; color: string
+function PrometheusChart({ appId, env, metric, range: timeRange, label, unit, color, expanded }: {
+  appId: string; env: string; metric: string; range: string; label: string; unit: string; color: string; expanded?: boolean
 }) {
   const { data, isLoading } = useQuery({
     queryKey: ['prometheusMetrics', appId, env, metric, timeRange],
@@ -3147,6 +3672,7 @@ function PrometheusChart({ appId, env, metric, range: timeRange, label, unit, co
       .sort((a, b) => a.time - b.time)
   }, [data])
 
+  const chartHeight = expanded ? 240 : 120
   const isEmpty = !isLoading && chartData.length === 0
   const noData = data && data.available === false
 
@@ -3154,7 +3680,7 @@ function PrometheusChart({ appId, env, metric, range: timeRange, label, unit, co
     <div className="bg-surface-2/50 rounded-lg p-3">
       <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider mb-2">{label}</p>
       {isLoading && (
-        <div className="h-[120px] flex items-center justify-center">
+        <div style={{ height: chartHeight }} className="flex items-center justify-center">
           <svg className="w-4 h-4 animate-spin text-text-tertiary" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -3162,17 +3688,17 @@ function PrometheusChart({ appId, env, metric, range: timeRange, label, unit, co
         </div>
       )}
       {noData && (
-        <div className="h-[120px] flex items-center justify-center">
+        <div style={{ height: chartHeight }} className="flex items-center justify-center">
           <p className="text-[10px] text-text-tertiary">Not available</p>
         </div>
       )}
       {isEmpty && !noData && !isLoading && (
-        <div className="h-[120px] flex items-center justify-center">
+        <div style={{ height: chartHeight }} className="flex items-center justify-center">
           <p className="text-[10px] text-text-tertiary">No data</p>
         </div>
       )}
       {!isLoading && chartData.length > 0 && (
-        <ResponsiveContainer width="100%" height={120}>
+        <ResponsiveContainer width="100%" height={chartHeight}>
           <AreaChart data={chartData}>
             <defs>
               <linearGradient id={`grad-${metric}`} x1="0" y1="0" x2="0" y2="1">
@@ -3978,7 +4504,7 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
                     value={kv.key}
                     onChange={(e) => { const u = [...newKeys]; u[i].key = e.target.value; setNewKeys(u) }}
                     placeholder="KEY"
-                    className="input-field flex-1 font-mono text-xs"
+                    className="input-field w-1/3 font-mono text-xs"
                   />
                   <RevealableInput
                     value={kv.value}
@@ -4069,6 +4595,143 @@ function Spinner() {
           <div className="w-2.5 h-2.5 rounded bg-accent" />
         </div>
       </div>
+    </div>
+  )
+}
+
+function ScheduledDeploymentsTab({ appId, projectId, environments }: { appId: string; projectId: string; environments: string[] }) {
+  const queryClient = useQueryClient()
+  const [showForm, setShowForm] = useState(false)
+  const [env, setEnv] = useState(environments[0] || '')
+  const [image, setImage] = useState('')
+  const [tag, setTag] = useState('')
+  const [scheduledAt, setScheduledAt] = useState('')
+
+  const { data } = useQuery({
+    queryKey: ['scheduledDeployments', projectId],
+    queryFn: () => api.listScheduledDeployments(projectId),
+    refetchInterval: 15000,
+  })
+
+  const createMutation = useMutation({
+    mutationFn: () => api.createScheduledDeployment(projectId, {
+      appId,
+      environment: env,
+      image,
+      tag,
+      scheduledAt: new Date(scheduledAt).toISOString(),
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['scheduledDeployments', projectId] })
+      setShowForm(false)
+      setImage('')
+      setTag('')
+      setScheduledAt('')
+    },
+  })
+
+  const cancelMutation = useMutation({
+    mutationFn: (id: string) => api.cancelScheduledDeployment(projectId, id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['scheduledDeployments', projectId] }),
+  })
+
+  const items = (data?.items || []).filter((d: any) => d.appId === appId)
+
+  const statusColors: Record<string, string> = {
+    pending: 'text-status-pending bg-status-pending/10',
+    running: 'text-accent bg-accent/10',
+    completed: 'text-status-running bg-status-running/10',
+    failed: 'text-status-failed bg-status-failed/10',
+    cancelled: 'text-text-tertiary bg-surface-3',
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="section-title">Scheduled Deployments</h3>
+        <button onClick={() => setShowForm(!showForm)} className="text-xs text-accent hover:text-accent-glow transition-colors">
+          {showForm ? 'Cancel' : '+ Schedule Deploy'}
+        </button>
+      </div>
+
+      {showForm && (
+        <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate() }} className="card p-4 space-y-3 animate-slide-up">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Environment</label>
+              <select value={env} onChange={e => setEnv(e.target.value)} className="input-field text-xs">
+                {environments.map(e => (
+                  <option key={e} value={e}>{e}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Schedule At</label>
+              <input
+                type="datetime-local"
+                value={scheduledAt}
+                onChange={e => setScheduledAt(e.target.value)}
+                min={(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}T${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; })()}
+                className="input-field text-xs"
+                required
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Image (optional override)</label>
+              <input value={image} onChange={e => setImage(e.target.value)} placeholder="e.g. myregistry/myapp" className="input-field text-xs" />
+            </div>
+            <div>
+              <label className="label">Tag</label>
+              <input value={tag} onChange={e => setTag(e.target.value)} placeholder="e.g. v1.2.3" className="input-field text-xs" />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button type="submit" disabled={createMutation.isPending || !scheduledAt} className="btn-primary text-xs">
+              {createMutation.isPending ? 'Scheduling...' : 'Schedule'}
+            </button>
+            <button type="button" onClick={() => setShowForm(false)} className="btn-ghost text-xs">Cancel</button>
+          </div>
+          {createMutation.isError && <p className="text-xs text-status-failed">{(createMutation.error as Error).message}</p>}
+        </form>
+      )}
+
+      {items.length === 0 ? (
+        <p className="text-xs text-text-tertiary py-6 text-center">No scheduled deployments for this app</p>
+      ) : (
+        <div className="space-y-1.5">
+          {items.map((sd: any) => (
+            <div key={sd.id} className="card p-3 flex items-center justify-between group">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${statusColors[sd.status] || ''}`}>
+                    {sd.status}
+                  </span>
+                  <span className="text-xs text-text-secondary font-mono">{sd.environment || 'default'}</span>
+                  {sd.image && <span className="text-xs text-text-tertiary">{sd.image}{sd.tag ? ':' + sd.tag : ''}</span>}
+                </div>
+                <div className="flex items-center gap-3 mt-1">
+                  <span className="text-[11px] text-text-tertiary">
+                    Scheduled: {new Date(sd.scheduledAt).toLocaleString()}
+                  </span>
+                  {sd.resultMessage && (
+                    <span className="text-[11px] text-text-tertiary truncate max-w-xs">{sd.resultMessage}</span>
+                  )}
+                </div>
+              </div>
+              {sd.status === 'pending' && (
+                <button
+                  onClick={() => { if (confirm('Cancel this scheduled deployment?')) cancelMutation.mutate(sd.id) }}
+                  className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
