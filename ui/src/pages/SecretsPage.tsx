@@ -450,9 +450,12 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete, showProject
   }
 
   const updateMutation = useMutation({
-    mutationFn: (payload: { data?: Record<string, string>; deleteKeys?: string[] }) => api.updateSharedSecret(projectId, s.name, payload),
+    mutationFn: async (payload: { data?: Record<string, string>; deleteKeys?: string[] }) => {
+      const result = await api.updateSharedSecret(projectId, s.name, payload)
+      await queryClient.invalidateQueries({ queryKey: ['sharedSecrets'] })
+      return result
+    },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['sharedSecrets'] })
       setEditMode(false)
       setEditKeys([])
       setDeletedKeys([])

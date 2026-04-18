@@ -75,15 +75,19 @@ export default function AppDetailPage() {
   })
 
   const restartMutation = useMutation({
-    mutationFn: (env: string) => api.restart(appId!, env),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['app', appId] }),
+    mutationFn: async (env: string) => {
+      const result = await api.restart(appId!, env)
+      await queryClient.invalidateQueries({ queryKey: ['app', appId] })
+      return result
+    },
   })
 
   const rollbackMutation = useMutation({
-    mutationFn: ({ version, environment }: { version: number; environment: string }) => api.rollback(appId!, version, environment),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['app', appId] })
-      queryClient.invalidateQueries({ queryKey: ['deployments', appId] })
+    mutationFn: async ({ version, environment }: { version: number; environment: string }) => {
+      const result = await api.rollback(appId!, version, environment)
+      await queryClient.invalidateQueries({ queryKey: ['app', appId] })
+      await queryClient.invalidateQueries({ queryKey: ['deployments', appId] })
+      return result
     },
   })
 
