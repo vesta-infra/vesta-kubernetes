@@ -621,6 +621,22 @@ func (c *Client) WriteFile(ctx context.Context, namespace, podName, containerNam
 	return err
 }
 
+// ResolveContainerName returns containerName if non-empty, otherwise fetches the
+// pod and returns the name of its first container.
+func (c *Client) ResolveContainerName(ctx context.Context, namespace, podName, containerName string) (string, error) {
+	if containerName != "" {
+		return containerName, nil
+	}
+	pod, err := c.Clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("get pod %s/%s: %w", namespace, podName, err)
+	}
+	if len(pod.Spec.Containers) == 0 {
+		return "", fmt.Errorf("pod %s/%s has no containers", namespace, podName)
+	}
+	return pod.Spec.Containers[0].Name, nil
+}
+
 func base64Encode(s string) string {
 	return base64.StdEncoding.EncodeToString([]byte(s))
 }

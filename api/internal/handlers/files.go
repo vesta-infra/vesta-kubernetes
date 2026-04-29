@@ -32,6 +32,12 @@ func (h *Handler) ListPodFiles(c *gin.Context) {
 	project := getNestedString(appSpec, "project")
 	namespace := project + "-" + env
 
+	container, err = h.K8s.ResolveContainerName(c.Request.Context(), namespace, pod, container)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "could not resolve container: " + err.Error()})
+		return
+	}
+
 	files, err := h.K8s.ListFiles(c.Request.Context(), namespace, pod, container, path)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
@@ -61,6 +67,12 @@ func (h *Handler) ReadPodFile(c *gin.Context) {
 	appSpec, _, _ := unstructuredNestedMap(app.Object, "spec")
 	project := getNestedString(appSpec, "project")
 	namespace := project + "-" + env
+
+	container, err = h.K8s.ResolveContainerName(c.Request.Context(), namespace, pod, container)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "could not resolve container: " + err.Error()})
+		return
+	}
 
 	content, err := h.K8s.ReadFile(c.Request.Context(), namespace, pod, container, path)
 	if err != nil {
@@ -101,7 +113,13 @@ func (h *Handler) WritePodFile(c *gin.Context) {
 	project := getNestedString(appSpec, "project")
 	namespace := project + "-" + req.Environment
 
-	if err := h.K8s.WriteFile(c.Request.Context(), namespace, req.Pod, req.Container, req.Path, req.Content); err != nil {
+	resolvedContainer, err := h.K8s.ResolveContainerName(c.Request.Context(), namespace, req.Pod, req.Container)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "could not resolve container: " + err.Error()})
+		return
+	}
+
+	if err := h.K8s.WriteFile(c.Request.Context(), namespace, req.Pod, resolvedContainer, req.Path, req.Content); err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
 	}

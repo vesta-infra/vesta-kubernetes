@@ -2746,13 +2746,34 @@ function AppLogs({ appId, environments }: { appId: string; environments: string[
 
 function AppTerminal({ appId, environments }: { appId: string; environments: string[] }) {
   const [env, setEnv] = useState(environments[0] || '')
+  const [pod, setPod] = useState('')
+  const [container, setContainer] = useState('')
   const [connected, setConnected] = useState(false)
   const termRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const xtermRef = useRef<any>(null)
 
+  const { data: metricsData } = useQuery({
+    queryKey: ['appMetrics', appId, env],
+    queryFn: () => api.getAppMetrics(appId, env),
+    enabled: !!env,
+  })
+
+  const pods: any[] = metricsData?.pods || []
+  const podNames = pods.map((p: any) => p.name)
+  const selectedPod = pods.find((p: any) => p.name === pod)
+  const containers: string[] = (selectedPod?.containers || []).map((c: any) => c.name)
+
+  useEffect(() => {
+    if (podNames.length > 0 && !pod) setPod(podNames[0])
+  }, [podNames.length])
+
+  useEffect(() => {
+    if (containers.length > 0 && !containers.includes(container)) setContainer(containers[0])
+  }, [pod, containers.length])
+
   const connect = () => {
-    if (!env || !termRef.current) return
+    if (!env || !pod || !termRef.current) return
 
     // Dynamically import xterm
     Promise.all([
@@ -2786,7 +2807,9 @@ function AppTerminal({ appId, environments }: { appId: string; environments: str
 
       const token = localStorage.getItem('vesta-token')
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const wsUrl = `${proto}//${window.location.host}/api/v1/apps/${appId}/exec?environment=${encodeURIComponent(env)}&token=${encodeURIComponent(token || '')}`
+      const params = new URLSearchParams({ environment: env, pod, token: token || '' })
+      if (container) params.set('container', container)
+      const wsUrl = `${proto}//${window.location.host}/api/v1/apps/${appId}/exec?${params}`
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
@@ -2848,15 +2871,28 @@ function AppTerminal({ appId, environments }: { appId: string; environments: str
       </div>
 
       <div className="flex items-center gap-3 mb-4">
-        <select value={env} onChange={(e) => setEnv(e.target.value)} className="input-field text-xs">
+        <select value={env} onChange={(e) => { setEnv(e.target.value); setPod(''); setContainer('') }} className="input-field text-xs">
           <option value="">Select environment...</option>
           {environments.map((e) => (
             <option key={e} value={e}>{e}</option>
           ))}
         </select>
+        <select value={pod} onChange={(e) => { setPod(e.target.value); setContainer('') }} className="input-field text-xs w-auto font-mono">
+          <option value="">Select pod...</option>
+          {podNames.map((p: string) => (
+            <option key={p} value={p}>{p}</option>
+          ))}
+        </select>
+        {containers.length > 1 && (
+          <select value={container} onChange={(e) => setContainer(e.target.value)} className="input-field text-xs w-auto font-mono">
+            {containers.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        )}
         <button
           onClick={connect}
-          disabled={!env}
+          disabled={!env || !pod}
           className="btn-primary text-xs"
         >
           {connected ? 'Reconnect' : 'Connect'}
