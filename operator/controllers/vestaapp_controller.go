@@ -1230,6 +1230,17 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 			}
 		}
 
+		// Auto-inject the per-app ConfigMap ("{appName}-envvars") as envFrom if it exists.
+		appEnvVarsCM := app.Name + "-envvars"
+		cm := &corev1.ConfigMap{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: appEnvVarsCM}, cm); err == nil {
+			container.EnvFrom = append(container.EnvFrom, corev1.EnvFromSource{
+				ConfigMapRef: &corev1.ConfigMapEnvSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: appEnvVarsCM},
+				},
+			})
+		}
+
 		podSpec := r.buildPodSpec(app, container, projectPullSecrets, target.Config.ImagePullSecrets)
 		podSpec.ServiceAccountName = app.Name
 		switch cj.RestartPolicy {
