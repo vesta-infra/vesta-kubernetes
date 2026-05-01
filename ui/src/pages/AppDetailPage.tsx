@@ -611,6 +611,30 @@ export default function AppDetailPage() {
                 {app.spec?.ingress?.tls !== undefined && (
                   <ConfigItem label="TLS" value={app.spec.ingress.tls ? 'Enabled' : 'Disabled'} accent={app.spec.ingress.tls} />
                 )}
+                {rawEnvs.some((e: any) => {
+                  const env = typeof e === 'string' ? { name: e } : e
+                  return env.ingress?.domains?.length > 0 || env.ingress?.domain
+                }) && (
+                  <div className="overflow-hidden">
+                    <dt className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1">Domains per Environment</dt>
+                    <dd className="flex flex-col gap-1.5">
+                      {rawEnvs.map((e: any) => {
+                        const env = typeof e === 'string' ? { name: e } : e
+                        const envDomains = env.ingress?.domains || (env.ingress?.domain ? [env.ingress.domain] : [])
+                        if (envDomains.length === 0) return null
+                        return (
+                          <div key={env.name} className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-xs font-mono text-accent">{env.name}:</span>
+                            {envDomains.map((d: string) => (
+                              <span key={d} className="px-2 py-0.5 bg-surface-1 border border-border rounded text-xs font-mono truncate max-w-full">{d}</span>
+                            ))}
+                            {env.ingress?.tls && <span className="text-[10px] text-status-healthy font-medium">TLS</span>}
+                          </div>
+                        )
+                      })}
+                    </dd>
+                  </div>
+                )}
               </div>
               {app.spec?.cronjobs?.length > 0 && (
                 <div className="mt-5 pt-4 border-t border-border-subtle">
