@@ -157,6 +157,11 @@ spec:
                         domain:
                           type: string
                           description: Custom domain for this environment. Overrides app-level domain and domain template.
+                        domains:
+                          type: array
+                          description: Multiple custom domains for this environment. Takes precedence over single domain field.
+                          items:
+                            type: string
                         tls:
                           type: boolean
                           description: Enable or disable TLS for this environment. Overrides app-level TLS setting.

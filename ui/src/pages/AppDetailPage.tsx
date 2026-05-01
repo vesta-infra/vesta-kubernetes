@@ -611,6 +611,30 @@ export default function AppDetailPage() {
                 {app.spec?.ingress?.tls !== undefined && (
                   <ConfigItem label="TLS" value={app.spec.ingress.tls ? 'Enabled' : 'Disabled'} accent={app.spec.ingress.tls} />
                 )}
+                {rawEnvs.some((e: any) => {
+                  const env = typeof e === 'string' ? { name: e } : e
+                  return env.ingress?.domains?.length > 0 || env.ingress?.domain
+                }) && (
+                  <div className="overflow-hidden">
+                    <dt className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1">Domains per Environment</dt>
+                    <dd className="flex flex-col gap-1.5">
+                      {rawEnvs.map((e: any) => {
+                        const env = typeof e === 'string' ? { name: e } : e
+                        const envDomains = env.ingress?.domains || (env.ingress?.domain ? [env.ingress.domain] : [])
+                        if (envDomains.length === 0) return null
+                        return (
+                          <div key={env.name} className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-xs font-mono text-accent">{env.name}:</span>
+                            {envDomains.map((d: string) => (
+                              <span key={d} className="px-2 py-0.5 bg-surface-1 border border-border rounded text-xs font-mono truncate max-w-full">{d}</span>
+                            ))}
+                            {env.ingress?.tls && <span className="text-[10px] text-status-healthy font-medium">TLS</span>}
+                          </div>
+                        )
+                      })}
+                    </dd>
+                  </div>
+                )}
               </div>
               {app.spec?.cronjobs?.length > 0 && (
                 <div className="mt-5 pt-4 border-t border-border-subtle">
@@ -926,10 +950,11 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
-  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string }>>(() => {
+  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string; domains: string[]; tls: boolean }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
       const env = typeof e === 'string' ? { name: e } : e
+      const envDomains = env.ingress?.domains || (env.ingress?.domain ? [env.ingress.domain] : [])
       configs[env.name] = {
         replicas: env.replicas ?? 1,
         podSize: env.resources?.size || '',
@@ -943,6 +968,8 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         cpuLimit: env.resources?.limits?.cpu || '',
         memoryRequest: env.resources?.requests?.memory || '',
         memoryLimit: env.resources?.limits?.memory || '',
+        domains: envDomains,
+        tls: env.ingress?.tls || false,
       }
     }
     return configs
@@ -1121,6 +1148,10 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           ...(cfg.imageRepo && { repository: cfg.imageRepo }),
           ...(cfg.imageTag && { tag: cfg.imageTag }),
         }
+      }
+      const filteredDomains = cfg.domains.filter(d => d.trim())
+      if (filteredDomains.length > 0) {
+        env.ingress = { domains: filteredDomains, tls: cfg.tls }
       }
       return env
     })
@@ -1427,6 +1458,53 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                       placeholder="tag"
                     />
                   </div>
+                </div>
+                <div className="mt-2 mb-2 p-2.5 rounded-md border border-border bg-surface-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-medium text-text-secondary">Domains</label>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={cfg.tls}
+                          onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], tls: e.target.checked } }))}
+                          className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                        />
+                        <span className="text-[10px] text-text-secondary">TLS</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], domains: [...prev[envName].domains, ''] } }))}
+                        className="text-[10px] text-accent hover:text-accent-glow"
+                      >+ Add Domain</button>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-text-tertiary mb-1.5">Overrides the app-level domain for this environment.</p>
+                  {cfg.domains.length === 0 && (
+                    <p className="text-[10px] text-text-tertiary italic">{domain ? `Inherits: ${domain}` : 'No domain configured'}</p>
+                  )}
+                  {cfg.domains.map((d, di) => (
+                    <div key={di} className="flex gap-2 items-center mb-1.5">
+                      <input
+                        value={d}
+                        onChange={e => {
+                          const updated = [...cfg.domains]
+                          updated[di] = e.target.value
+                          setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], domains: updated } }))
+                        }}
+                        className="input-field flex-1 font-mono text-xs"
+                        placeholder={`${envName}.example.com`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const updated = cfg.domains.filter((_, j) => j !== di)
+                          setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], domains: updated } }))
+                        }}
+                        className="text-text-tertiary hover:text-status-failed text-xs px-1"
+                      >&times;</button>
+                    </div>
+                  ))}
                 </div>
                 <div className="mt-2 flex items-center gap-4 flex-wrap">
                   <div>
@@ -2746,13 +2824,34 @@ function AppLogs({ appId, environments }: { appId: string; environments: string[
 
 function AppTerminal({ appId, environments }: { appId: string; environments: string[] }) {
   const [env, setEnv] = useState(environments[0] || '')
+  const [pod, setPod] = useState('')
+  const [container, setContainer] = useState('')
   const [connected, setConnected] = useState(false)
   const termRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const xtermRef = useRef<any>(null)
 
+  const { data: metricsData } = useQuery({
+    queryKey: ['appMetrics', appId, env],
+    queryFn: () => api.getAppMetrics(appId, env),
+    enabled: !!env,
+  })
+
+  const pods: any[] = metricsData?.pods || []
+  const podNames = pods.map((p: any) => p.name)
+  const selectedPod = pods.find((p: any) => p.name === pod)
+  const containers: string[] = (selectedPod?.containers || []).map((c: any) => c.name)
+
+  useEffect(() => {
+    if (podNames.length > 0 && !pod) setPod(podNames[0])
+  }, [podNames.length])
+
+  useEffect(() => {
+    if (containers.length > 0 && !containers.includes(container)) setContainer(containers[0])
+  }, [pod, containers.length])
+
   const connect = () => {
-    if (!env || !termRef.current) return
+    if (!env || !pod || !termRef.current) return
 
     // Dynamically import xterm
     Promise.all([
@@ -2786,7 +2885,9 @@ function AppTerminal({ appId, environments }: { appId: string; environments: str
 
       const token = localStorage.getItem('vesta-token')
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const wsUrl = `${proto}//${window.location.host}/api/v1/apps/${appId}/exec?environment=${encodeURIComponent(env)}&token=${encodeURIComponent(token || '')}`
+      const params = new URLSearchParams({ environment: env, pod, token: token || '' })
+      if (container) params.set('container', container)
+      const wsUrl = `${proto}//${window.location.host}/api/v1/apps/${appId}/exec?${params}`
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
 
@@ -2848,15 +2949,28 @@ function AppTerminal({ appId, environments }: { appId: string; environments: str
       </div>
 
       <div className="flex items-center gap-3 mb-4">
-        <select value={env} onChange={(e) => setEnv(e.target.value)} className="input-field text-xs">
+        <select value={env} onChange={(e) => { setEnv(e.target.value); setPod(''); setContainer('') }} className="input-field text-xs">
           <option value="">Select environment...</option>
           {environments.map((e) => (
             <option key={e} value={e}>{e}</option>
           ))}
         </select>
+        <select value={pod} onChange={(e) => { setPod(e.target.value); setContainer('') }} className="input-field text-xs w-auto font-mono">
+          <option value="">Select pod...</option>
+          {podNames.map((p: string) => (
+            <option key={p} value={p}>{p}</option>
+          ))}
+        </select>
+        {containers.length > 1 && (
+          <select value={container} onChange={(e) => setContainer(e.target.value)} className="input-field text-xs w-auto font-mono">
+            {containers.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        )}
         <button
           onClick={connect}
-          disabled={!env}
+          disabled={!env || !pod}
           className="btn-primary text-xs"
         >
           {connected ? 'Reconnect' : 'Connect'}
