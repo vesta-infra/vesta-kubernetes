@@ -970,15 +970,19 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 		}
 	}
 
-	// Resolve per-environment domain: env override → domain template → app-level domain
-	domain := app.Spec.Ingress.Domain
-	if target.Config.Ingress != nil && target.Config.Ingress.Domain != "" {
-		domain = target.Config.Ingress.Domain
+	// Resolve per-environment domains: env override → domain template → app-level domain
+	var domains []string
+	if target.Config.Ingress != nil && len(target.Config.Ingress.Domains) > 0 {
+		domains = target.Config.Ingress.Domains
+	} else if target.Config.Ingress != nil && target.Config.Ingress.Domain != "" {
+		domains = []string{target.Config.Ingress.Domain}
 	} else if tpl := r.ConfigResolver.GetDomainTemplate(); tpl != "" && target.Config.Name != "" {
 		expanded := strings.ReplaceAll(tpl, "{{app}}", app.Name)
 		expanded = strings.ReplaceAll(expanded, "{{env}}", target.Config.Name)
 		expanded = strings.ReplaceAll(expanded, "{{domain}}", r.ConfigResolver.GetDomain())
-		domain = expanded
+		domains = []string{expanded}
+	} else {
+		domains = []string{app.Spec.Ingress.Domain}
 	}
 
 	// Resolve per-environment TLS: env override → app-level TLS
@@ -1025,22 +1029,21 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Annotations[k] = v
 			}
 
-			ing.Spec = networkingv1.IngressSpec{
-				Rules: []networkingv1.IngressRule{
-					{
-						Host: domain,
-						IngressRuleValue: networkingv1.IngressRuleValue{
-							HTTP: &networkingv1.HTTPIngressRuleValue{
-								Paths: []networkingv1.HTTPIngressPath{
-									{
-										Path:     "/",
-										PathType: &pathType,
-										Backend: networkingv1.IngressBackend{
-											Service: &networkingv1.IngressServiceBackend{
-												Name: app.Name,
-												Port: networkingv1.ServiceBackendPort{
-													Number: ingressPort,
-												},
+			rules := make([]networkingv1.IngressRule, 0, len(domains))
+			for _, d := range domains {
+				rules = append(rules, networkingv1.IngressRule{
+					Host: d,
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{
+								{
+									Path:     "/",
+									PathType: &pathType,
+									Backend: networkingv1.IngressBackend{
+										Service: &networkingv1.IngressServiceBackend{
+											Name: app.Name,
+											Port: networkingv1.ServiceBackendPort{
+												Number: ingressPort,
 											},
 										},
 									},
@@ -1048,7 +1051,11 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 							},
 						},
 					},
-				},
+				})
+			}
+
+			ing.Spec = networkingv1.IngressSpec{
+				Rules: rules,
 			}
 
 			if ingressClassName != "" {
@@ -1059,7 +1066,7 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
 				ing.Spec.TLS = []networkingv1.IngressTLS{
 					{
-						Hosts:      []string{domain},
+						Hosts:      domains,
 						SecretName: tlsSecretName,
 					},
 				}

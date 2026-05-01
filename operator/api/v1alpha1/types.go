@@ -61,8 +61,9 @@ type AppEnvironmentConfig struct {
 
 // IngressOverride allows per-environment domain and TLS configuration.
 type IngressOverride struct {
-	Domain string `json:"domain,omitempty"`
-	TLS    *bool  `json:"tls,omitempty"`
+	Domain  string   `json:"domain,omitempty"`
+	Domains []string `json:"domains,omitempty"`
+	TLS     *bool    `json:"tls,omitempty"`
 }
 
 // ServiceOverride allows per-environment service type and port configuration.

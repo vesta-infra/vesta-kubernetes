@@ -926,10 +926,11 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
-  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string; domain: string; tls: boolean }>>(() => {
+  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string; domains: string[]; tls: boolean }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
       const env = typeof e === 'string' ? { name: e } : e
+      const envDomains = env.ingress?.domains || (env.ingress?.domain ? [env.ingress.domain] : [])
       configs[env.name] = {
         replicas: env.replicas ?? 1,
         podSize: env.resources?.size || '',
@@ -943,7 +944,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         cpuLimit: env.resources?.limits?.cpu || '',
         memoryRequest: env.resources?.requests?.memory || '',
         memoryLimit: env.resources?.limits?.memory || '',
-        domain: env.ingress?.domain || '',
+        domains: envDomains,
         tls: env.ingress?.tls || false,
       }
     }
@@ -1124,8 +1125,9 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           ...(cfg.imageTag && { tag: cfg.imageTag }),
         }
       }
-      if (cfg.domain) {
-        env.ingress = { domain: cfg.domain, tls: cfg.tls }
+      const filteredDomains = cfg.domains.filter(d => d.trim())
+      if (filteredDomains.length > 0) {
+        env.ingress = { domains: filteredDomains, tls: cfg.tls }
       }
       return env
     })
@@ -1434,25 +1436,51 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                   </div>
                 </div>
                 <div className="mt-2 mb-2 p-2.5 rounded-md border border-border bg-surface-2">
-                  <label className="text-xs font-medium text-text-secondary">Domain Override</label>
-                  <p className="text-[10px] text-text-tertiary mt-0.5 mb-1.5">Overrides the app-level domain for this environment.</p>
-                  <div className="flex gap-2 items-center">
-                    <input
-                      value={cfg.domain}
-                      onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], domain: e.target.value } }))}
-                      className="input-field flex-1 font-mono text-xs"
-                      placeholder={domain ? `${domain} (inherited)` : `${envName}.example.com`}
-                    />
-                    <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
-                      <input
-                        type="checkbox"
-                        checked={cfg.tls}
-                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], tls: e.target.checked } }))}
-                        className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
-                      />
-                      <span className="text-xs text-text-secondary">TLS</span>
-                    </label>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-medium text-text-secondary">Domains</label>
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={cfg.tls}
+                          onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], tls: e.target.checked } }))}
+                          className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                        />
+                        <span className="text-[10px] text-text-secondary">TLS</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], domains: [...prev[envName].domains, ''] } }))}
+                        className="text-[10px] text-accent hover:text-accent-glow"
+                      >+ Add Domain</button>
+                    </div>
                   </div>
+                  <p className="text-[10px] text-text-tertiary mb-1.5">Overrides the app-level domain for this environment.</p>
+                  {cfg.domains.length === 0 && (
+                    <p className="text-[10px] text-text-tertiary italic">{domain ? `Inherits: ${domain}` : 'No domain configured'}</p>
+                  )}
+                  {cfg.domains.map((d, di) => (
+                    <div key={di} className="flex gap-2 items-center mb-1.5">
+                      <input
+                        value={d}
+                        onChange={e => {
+                          const updated = [...cfg.domains]
+                          updated[di] = e.target.value
+                          setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], domains: updated } }))
+                        }}
+                        className="input-field flex-1 font-mono text-xs"
+                        placeholder={`${envName}.example.com`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const updated = cfg.domains.filter((_, j) => j !== di)
+                          setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], domains: updated } }))
+                        }}
+                        className="text-text-tertiary hover:text-status-failed text-xs px-1"
+                      >&times;</button>
+                    </div>
+                  ))}
                 </div>
                 <div className="mt-2 flex items-center gap-4 flex-wrap">
                   <div>
