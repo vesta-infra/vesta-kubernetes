@@ -82,6 +82,7 @@ type AppEnvironmentConfig struct {
 	Replicas  *int32                 `json:"replicas,omitempty"`
 	Autoscale map[string]interface{} `json:"autoscale,omitempty"`
 	Resources map[string]interface{} `json:"resources,omitempty"`
+	Ingress   map[string]interface{} `json:"ingress,omitempty"`
 }
 
 type CreateAppRequest struct {

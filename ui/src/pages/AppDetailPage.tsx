@@ -926,7 +926,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
-  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string }>>(() => {
+  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string; domain: string; tls: boolean }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
       const env = typeof e === 'string' ? { name: e } : e
@@ -943,6 +943,8 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         cpuLimit: env.resources?.limits?.cpu || '',
         memoryRequest: env.resources?.requests?.memory || '',
         memoryLimit: env.resources?.limits?.memory || '',
+        domain: env.ingress?.domain || '',
+        tls: env.ingress?.tls || false,
       }
     }
     return configs
@@ -1121,6 +1123,9 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           ...(cfg.imageRepo && { repository: cfg.imageRepo }),
           ...(cfg.imageTag && { tag: cfg.imageTag }),
         }
+      }
+      if (cfg.domain) {
+        env.ingress = { domain: cfg.domain, tls: cfg.tls }
       }
       return env
     })
@@ -1426,6 +1431,27 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                       className="input-field w-36 font-mono text-xs"
                       placeholder="tag"
                     />
+                  </div>
+                </div>
+                <div className="mt-2 mb-2 p-2.5 rounded-md border border-border bg-surface-2">
+                  <label className="text-xs font-medium text-text-secondary">Domain Override</label>
+                  <p className="text-[10px] text-text-tertiary mt-0.5 mb-1.5">Overrides the app-level domain for this environment.</p>
+                  <div className="flex gap-2 items-center">
+                    <input
+                      value={cfg.domain}
+                      onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], domain: e.target.value } }))}
+                      className="input-field flex-1 font-mono text-xs"
+                      placeholder={domain ? `${domain} (inherited)` : `${envName}.example.com`}
+                    />
+                    <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={cfg.tls}
+                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], tls: e.target.checked } }))}
+                        className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                      />
+                      <span className="text-xs text-text-secondary">TLS</span>
+                    </label>
                   </div>
                 </div>
                 <div className="mt-2 flex items-center gap-4 flex-wrap">

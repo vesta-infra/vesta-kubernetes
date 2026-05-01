@@ -122,6 +122,9 @@ func (h *Handler) CreateApp(c *gin.Context) {
 			if e.Resources != nil {
 				envConfig["resources"] = e.Resources
 			}
+			if e.Ingress != nil {
+				envConfig["ingress"] = e.Ingress
+			}
 			envs[i] = envConfig
 		}
 		spec["environments"] = envs
