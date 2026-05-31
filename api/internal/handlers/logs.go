@@ -182,7 +182,10 @@ func (h *Handler) GetMetrics(c *gin.Context) {
 	}
 
 	// Get live metrics from metrics-server (best effort)
-	liveMetrics, _ := h.K8s.GetPodMetrics(c.Request.Context(), targetNS, labelSelector)
+	liveMetrics, metricsErr := h.K8s.GetPodMetrics(c.Request.Context(), targetNS, labelSelector)
+	if metricsErr != nil {
+		fmt.Printf("[WARN] failed to fetch pod metrics for %s in %s: %v\n", labelSelector, targetNS, metricsErr)
+	}
 
 	now := time.Now()
 	podMetrics := make([]podMetric, 0, len(pods))

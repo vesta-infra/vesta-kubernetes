@@ -208,7 +208,7 @@ type PodMetricsUsage struct {
 func (c *Client) GetPodMetrics(ctx context.Context, namespace, labelSelector string) (map[string]PodMetricsUsage, error) {
 	path := fmt.Sprintf("/apis/metrics.k8s.io/v1beta1/namespaces/%s/pods", namespace)
 	if labelSelector != "" {
-		path += "?labelSelector=" + labelSelector
+		path += "?labelSelector=" + url.QueryEscape(labelSelector)
 	}
 	raw, err := c.Clientset.Discovery().RESTClient().Get().AbsPath(path).DoRaw(ctx)
 	if err != nil {
