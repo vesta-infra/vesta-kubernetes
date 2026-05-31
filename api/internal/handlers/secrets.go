@@ -208,7 +208,8 @@ func (h *Handler) ListAppEnvSecrets(c *gin.Context) {
 	c.JSON(http.StatusOK, models.ListResponse{Items: items, Total: 1})
 }
 
-// RevealAppEnvSecretValues reveals values for an app/environment secret deterministically.
+// RevealAppEnvSecretValues reveals values for an app/environment secret.
+// Accessible by global admins and project owners.
 func (h *Handler) RevealAppEnvSecretValues(c *gin.Context) {
 	appID := c.Param("appId")
 	env := c.Param("env")
@@ -221,6 +222,18 @@ func (h *Handler) RevealAppEnvSecretValues(c *gin.Context) {
 
 	appSpec, _, _ := unstructuredNestedMap(app.Object, "spec")
 	project := getNestedString(appSpec, "project")
+
+	// Admins always pass; project owners may also reveal secrets in their project
+	userRole, _ := c.Get("role")
+	if userRole != "admin" {
+		userID := c.GetString("userId")
+		ok, err := h.DB.IsProjectOwner(c.Request.Context(), project, userID)
+		if err != nil || !ok {
+			c.JSON(http.StatusForbidden, models.ErrorResponse{Code: 403, Message: "insufficient permissions"})
+			return
+		}
+	}
+
 	namespace := fmt.Sprintf("%s-%s", project, env)
 	secretName := fmt.Sprintf("%s-secrets", appID)
 
@@ -464,7 +477,8 @@ func extractSecretKeys(spec map[string]interface{}) []string {
 	return keys
 }
 
-// RevealSecretValues returns actual secret values. Admin-only with full audit trail.
+// RevealSecretValues returns actual secret values.
+// Accessible by global admins and project owners.
 func (h *Handler) RevealSecretValues(c *gin.Context) {
 	secretID := c.Param("secretId")
 
@@ -497,6 +511,18 @@ func (h *Handler) RevealSecretValues(c *gin.Context) {
 	spec, _, _ := unstructuredNestedMap(secret.Object, "spec")
 	labels := secret.GetLabels()
 	keys := extractSecretKeys(spec)
+
+	// Admins always pass; project owners may also reveal secrets in their project
+	userRole, _ := c.Get("role")
+	if userRole != "admin" {
+		project := labels["kubernetes.getvesta.sh/project"]
+		userID := c.GetString("userId")
+		ok, err := h.DB.IsProjectOwner(c.Request.Context(), project, userID)
+		if err != nil || !ok {
+			c.JSON(http.StatusForbidden, models.ErrorResponse{Code: 403, Message: "insufficient permissions"})
+			return
+		}
+	}
 
 	values := make(map[string]string)
 	if data, ok := spec["data"].(map[string]interface{}); ok {

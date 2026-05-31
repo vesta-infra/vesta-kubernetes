@@ -74,6 +74,11 @@ func (h *Handler) CreateAppEnvVars(c *gin.Context) {
 		return
 	}
 
+	// Trigger a rolling restart so the new env vars take effect immediately.
+	// (The operator also re-reconciles via its Secret/ConfigMap watch, but this
+	// keeps behaviour consistent with the secrets handlers.)
+	h.restartDeployment(c, namespace, appID)
+
 	keys := make([]string, 0, len(body.Data))
 	for k := range body.Data {
 		keys = append(keys, k)
@@ -177,6 +182,9 @@ func (h *Handler) DeleteAppEnvVarKey(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
 	}
+
+	// Trigger a rolling restart so the deleted env var is removed from running pods.
+	h.restartDeployment(c, namespace, appID)
 
 	c.Status(http.StatusNoContent)
 

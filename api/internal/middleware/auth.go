@@ -217,6 +217,49 @@ func DenyRole(roles ...string) gin.HandlerFunc {
 	}
 }
 
+// RequireProjectRole checks that the user has one of the specified roles within the project.
+// Global admins always pass. projectId is read from the :projectId route param.
+func RequireProjectRole(database *db.DB, roles ...string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userRole, _ := c.Get("role")
+		if userRole == "admin" {
+			c.Next()
+			return
+		}
+
+		projectID := c.Param("projectId")
+		userID := c.GetString("userId")
+		if projectID == "" || userID == "" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code":    403,
+				"message": "insufficient permissions",
+			})
+			return
+		}
+
+		memberRole, err := database.GetProjectMemberRole(c.Request.Context(), projectID, userID)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code":    403,
+				"message": "insufficient project permissions",
+			})
+			return
+		}
+
+		for _, r := range roles {
+			if memberRole == r {
+				c.Next()
+				return
+			}
+		}
+
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"code":    403,
+			"message": "insufficient project permissions",
+		})
+	}
+}
+
 // RequireTeamRole checks that the user has the specified role within the team.
 // Admins (global role) always pass. teamId is read from the route param.
 func RequireTeamRole(database *db.DB, roles ...string) gin.HandlerFunc {

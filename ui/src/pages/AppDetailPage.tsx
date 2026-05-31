@@ -3,7 +3,7 @@ import { useParams, Link, useNavigate, useLocation, useSearchParams } from 'reac
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
 import { api } from '../lib/api'
-import { useUserRole } from '../lib/useRole'
+import { useUserRole, useIsProjectOwner } from '../lib/useRole'
 import RevealableInput from '../components/RevealableInput'
 
 export default function AppDetailPage() {
@@ -700,9 +700,9 @@ export default function AppDetailPage() {
 
               <section className="card p-5">
                 <h3 className="section-title mb-4">Per-Environment Secrets</h3>
-                <p className="text-[11px] text-text-tertiary mb-3">Sensitive configuration. Values are hidden and can only be revealed by admins.</p>
+                <p className="text-[11px] text-text-tertiary mb-3">Sensitive configuration. Values are hidden and can only be revealed by admins or project owners.</p>
                 {secretEnv ? (
-                  <EnvSecrets appId={appId!} env={secretEnv} />
+                  <EnvSecrets appId={appId!} env={secretEnv} projectId={projectId} />
                 ) : (
                   <p className="text-xs text-text-tertiary">Select an environment above to manage secrets.</p>
                 )}
@@ -4315,7 +4315,7 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
   )
 }
 
-function EnvSecrets({ appId, env }: { appId: string; env: string }) {
+function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; projectId?: string }) {
   const queryClient = useQueryClient()
   const { data, isLoading } = useQuery({
     queryKey: ['appEnvSecrets', appId, env],
@@ -4324,6 +4324,8 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
 
   const role = useUserRole()
   const isAdmin = role === 'admin'
+  const isProjectOwner = useIsProjectOwner(projectId)
+  const canReveal = isAdmin || isProjectOwner
   const [showAdd, setShowAdd] = useState(false)
   const [newKeys, setNewKeys] = useState([{ key: '', value: '' }])
   const [editMode, setEditMode] = useState(false)
@@ -4464,7 +4466,7 @@ function EnvSecrets({ appId, env }: { appId: string; env: string }) {
           >
             + Add Keys
           </button>
-          {isAdmin && existingKeys.length > 0 && !revealed && (
+          {canReveal && existingKeys.length > 0 && !revealed && (
             <button
               onClick={handleReveal}
               disabled={revealLoading}

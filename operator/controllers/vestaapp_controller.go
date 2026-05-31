@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -22,7 +23,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	vestav1alpha1 "kubernetes.getvesta.sh/operator/api/v1alpha1"
 )
@@ -417,11 +420,17 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 
 	container := r.buildContainer(app, target.Config.Resources, target.Config.Name, target.Config.Image)
 
+	// configFingerprint accumulates ResourceVersions of secrets/configmaps that
+	// feed env vars into the pod via envFrom. Including these in the rollout
+	// hash forces a new ReplicaSet whenever any referenced data changes.
+	var configFingerprintParts []string
+
 	// Auto-inject the per-app secret ("{appName}-secrets") as envFrom if it exists in the target namespace.
 	// This secret is created by the API when users add per-environment secrets.
 	appSecretName := app.Name + "-secrets"
 	appSecrets := &corev1.Secret{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: appSecretName}, appSecrets); err == nil {
+		configFingerprintParts = append(configFingerprintParts, fmt.Sprintf("secret/%s=%s", appSecretName, appSecrets.ResourceVersion))
 		// Check it's not already referenced via explicit spec.runtime.secrets
 		alreadyBound := false
 		for _, sb := range app.Spec.Runtime.Secrets {
@@ -439,11 +448,24 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 		}
 	}
 
+	// Track ResourceVersions of any explicitly-bound secrets so updates to those
+	// also trigger rollouts.
+	for _, sb := range app.Spec.Runtime.Secrets {
+		if sb.SecretRef == nil || sb.SecretRef.Name == "" {
+			continue
+		}
+		boundSecret := &corev1.Secret{}
+		if err := r.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: sb.SecretRef.Name}, boundSecret); err == nil {
+			configFingerprintParts = append(configFingerprintParts, fmt.Sprintf("secret/%s=%s", sb.SecretRef.Name, boundSecret.ResourceVersion))
+		}
+	}
+
 	// Auto-inject the per-app ConfigMap ("{appName}-envvars") as envFrom if it exists.
 	// This ConfigMap is created by the API when users add per-environment env vars.
 	appEnvVarsCM := app.Name + "-envvars"
 	cm := &corev1.ConfigMap{}
 	if err := r.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: appEnvVarsCM}, cm); err == nil {
+		configFingerprintParts = append(configFingerprintParts, fmt.Sprintf("configmap/%s=%s", appEnvVarsCM, cm.ResourceVersion))
 		container.EnvFrom = append(container.EnvFrom, corev1.EnvFromSource{
 			ConfigMapRef: &corev1.ConfigMapEnvSource{
 				LocalObjectReference: corev1.LocalObjectReference{Name: appEnvVarsCM},
@@ -492,16 +514,27 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 				MatchLabels: labels,
 			}
 
-			// Compute a hash of the pod spec so that any change (e.g. pod size,
-			// env vars, image) forces Kubernetes to trigger a rolling update.
-			specHash := computePodSpecHash(podSpec)
+			// Compute a hash of the pod spec + the data-fingerprint of envFrom
+			// sources (Secret/ConfigMap ResourceVersions) so that any change
+			// — pod size, env vars, image, volumes, OR the contents of a
+			// referenced Secret/ConfigMap — forces a rolling update.
+			specHash := computeRolloutHash(podSpec, configFingerprintParts)
+
+			// Preserve a manually-applied restart annotation (set by the API's
+			// RestartApp / restartDeployment helpers). Without this, the next
+			// reconcile would overwrite the pod template annotations and cancel
+			// the rollout the user just requested.
+			tplAnnotations := map[string]string{
+				"kubernetes.getvesta.sh/spec-hash": specHash,
+			}
+			if existing := deploy.Spec.Template.Annotations["kubernetes.getvesta.sh/restartedAt"]; existing != "" {
+				tplAnnotations["kubernetes.getvesta.sh/restartedAt"] = existing
+			}
 
 			deploy.Spec.Template = corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: labels,
-					Annotations: map[string]string{
-						"kubernetes.getvesta.sh/spec-hash": specHash,
-					},
+					Labels:      labels,
+					Annotations: tplAnnotations,
 				},
 				Spec: podSpec,
 			}
@@ -1540,14 +1573,108 @@ func (r *VestaAppReconciler) labelsForApp(app *vestav1alpha1.VestaApp) map[strin
 func (r *VestaAppReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&vestav1alpha1.VestaApp{}).
+		Watches(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.mapEnvFromSourceToApps),
+		).
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.mapEnvFromSourceToApps),
+		).
 		Complete(r)
 }
 
-// computePodSpecHash returns a short SHA-256 hex digest of the serialised PodSpec.
-// This is used as a PodTemplate annotation so that any spec change (resources,
-// env vars, image, volumes, etc.) forces a Deployment rollout.
-func computePodSpecHash(spec corev1.PodSpec) string {
+// mapEnvFromSourceToApps enqueues VestaApp reconciles when a Secret or ConfigMap
+// that the operator may inject via envFrom is created/updated/deleted.
+//
+// Strategy: a per-app Secret is named "{appName}-secrets" and the per-app
+// ConfigMap is "{appName}-envvars". The object's namespace is "{project}-{env}".
+// We list VestaApps with .spec.project == project and pick the one whose name
+// matches the suffix-stripped object name. We additionally enqueue any apps in
+// that project that explicitly reference the object via spec.runtime.secrets.
+func (r *VestaAppReconciler) mapEnvFromSourceToApps(ctx context.Context, obj client.Object) []reconcile.Request {
+	objName := obj.GetName()
+	objNS := obj.GetNamespace()
+
+	// Namespace convention: "{project}-{env}". If it doesn't contain a dash we
+	// can't infer the project, so skip the cheap path and just bail.
+	dash := strings.LastIndex(objNS, "-")
+	if dash <= 0 {
+		return nil
+	}
+	project := objNS[:dash]
+
+	// Determine whether this object is a per-app auto-injected source, and if
+	// so what the app name is.
+	var autoApp string
+	switch {
+	case strings.HasSuffix(objName, "-secrets"):
+		autoApp = strings.TrimSuffix(objName, "-secrets")
+	case strings.HasSuffix(objName, "-envvars"):
+		autoApp = strings.TrimSuffix(objName, "-envvars")
+	}
+
+	// List apps in the same project (VestaApps live in the operator's
+	// management namespace, not the workload namespace).
+	apps := &vestav1alpha1.VestaAppList{}
+	if err := r.List(ctx, apps, client.MatchingFields{}); err != nil {
+		// Field selectors aren't indexed; fall back to a full list.
+		apps = &vestav1alpha1.VestaAppList{}
+		if err := r.List(ctx, apps); err != nil {
+			return nil
+		}
+	}
+
+	var requests []reconcile.Request
+	seen := map[string]struct{}{}
+	enqueue := func(a *vestav1alpha1.VestaApp) {
+		key := a.Namespace + "/" + a.Name
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKey{Namespace: a.Namespace, Name: a.Name}})
+	}
+
+	for i := range apps.Items {
+		a := &apps.Items[i]
+		if a.Spec.Project != project {
+			continue
+		}
+		if autoApp != "" && a.Name == autoApp {
+			enqueue(a)
+			continue
+		}
+		// Explicit secret bindings (only Secrets — ConfigMaps aren't bound this way).
+		if _, isSecret := obj.(*corev1.Secret); isSecret {
+			for _, sb := range a.Spec.Runtime.Secrets {
+				if sb.SecretRef != nil && sb.SecretRef.Name == objName {
+					enqueue(a)
+					break
+				}
+			}
+		}
+	}
+
+	return requests
+}
+
+// computeRolloutHash combines the PodSpec hash with a fingerprint derived from
+// the ResourceVersions of the Secrets and ConfigMaps that are referenced via
+// envFrom. This ensures that updates to the underlying secret/configmap data
+// — which are not reflected in the PodSpec itself — also trigger a rolling
+// update of the Deployment.
+func computeRolloutHash(spec corev1.PodSpec, fingerprintParts []string) string {
+	h := sha256.New()
 	data, _ := json.Marshal(spec)
-	sum := sha256.Sum256(data)
+	h.Write(data)
+	// Sort to keep the hash stable regardless of iteration order.
+	parts := append([]string(nil), fingerprintParts...)
+	sort.Strings(parts)
+	for _, p := range parts {
+		h.Write([]byte{0})
+		h.Write([]byte(p))
+	}
+	sum := h.Sum(nil)
 	return fmt.Sprintf("%x", sum[:8])
 }

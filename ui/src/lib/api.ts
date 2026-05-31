@@ -127,6 +127,14 @@ export const api = {
   deleteProject: (id: string) =>
     request<void>(`/projects/${id}`, { method: 'DELETE' }),
 
+  // Project Members
+  listProjectMembers: (projectId: string) =>
+    request<{ items: any[]; total: number }>(`/projects/${projectId}/members`),
+  addProjectMember: (projectId: string, data: { userId: string; role?: string }) =>
+    request<any>(`/projects/${projectId}/members`, { method: 'POST', body: JSON.stringify(data) }),
+  removeProjectMember: (projectId: string, userId: string) =>
+    request<void>(`/projects/${projectId}/members/${userId}`, { method: 'DELETE' }),
+
   // Environments
   listEnvironments: (projectId: string) =>
     request<{ items: any[]; total: number }>(`/projects/${projectId}/environments`),

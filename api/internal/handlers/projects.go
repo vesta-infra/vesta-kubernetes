@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"kubernetes.getvesta.sh/api/internal/db"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
 )
@@ -187,6 +188,69 @@ func (h *Handler) DeleteProject(c *gin.Context) {
 	}
 
 	h.auditLog(c, "delete_project", "project", projectID, projectID, projectID, "", nil)
+
+	c.Status(http.StatusNoContent)
+}
+
+// ─── Project Members ─────────────────────────────────────────────────────────
+
+func (h *Handler) ListProjectMembers(c *gin.Context) {
+	projectID := c.Param("projectId")
+
+	members, err := h.DB.ListProjectMembers(c.Request.Context(), projectID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	if members == nil {
+		members = []db.ProjectMember{}
+	}
+
+	c.JSON(http.StatusOK, models.ListResponse{Items: members, Total: len(members)})
+}
+
+func (h *Handler) AddProjectMember(c *gin.Context) {
+	projectID := c.Param("projectId")
+
+	var req struct {
+		UserID string `json:"userId" binding:"required"`
+		Role   string `json:"role"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+	if req.Role == "" {
+		req.Role = "owner"
+	}
+	if req.Role != "owner" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "invalid role: must be 'owner'"})
+		return
+	}
+
+	if err := h.DB.AddProjectMember(c.Request.Context(), projectID, req.UserID, req.Role); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	h.auditLog(c, "add_project_member", "project", projectID, projectID, projectID, "",
+		map[string]interface{}{"userId": req.UserID, "role": req.Role})
+
+	c.JSON(http.StatusCreated, gin.H{"projectId": projectID, "userId": req.UserID, "role": req.Role})
+}
+
+func (h *Handler) RemoveProjectMember(c *gin.Context) {
+	projectID := c.Param("projectId")
+	userID := c.Param("userId")
+
+	if err := h.DB.RemoveProjectMember(c.Request.Context(), projectID, userID); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	h.auditLog(c, "remove_project_member", "project", projectID, projectID, projectID, "",
+		map[string]interface{}{"userId": userID})
 
 	c.Status(http.StatusNoContent)
 }

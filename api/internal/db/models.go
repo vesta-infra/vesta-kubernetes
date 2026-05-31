@@ -31,6 +31,17 @@ type TeamMember struct {
 	DisplayName string `json:"displayName,omitempty"`
 }
 
+type ProjectMember struct {
+	ProjectID   string    `json:"projectId"`
+	UserID      string    `json:"userId"`
+	Role        string    `json:"role"`
+	CreatedAt   time.Time `json:"createdAt"`
+	// Populated by joins
+	Username    string `json:"username,omitempty"`
+	Email       string `json:"email,omitempty"`
+	DisplayName string `json:"displayName,omitempty"`
+}
+
 type APIToken struct {
 	ID         string     `json:"id"`
 	UserID     string     `json:"userId"`

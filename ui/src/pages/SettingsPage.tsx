@@ -823,19 +823,27 @@ function RolesSection() {
       permissions: ['View team resources', 'Deploy team apps', 'View team secrets'],
       scope: 'Team',
     },
+    {
+      name: 'Project Owner',
+      description: 'Can reveal and manage secrets for apps within assigned projects',
+      permissions: ['Reveal project app secrets', 'Reveal project shared secrets', 'View project resources'],
+      scope: 'Project',
+    },
   ]
 
   return (
     <section className="card p-6">
       <h3 className="section-title mb-5">Roles & Permissions</h3>
       <div className="space-y-4">
-        {roles.map((role) => (
+        {roles.map((role) => {
+          let scopeClass = 'bg-status-running/10 text-status-running'
+          if (role.scope === 'Global') scopeClass = 'bg-accent/10 text-accent'
+          else if (role.scope === 'Project') scopeClass = 'bg-yellow-500/10 text-yellow-400'
+          return (
           <div key={role.name} className="bg-surface-1 border border-border rounded-lg p-5">
             <div className="flex items-center gap-3 mb-2">
               <h4 className="text-sm font-medium text-text-primary">{role.name}</h4>
-              <span className={`text-[10px] font-mono px-2 py-0.5 rounded ${
-                role.scope === 'Global' ? 'bg-accent/10 text-accent' : 'bg-status-running/10 text-status-running'
-              }`}>
+              <span className={`text-[10px] font-mono px-2 py-0.5 rounded ${scopeClass}`}>
                 {role.scope}
               </span>
             </div>
@@ -848,7 +856,8 @@ function RolesSection() {
               ))}
             </div>
           </div>
-        ))}
+          )
+        })}
       </div>
     </section>
   )

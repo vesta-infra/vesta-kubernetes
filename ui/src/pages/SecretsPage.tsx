@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { useUserRole } from '../lib/useRole'
+import { useUserRole, useIsProjectOwner } from '../lib/useRole'
 import RevealableInput from '../components/RevealableInput'
 
 export default function SecretsPage() {
@@ -111,6 +111,8 @@ function SecretItem({ secret: s, isAdmin, onDelete }: { secret: any; isAdmin: bo
   const [revealed, setRevealed] = useState<Record<string, string> | null>(null)
   const [loading, setLoading] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const isProjectOwner = useIsProjectOwner(s.project)
+  const canReveal = isAdmin || isProjectOwner
 
   useEffect(() => {
     if (!revealed) return
@@ -162,7 +164,7 @@ function SecretItem({ secret: s, isAdmin, onDelete }: { secret: any; isAdmin: bo
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {isAdmin && s.keys?.length > 0 && !revealed && (
+          {canReveal && s.keys?.length > 0 && !revealed && (
             <button
               onClick={() => setConfirmOpen(true)}
               disabled={loading}
@@ -430,6 +432,8 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete, showProject
   const [editMode, setEditMode] = useState(false)
   const [editKeys, setEditKeys] = useState<{ key: string; value: string; isNew?: boolean }[]>([])
   const [deletedKeys, setDeletedKeys] = useState<string[]>([])
+  const isProjectOwner = useIsProjectOwner(projectId)
+  const canReveal = isAdmin || isProjectOwner
 
   useEffect(() => {
     if (!revealed) return
@@ -505,7 +509,7 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete, showProject
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {isAdmin && s.keys?.length > 0 && !revealed && !editMode && (
+          {canReveal && s.keys?.length > 0 && !revealed && !editMode && (
             <button
               onClick={handleReveal}
               disabled={revealLoading}

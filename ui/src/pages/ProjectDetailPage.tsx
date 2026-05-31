@@ -224,6 +224,10 @@ export default function ProjectDetailPage() {
           </section>
 
           <ImagePullSecretsSection projectId={projectId!} project={project} />
+
+          {role === 'admin' && (
+            <ProjectOwnersSection projectId={projectId!} />
+          )}
         </div>
       </div>
 
@@ -231,6 +235,105 @@ export default function ProjectDetailPage() {
       <AlertRulesSection projectId={projectId!} />
       <DependencyGraphSection projectId={projectId!} />
     </div>
+  )
+}
+
+function ProjectOwnersSection({ projectId }: { projectId: string }) {
+  const queryClient = useQueryClient()
+  const [showAdd, setShowAdd] = useState(false)
+  const [selectedUserId, setSelectedUserId] = useState('')
+
+  const { data: members, isLoading } = useQuery({
+    queryKey: ['projectMembers', projectId],
+    queryFn: () => api.listProjectMembers(projectId),
+  })
+
+  const { data: users } = useQuery({
+    queryKey: ['users'],
+    queryFn: () => api.listUsers(),
+    enabled: showAdd,
+  })
+
+  const addMutation = useMutation({
+    mutationFn: (userId: string) => api.addProjectMember(projectId, { userId, role: 'owner' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projectMembers', projectId] })
+      setShowAdd(false)
+      setSelectedUserId('')
+    },
+  })
+
+  const removeMutation = useMutation({
+    mutationFn: (userId: string) => api.removeProjectMember(projectId, userId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projectMembers', projectId] }),
+  })
+
+  const existingIds = new Set((members?.items || []).map((m: any) => m.userId))
+  const availableUsers = (users?.items || []).filter((u: any) => !existingIds.has(u.id))
+
+  return (
+    <section className="card p-5">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="section-title">Project Owners</h3>
+        <button
+          onClick={() => { setShowAdd(!showAdd); setSelectedUserId('') }}
+          className="text-xs text-accent hover:text-accent-glow transition-colors"
+        >
+          {showAdd ? 'Cancel' : 'Add'}
+        </button>
+      </div>
+
+      {showAdd && (
+        <div className="mb-4 space-y-2">
+          <select
+            value={selectedUserId}
+            onChange={(e) => setSelectedUserId(e.target.value)}
+            className="input w-full text-xs"
+          >
+            <option value="">Select a user...</option>
+            {availableUsers.map((u: any) => (
+              <option key={u.id} value={u.id}>
+                {u.displayName || u.username} ({u.email})
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={() => { if (selectedUserId) addMutation.mutate(selectedUserId) }}
+            disabled={!selectedUserId || addMutation.isPending}
+            className="btn-primary w-full text-xs"
+          >
+            {addMutation.isPending ? 'Adding...' : 'Add as Project Owner'}
+          </button>
+          {addMutation.isError && (
+            <p className="text-status-failed text-xs">{(addMutation.error as Error).message}</p>
+          )}
+        </div>
+      )}
+
+      {isLoading && <p className="text-xs text-text-tertiary">Loading...</p>}
+
+      {!isLoading && (!members?.items || members.items.length === 0) && (
+        <p className="text-xs text-text-tertiary">No project owners assigned.</p>
+      )}
+
+      <div className="space-y-2">
+        {(members?.items || []).map((m: any) => (
+          <div key={m.userId} className="flex items-center justify-between">
+            <div>
+              <p className="text-xs text-text-primary">{m.displayName || m.username || m.userId}</p>
+              {m.email && <p className="text-[11px] text-text-tertiary font-mono">{m.email}</p>}
+            </div>
+            <button
+              onClick={() => removeMutation.mutate(m.userId)}
+              disabled={removeMutation.isPending}
+              className="text-[11px] text-text-tertiary hover:text-status-failed transition-colors"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+    </section>
   )
 }
 
