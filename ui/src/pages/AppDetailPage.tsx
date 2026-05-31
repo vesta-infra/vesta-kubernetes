@@ -1096,6 +1096,8 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     // Ingress
     if (domain) {
       patch.ingress = { domain, tls }
+    } else {
+      patch.ingress = null
     }
 
     // Health check
@@ -1152,6 +1154,8 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       const filteredDomains = cfg.domains.filter(d => d.trim())
       if (filteredDomains.length > 0) {
         env.ingress = { domains: filteredDomains, tls: cfg.tls }
+      } else {
+        env.ingress = null
       }
       return env
     })

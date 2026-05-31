@@ -155,9 +155,17 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return r.updateStatusFailed(ctx, &app, err)
 		}
 
-		if app.Spec.Ingress != nil {
+		if app.Spec.Ingress != nil || target.Config.Ingress != nil {
 			if err := r.reconcileIngress(ctx, &app, target); err != nil {
 				return r.updateStatusFailed(ctx, &app, err)
+			}
+		} else {
+			// Clean up orphaned Ingress if ingress config was removed
+			orphanIng := &networkingv1.Ingress{}
+			if err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: app.Name}, orphanIng); err == nil {
+				if err := r.Client.Delete(ctx, orphanIng); err != nil {
+					logger.Error(err, "failed to delete orphaned ingress", "namespace", target.Namespace)
+				}
 			}
 		}
 
@@ -1014,12 +1022,30 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 		expanded = strings.ReplaceAll(expanded, "{{env}}", target.Config.Name)
 		expanded = strings.ReplaceAll(expanded, "{{domain}}", r.ConfigResolver.GetDomain())
 		domains = []string{expanded}
-	} else {
+	} else if app.Spec.Ingress != nil && app.Spec.Ingress.Domain != "" {
 		domains = []string{app.Spec.Ingress.Domain}
+	} else {
+		// No domains resolvable — skip ingress creation
+		return nil
 	}
 
-	// Resolve per-environment TLS: env override → app-level TLS
-	tlsEnabled := app.Spec.Ingress.TLS
+	// Filter out empty-string domains
+	filtered := domains[:0]
+	for _, d := range domains {
+		if strings.TrimSpace(d) != "" {
+			filtered = append(filtered, d)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	domains = filtered
+
+	// Resolve per-environment TLS: env override → app-level TLS → default false
+	tlsEnabled := false
+	if app.Spec.Ingress != nil {
+		tlsEnabled = app.Spec.Ingress.TLS
+	}
 	if target.Config.Ingress != nil && target.Config.Ingress.TLS != nil {
 		tlsEnabled = *target.Config.Ingress.TLS
 	}
@@ -1042,7 +1068,11 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			ing.Labels = labels
 			ing.Annotations = map[string]string{}
 
-			clusterIssuer := app.Spec.Ingress.ClusterIssuer
+			var clusterIssuer, ingressClassName string
+			if app.Spec.Ingress != nil {
+				clusterIssuer = app.Spec.Ingress.ClusterIssuer
+				ingressClassName = app.Spec.Ingress.IngressClassName
+			}
 			if clusterIssuer == "" {
 				clusterIssuer = r.ConfigResolver.GetClusterIssuer()
 			}
@@ -1050,7 +1080,6 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuer
 			}
 
-			ingressClassName := app.Spec.Ingress.IngressClassName
 			if ingressClassName == "" {
 				ingressClassName = r.ConfigResolver.GetIngressClassName()
 			}
@@ -1058,8 +1087,10 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Annotations["kubernetes.io/ingress.class"] = ingressClassName
 			}
 
-			for k, v := range app.Spec.Ingress.Annotations {
-				ing.Annotations[k] = v
+			if app.Spec.Ingress != nil {
+				for k, v := range app.Spec.Ingress.Annotations {
+					ing.Annotations[k] = v
+				}
 			}
 
 			rules := make([]networkingv1.IngressRule, 0, len(domains))
