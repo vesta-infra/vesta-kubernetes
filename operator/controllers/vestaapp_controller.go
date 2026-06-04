@@ -1594,8 +1594,8 @@ func isRetriable(err error) bool {
 
 func (r *VestaAppReconciler) labelsForApp(app *vestav1alpha1.VestaApp) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":       app.Name,
-		"app.kubernetes.io/managed-by": "vesta-operator",
+		"app.kubernetes.io/name":         app.Name,
+		"app.kubernetes.io/managed-by":   "vesta-operator",
 		"kubernetes.getvesta.sh/project": app.Spec.Project,
 		"kubernetes.getvesta.sh/app":     app.Name,
 	}

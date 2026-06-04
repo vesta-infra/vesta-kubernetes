@@ -910,6 +910,11 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const [port, setPort] = useState(String(app.spec?.runtime?.port || 3000))
   const [domain, setDomain] = useState(app.spec?.ingress?.domain || '')
   const [tls, setTls] = useState(app.spec?.ingress?.tls || false)
+  const [ingressAnnotations, setIngressAnnotations] = useState<{ key: string; value: string }[]>(() => {
+    const a = app.spec?.ingress?.annotations || {}
+    const entries = Object.entries(a)
+    return entries.length > 0 ? entries.map(([key, value]) => ({ key, value: value as string })) : []
+  })
 
   // Service config (multi-port + service type)
   const [serviceType, setServiceType] = useState<string>(app.spec?.service?.type || 'ClusterIP')
@@ -1095,7 +1100,9 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
     // Ingress
     if (domain) {
-      patch.ingress = { domain, tls }
+      const ingressAnns: Record<string, string> = {}
+      ingressAnnotations.forEach(a => { if (a.key) ingressAnns[a.key] = a.value })
+      patch.ingress = { domain, tls, ...(Object.keys(ingressAnns).length > 0 && { annotations: ingressAnns }) }
     } else {
       patch.ingress = null
     }
@@ -1791,6 +1798,20 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             <input value={buildDockerfile} onChange={e => setBuildDockerfile(e.target.value)} className="input-field font-mono text-xs w-48" placeholder="Dockerfile" />
           </div>
         )}
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <label className="label">Ingress Annotations</label>
+          <button type="button" onClick={() => setIngressAnnotations(prev => [...prev, { key: '', value: '' }])} className="text-xs text-accent hover:text-accent-glow">+ Add</button>
+        </div>
+        {ingressAnnotations.map((a, i) => (
+          <div key={i} className="flex gap-2 mb-2">
+            <input value={a.key} onChange={e => { const u = [...ingressAnnotations]; u[i].key = e.target.value; setIngressAnnotations(u) }} placeholder="traefik.ingress.kubernetes.io/body-size" className="input-field flex-1 font-mono text-xs" />
+            <input value={a.value} onChange={e => { const u = [...ingressAnnotations]; u[i].value = e.target.value; setIngressAnnotations(u) }} placeholder="10MB" className="input-field flex-1 text-xs" />
+            <button type="button" onClick={() => setIngressAnnotations(prev => prev.filter((_, j) => j !== i))} className="text-text-tertiary hover:text-status-failed text-xs px-2">&times;</button>
+          </div>
+        ))}
       </div>
 
       <div>
