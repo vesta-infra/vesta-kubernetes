@@ -1099,11 +1099,19 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     }
 
     // Ingress
-    if (domain) {
-      const ingressAnns: Record<string, string> = {}
-      ingressAnnotations.forEach(a => { if (a.key) ingressAnns[a.key] = a.value })
-      patch.ingress = { domain, tls, ...(Object.keys(ingressAnns).length > 0 && { annotations: ingressAnns }) }
-    } else {
+    const ingressAnns: Record<string, string> = {}
+    ingressAnnotations.forEach(a => { if (a.key) ingressAnns[a.key] = a.value })
+    if (domain || Object.keys(ingressAnns).length > 0) {
+      const existingIngress = app.spec?.ingress || {}
+      patch.ingress = {
+        ...existingIngress,
+        ...(domain && { domain }),
+        tls,
+        annotations: Object.keys(ingressAnns).length > 0 ? ingressAnns : undefined,
+      }
+      // Remove undefined keys so they don't serialize as null
+      if (!patch.ingress.annotations) delete patch.ingress.annotations
+    } else if (!domain && !app.spec?.ingress?.clusterIssuer && !app.spec?.ingress?.ingressClassName) {
       patch.ingress = null
     }
 
