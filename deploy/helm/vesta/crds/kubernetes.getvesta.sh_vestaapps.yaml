@@ -458,7 +458,6 @@ spec:
                     type: object
                     additionalProperties:
                       type: string
-                required: [ domain ]
               cronjobs:
                 type: array
                 items:
