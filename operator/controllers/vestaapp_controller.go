@@ -161,6 +161,8 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			if err := r.reconcileIngress(ctx, &app, target); err != nil {
 				return r.updateStatusFailed(ctx, &app, err)
 			}
+			// Reconcile HTTPS redirect middleware for Traefik when TLS is enabled
+			r.reconcileHTTPSRedirectMiddleware(ctx, &app, target)
 		} else {
 			// Clean up orphaned Ingress if ingress config was removed
 			orphanIng := &networkingv1.Ingress{}
@@ -1142,6 +1144,16 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			if tlsEnabled {
 				if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
 					ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
+					ing.Annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "web,websecure"
+					// Reference the HTTPS redirect middleware
+					httpsMiddlewareName := fmt.Sprintf("%s-https-redirect", app.Name)
+					middlewareRef := fmt.Sprintf("%s-%s@kubernetescrd", target.Namespace, httpsMiddlewareName)
+					// Append to existing middlewares if any (e.g., from per-env annotations)
+					if existing, ok := ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"]; ok && existing != "" {
+						ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = existing + "," + middlewareRef
+					} else {
+						ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = middlewareRef
+					}
 				}
 				ing.Spec.TLS = []networkingv1.IngressTLS{
 					{
@@ -1395,6 +1407,73 @@ func traefikMiddlewareGVK() schema.GroupVersionKind {
 		Group:   "traefik.io",
 		Version: "v1alpha1",
 		Kind:    "Middleware",
+	}
+}
+
+// reconcileHTTPSRedirectMiddleware creates or deletes the HTTPS redirect middleware per app/env.
+// When TLS is enabled and ingress class is Traefik, it creates a redirectScheme middleware.
+// When TLS is not enabled, it cleans up any existing middleware.
+func (r *VestaAppReconciler) reconcileHTTPSRedirectMiddleware(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) {
+	logger := log.FromContext(ctx)
+	middlewareName := fmt.Sprintf("%s-https-redirect", app.Name)
+
+	// Determine if TLS is enabled for this env
+	tlsEnabled := false
+	if app.Spec.Ingress != nil {
+		tlsEnabled = app.Spec.Ingress.TLS
+	}
+	if target.Config.Ingress != nil && target.Config.Ingress.TLS != nil {
+		tlsEnabled = *target.Config.Ingress.TLS
+	}
+
+	// Determine ingress class
+	ingressClassName := ""
+	if app.Spec.Ingress != nil {
+		ingressClassName = app.Spec.Ingress.IngressClassName
+	}
+	if ingressClassName == "" {
+		ingressClassName = r.ConfigResolver.GetIngressClassName()
+	}
+	isTraefik := strings.Contains(strings.ToLower(ingressClassName), "traefik")
+
+	if tlsEnabled && isTraefik {
+		// Create/update the redirect middleware
+		middleware := &unstructured.Unstructured{}
+		middleware.SetGroupVersionKind(traefikMiddlewareGVK())
+		middleware.SetName(middlewareName)
+		middleware.SetNamespace(target.Namespace)
+		middleware.SetLabels(r.labelsForApp(app))
+
+		middleware.Object["spec"] = map[string]interface{}{
+			"redirectScheme": map[string]interface{}{
+				"scheme":    "https",
+				"permanent": true,
+			},
+		}
+
+		existing := &unstructured.Unstructured{}
+		existing.SetGroupVersionKind(traefikMiddlewareGVK())
+		err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: middlewareName}, existing)
+		if errors.IsNotFound(err) {
+			if err := r.Client.Create(ctx, middleware); err != nil {
+				logger.Error(err, "failed to create HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
+			}
+		} else if err == nil {
+			existing.Object["spec"] = middleware.Object["spec"]
+			existing.SetLabels(middleware.GetLabels())
+			if err := r.Client.Update(ctx, existing); err != nil {
+				logger.Error(err, "failed to update HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
+			}
+		}
+	} else {
+		// Cleanup: delete the middleware if it exists (TLS was disabled or not Traefik)
+		mw := &unstructured.Unstructured{}
+		mw.SetGroupVersionKind(traefikMiddlewareGVK())
+		if err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: middlewareName}, mw); err == nil {
+			if err := r.Client.Delete(ctx, mw); err != nil {
+				logger.Error(err, "failed to delete HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
+			}
+		}
 	}
 }
 
