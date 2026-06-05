@@ -1238,6 +1238,18 @@ func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *
 	labels["vesta.sh/redirect"] = "true"
 	pathType := networkingv1.PathTypePrefix
 
+	// Determine the service port for the ingress backend (same logic as main ingress)
+	servicePort := int32(80)
+	if app.Spec.Service != nil && len(app.Spec.Service.Ports) > 0 {
+		servicePort = app.Spec.Service.Ports[0].Port
+		for _, p := range app.Spec.Service.Ports {
+			if p.Name == "http" {
+				servicePort = p.Port
+				break
+			}
+		}
+	}
+
 	// Resolve TLS config for redirect domains
 	tlsSecretName := fmt.Sprintf("%s-redirect-tls", app.Name)
 	if target.Config.Name != "" {
@@ -1312,7 +1324,7 @@ func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *
 										Service: &networkingv1.IngressServiceBackend{
 											Name: app.Name,
 											Port: networkingv1.ServiceBackendPort{
-												Number: 80,
+												Number: servicePort,
 											},
 										},
 									},
