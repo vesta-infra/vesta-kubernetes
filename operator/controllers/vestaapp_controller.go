@@ -1144,8 +1144,7 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			if tlsEnabled {
 				if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
 					ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
-					ing.Annotations["traefik.ingress.kubernetes.io/router.entrypoints"] = "web,websecure"
-					// Reference the HTTPS redirect middleware
+					// Reference the HTTPS redirect middleware (redirectScheme is no-op for HTTPS requests)
 					httpsMiddlewareName := fmt.Sprintf("%s-https-redirect", app.Name)
 					middlewareRef := fmt.Sprintf("%s-%s@kubernetescrd", target.Namespace, httpsMiddlewareName)
 					// Append to existing middlewares if any (e.g., from per-env annotations)
