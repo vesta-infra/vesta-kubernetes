@@ -1332,9 +1332,6 @@ func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *
 			}
 
 			if tlsEnabled {
-				if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
-					ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
-				}
 				ing.Spec.TLS = []networkingv1.IngressTLS{
 					{
 						Hosts:      redirectDomains,
