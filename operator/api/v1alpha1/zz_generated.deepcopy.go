@@ -206,10 +206,20 @@ func (in *AppEnvironmentConfig) DeepCopy() *AppEnvironmentConfig {
 
 func (in *IngressOverride) DeepCopyInto(out *IngressOverride) {
 	*out = *in
+	if in.Domains != nil {
+		in, out := &in.Domains, &out.Domains
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.TLS != nil {
 		in, out := &in.TLS, &out.TLS
 		*out = new(bool)
 		**out = **in
+	}
+	if in.RedirectDomains != nil {
+		in, out := &in.RedirectDomains, &out.RedirectDomains
+		*out = make([]string, len(*in))
+		copy(*out, *in)
 	}
 }
 
@@ -578,6 +588,11 @@ func (in *IngressConfig) DeepCopyInto(out *IngressConfig) {
 		for k, v := range *in {
 			(*out)[k] = v
 		}
+	}
+	if in.RedirectDomains != nil {
+		in, out := &in.RedirectDomains, &out.RedirectDomains
+		*out = make([]string, len(*in))
+		copy(*out, *in)
 	}
 }
 

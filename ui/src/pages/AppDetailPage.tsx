@@ -615,24 +615,65 @@ export default function AppDetailPage() {
                   const env = typeof e === 'string' ? { name: e } : e
                   return env.ingress?.domains?.length > 0 || env.ingress?.domain
                 }) && (
-                  <div className="overflow-hidden">
-                    <dt className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1">Domains per Environment</dt>
-                    <dd className="flex flex-col gap-1.5">
+                  <div className="col-span-full mt-3 pt-3 border-t border-border-subtle">
+                    <h4 className="text-[11px] font-mono uppercase tracking-wider text-text-tertiary mb-2">Domains</h4>
+                    <div className="space-y-2">
                       {rawEnvs.map((e: any) => {
                         const env = typeof e === 'string' ? { name: e } : e
                         const envDomains = env.ingress?.domains || (env.ingress?.domain ? [env.ingress.domain] : [])
                         if (envDomains.length === 0) return null
+                        const tlsEnabled = env.ingress?.tls
+                        const scheme = tlsEnabled ? 'https' : 'http'
                         return (
-                          <div key={env.name} className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-xs font-mono text-accent">{env.name}:</span>
-                            {envDomains.map((d: string) => (
-                              <span key={d} className="px-2 py-0.5 bg-surface-1 border border-border rounded text-xs font-mono truncate max-w-full">{d}</span>
-                            ))}
-                            {env.ingress?.tls && <span className="text-[10px] text-status-healthy font-medium">TLS</span>}
+                          <div key={env.name} className="flex items-start gap-3">
+                            <span className="text-xs font-semibold text-accent min-w-[80px] pt-0.5">{env.name}</span>
+                            <div className="flex flex-wrap gap-1.5">
+                              {envDomains.map((d: string) => (
+                                <a
+                                  key={d}
+                                  href={`${scheme}://${d}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-1 border border-border rounded-md text-xs font-mono text-text-primary hover:border-accent hover:text-accent transition-colors"
+                                >
+                                  {d}
+                                  <svg className="w-3 h-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                                </a>
+                              ))}
+                              {tlsEnabled && <span className="inline-flex items-center px-1.5 py-1 text-[10px] text-status-healthy font-medium">🔒 TLS</span>}
+                            </div>
                           </div>
                         )
                       })}
-                    </dd>
+                    </div>
+                  </div>
+                )}
+                {rawEnvs.some((e: any) => {
+                  const env = typeof e === 'string' ? { name: e } : e
+                  return env.ingress?.redirectDomains?.length > 0
+                }) && (
+                  <div className="col-span-full mt-2">
+                    <h4 className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1.5">Redirects</h4>
+                    <div className="space-y-1.5">
+                      {rawEnvs.map((e: any) => {
+                        const env = typeof e === 'string' ? { name: e } : e
+                        const redirectDomains = env.ingress?.redirectDomains || []
+                        if (redirectDomains.length === 0) return null
+                        const targetDomain = env.ingress?.redirectTarget || env.ingress?.domains?.[0] || env.ingress?.domain || ''
+                        return (
+                          <div key={env.name} className="flex items-start gap-3">
+                            <span className="text-xs font-semibold text-accent min-w-[80px] pt-0.5">{env.name}</span>
+                            <div className="flex flex-wrap gap-1.5">
+                              {redirectDomains.map((d: string) => (
+                                <span key={d} className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-1 border border-border-subtle rounded-md text-xs font-mono text-text-secondary">
+                                  {d} <span className="text-text-tertiary">→</span> <span className="text-text-primary">{targetDomain}</span>
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
                   </div>
                 )}
               </div>
@@ -955,7 +996,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
-  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string; domains: string[]; tls: boolean }>>(() => {
+  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string; domains: string[]; tls: boolean; redirectDomains: string[]; redirectTarget: string }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
       const env = typeof e === 'string' ? { name: e } : e
@@ -975,6 +1016,8 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         memoryLimit: env.resources?.limits?.memory || '',
         domains: envDomains,
         tls: env.ingress?.tls || false,
+        redirectDomains: env.ingress?.redirectDomains || [],
+        redirectTarget: env.ingress?.redirectTarget || '',
       }
     }
     return configs
@@ -1167,8 +1210,14 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         }
       }
       const filteredDomains = cfg.domains.filter(d => d.trim())
-      if (filteredDomains.length > 0) {
-        env.ingress = { domains: filteredDomains, tls: cfg.tls }
+      const filteredRedirectDomains = cfg.redirectDomains.filter(d => d.trim())
+      if (filteredDomains.length > 0 || filteredRedirectDomains.length > 0) {
+        env.ingress = {
+          ...(filteredDomains.length > 0 && { domains: filteredDomains }),
+          tls: cfg.tls,
+          ...(filteredRedirectDomains.length > 0 && { redirectDomains: filteredRedirectDomains }),
+          ...(cfg.redirectTarget.trim() && { redirectTarget: cfg.redirectTarget.trim() }),
+        }
       } else {
         env.ingress = null
       }
@@ -1524,6 +1573,54 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                       >&times;</button>
                     </div>
                   ))}
+                </div>
+                <div className="mt-2 mb-2 p-2.5 rounded-md border border-border bg-surface-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-medium text-text-secondary">Redirect Domains</label>
+                    <button
+                      type="button"
+                      onClick={() => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], redirectDomains: [...prev[envName].redirectDomains, ''] } }))}
+                      className="text-[10px] text-accent hover:text-accent-glow"
+                    >+ Add Redirect</button>
+                  </div>
+                  <p className="text-[10px] text-text-tertiary mb-1.5">Domains that 301-redirect to the primary domain. Works with Traefik and NGINX.</p>
+                  {cfg.redirectDomains.length === 0 && (
+                    <p className="text-[10px] text-text-tertiary italic">No redirect domains configured</p>
+                  )}
+                  {cfg.redirectDomains.map((d, di) => (
+                    <div key={di} className="flex gap-2 items-center mb-1.5">
+                      <span className="text-text-tertiary text-xs">↳</span>
+                      <input
+                        value={d}
+                        onChange={e => {
+                          const updated = [...cfg.redirectDomains]
+                          updated[di] = e.target.value
+                          setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], redirectDomains: updated } }))
+                        }}
+                        className="input-field flex-1 font-mono text-xs"
+                        placeholder="example.com → redirects to primary"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const updated = cfg.redirectDomains.filter((_, j) => j !== di)
+                          setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], redirectDomains: updated } }))
+                        }}
+                        className="text-text-tertiary hover:text-status-failed text-xs px-1"
+                      >&times;</button>
+                    </div>
+                  ))}
+                  {cfg.redirectDomains.length > 0 && (
+                    <div className="mt-1.5">
+                      <label className="text-[10px] text-text-tertiary">Redirect Target</label>
+                      <input
+                        value={cfg.redirectTarget}
+                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], redirectTarget: e.target.value } }))}
+                        className="input-field w-full font-mono text-xs mt-0.5"
+                        placeholder={cfg.domains[0] || 'www.example.com (defaults to first domain)'}
+                      />
+                    </div>
+                  )}
                 </div>
                 <div className="mt-2 flex items-center gap-4 flex-wrap">
                   <div>

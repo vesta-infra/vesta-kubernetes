@@ -17,7 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -167,6 +169,11 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 					logger.Error(err, "failed to delete orphaned ingress", "namespace", target.Namespace)
 				}
 			}
+		}
+
+		// Reconcile redirect ingress (handles both creation and cleanup)
+		if err := r.reconcileRedirectIngress(ctx, &app, target); err != nil {
+			return r.updateStatusFailed(ctx, &app, err)
 		}
 
 		if target.Config.Autoscale != nil && target.Config.Autoscale.Enabled {
@@ -1127,7 +1134,9 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			}
 
 			if tlsEnabled {
-				ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
+				if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
+					ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
+				}
 				ing.Spec.TLS = []networkingv1.IngressTLS{
 					{
 						Hosts:      domains,
@@ -1140,6 +1149,247 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 		})
 		return err
 	})
+}
+
+func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
+	logger := log.FromContext(ctx)
+
+	// Resolve redirect domains: per-env override → app-level
+	var redirectDomains []string
+	if target.Config.Ingress != nil && len(target.Config.Ingress.RedirectDomains) > 0 {
+		redirectDomains = target.Config.Ingress.RedirectDomains
+	} else if app.Spec.Ingress != nil && len(app.Spec.Ingress.RedirectDomains) > 0 {
+		redirectDomains = app.Spec.Ingress.RedirectDomains
+	}
+
+	redirectIngressName := fmt.Sprintf("%s-redirect", app.Name)
+
+	// If no redirect domains, clean up any existing redirect resources
+	if len(redirectDomains) == 0 {
+		r.cleanupRedirectResources(ctx, app, target.Namespace, redirectIngressName)
+		return nil
+	}
+
+	// Resolve the primary domain (redirect target): explicit redirectTarget → first domain → template → app-level
+	var primaryDomain string
+	if target.Config.Ingress != nil && target.Config.Ingress.RedirectTarget != "" {
+		primaryDomain = target.Config.Ingress.RedirectTarget
+	} else if app.Spec.Ingress != nil && app.Spec.Ingress.RedirectTarget != "" {
+		primaryDomain = app.Spec.Ingress.RedirectTarget
+	} else if target.Config.Ingress != nil && len(target.Config.Ingress.Domains) > 0 {
+		primaryDomain = target.Config.Ingress.Domains[0]
+	} else if target.Config.Ingress != nil && target.Config.Ingress.Domain != "" {
+		primaryDomain = target.Config.Ingress.Domain
+	} else if tpl := r.ConfigResolver.GetDomainTemplate(); tpl != "" && target.Config.Name != "" {
+		expanded := strings.ReplaceAll(tpl, "{{app}}", app.Name)
+		expanded = strings.ReplaceAll(expanded, "{{env}}", target.Config.Name)
+		expanded = strings.ReplaceAll(expanded, "{{domain}}", r.ConfigResolver.GetDomain())
+		primaryDomain = expanded
+	} else if app.Spec.Ingress != nil && app.Spec.Ingress.Domain != "" {
+		primaryDomain = app.Spec.Ingress.Domain
+	}
+
+	if primaryDomain == "" {
+		logger.Info("no primary domain resolved for redirect, skipping", "app", app.Name)
+		return nil
+	}
+
+	// Determine scheme based on TLS setting
+	scheme := "http"
+	tlsEnabled := false
+	if app.Spec.Ingress != nil {
+		tlsEnabled = app.Spec.Ingress.TLS
+	}
+	if target.Config.Ingress != nil && target.Config.Ingress.TLS != nil {
+		tlsEnabled = *target.Config.Ingress.TLS
+	}
+	if tlsEnabled {
+		scheme = "https"
+	}
+	redirectTarget := fmt.Sprintf("%s://%s", scheme, primaryDomain)
+
+	// Resolve ingress class
+	var ingressClassName string
+	if app.Spec.Ingress != nil && app.Spec.Ingress.IngressClassName != "" {
+		ingressClassName = app.Spec.Ingress.IngressClassName
+	}
+	if ingressClassName == "" {
+		ingressClassName = r.ConfigResolver.GetIngressClassName()
+	}
+
+	labels := r.labelsForApp(app)
+	labels["vesta.sh/redirect"] = "true"
+	pathType := networkingv1.PathTypePrefix
+
+	// Resolve TLS config for redirect domains
+	tlsSecretName := fmt.Sprintf("%s-redirect-tls", app.Name)
+	if target.Config.Name != "" {
+		tlsSecretName = fmt.Sprintf("%s-%s-redirect-tls", app.Name, target.Config.Name)
+	}
+
+	// For Traefik: create a Middleware CRD
+	if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
+		if err := r.reconcileTraefikRedirectMiddleware(ctx, app, target.Namespace, redirectIngressName, primaryDomain, scheme); err != nil {
+			logger.Error(err, "failed to reconcile traefik redirect middleware")
+			// Fall through to create ingress anyway — annotations will reference the middleware
+		}
+	}
+
+	return retry.OnError(retry.DefaultRetry, isRetriable, func() error {
+		ing := &networkingv1.Ingress{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      redirectIngressName,
+				Namespace: target.Namespace,
+			},
+		}
+
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
+			ing.Labels = labels
+			ing.Annotations = map[string]string{}
+
+			// Apply ingress class
+			if ingressClassName != "" {
+				ing.Annotations["kubernetes.io/ingress.class"] = ingressClassName
+			}
+
+			// Apply controller-specific redirect annotations
+			switch {
+			case strings.Contains(strings.ToLower(ingressClassName), "nginx"):
+				// NGINX Ingress Controller: native permanent-redirect
+				ing.Annotations["nginx.ingress.kubernetes.io/permanent-redirect"] = redirectTarget + "/$request_uri"
+				ing.Annotations["nginx.ingress.kubernetes.io/permanent-redirect-code"] = "301"
+
+			case strings.Contains(strings.ToLower(ingressClassName), "traefik"):
+				// Traefik: reference the Middleware we created
+				middlewareRef := fmt.Sprintf("%s-%s@kubernetescrd", target.Namespace, redirectIngressName)
+				ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = middlewareRef
+			}
+
+			// Cert-manager annotation for TLS on redirect domains
+			var clusterIssuer string
+			if app.Spec.Ingress != nil {
+				clusterIssuer = app.Spec.Ingress.ClusterIssuer
+			}
+			if clusterIssuer == "" {
+				clusterIssuer = r.ConfigResolver.GetClusterIssuer()
+			}
+			if clusterIssuer != "" && tlsEnabled {
+				ing.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuer
+			}
+
+			// Build ingress rules for redirect domains
+			rules := make([]networkingv1.IngressRule, 0, len(redirectDomains))
+			for _, d := range redirectDomains {
+				if strings.TrimSpace(d) == "" {
+					continue
+				}
+				rules = append(rules, networkingv1.IngressRule{
+					Host: d,
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{
+								{
+									Path:     "/",
+									PathType: &pathType,
+									Backend: networkingv1.IngressBackend{
+										Service: &networkingv1.IngressServiceBackend{
+											Name: app.Name,
+											Port: networkingv1.ServiceBackendPort{
+												Number: 80,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				})
+			}
+
+			ing.Spec = networkingv1.IngressSpec{
+				Rules: rules,
+			}
+
+			if ingressClassName != "" {
+				ing.Spec.IngressClassName = &ingressClassName
+			}
+
+			if tlsEnabled {
+				if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
+					ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
+				}
+				ing.Spec.TLS = []networkingv1.IngressTLS{
+					{
+						Hosts:      redirectDomains,
+						SecretName: tlsSecretName,
+					},
+				}
+			}
+
+			return nil
+		})
+		return err
+	})
+}
+
+// reconcileTraefikRedirectMiddleware creates/updates a Traefik Middleware CRD for domain redirects.
+func (r *VestaAppReconciler) reconcileTraefikRedirectMiddleware(ctx context.Context, app *vestav1alpha1.VestaApp, namespace, name, primaryDomain, scheme string) error {
+	middleware := &unstructured.Unstructured{}
+	middleware.SetGroupVersionKind(traefikMiddlewareGVK())
+	middleware.SetName(name)
+	middleware.SetNamespace(namespace)
+	middleware.SetLabels(r.labelsForApp(app))
+
+	middleware.Object["spec"] = map[string]interface{}{
+		"redirectRegex": map[string]interface{}{
+			"regex":       "^https?://[^/]+(.*)",
+			"replacement": fmt.Sprintf("%s://%s${1}", scheme, primaryDomain),
+			"permanent":   true,
+		},
+	}
+
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(traefikMiddlewareGVK())
+	err := r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, existing)
+	if errors.IsNotFound(err) {
+		return r.Client.Create(ctx, middleware)
+	} else if err != nil {
+		return err
+	}
+	// Update existing
+	existing.Object["spec"] = middleware.Object["spec"]
+	existing.SetLabels(middleware.GetLabels())
+	return r.Client.Update(ctx, existing)
+}
+
+// cleanupRedirectResources removes the redirect Ingress and Traefik Middleware if they exist.
+func (r *VestaAppReconciler) cleanupRedirectResources(ctx context.Context, app *vestav1alpha1.VestaApp, namespace, redirectIngressName string) {
+	logger := log.FromContext(ctx)
+
+	// Delete redirect Ingress
+	ing := &networkingv1.Ingress{}
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: redirectIngressName}, ing); err == nil {
+		if err := r.Client.Delete(ctx, ing); err != nil {
+			logger.Error(err, "failed to delete redirect ingress", "namespace", namespace, "name", redirectIngressName)
+		}
+	}
+
+	// Delete Traefik Middleware if it exists
+	mw := &unstructured.Unstructured{}
+	mw.SetGroupVersionKind(traefikMiddlewareGVK())
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: redirectIngressName}, mw); err == nil {
+		if err := r.Client.Delete(ctx, mw); err != nil {
+			logger.Error(err, "failed to delete traefik redirect middleware", "namespace", namespace, "name", redirectIngressName)
+		}
+	}
+}
+
+func traefikMiddlewareGVK() schema.GroupVersionKind {
+	return schema.GroupVersionKind{
+		Group:   "traefik.io",
+		Version: "v1alpha1",
+		Kind:    "Middleware",
+	}
 }
 
 func (r *VestaAppReconciler) reconcileHPA(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {

@@ -165,6 +165,14 @@ spec:
                         tls:
                           type: boolean
                           description: Enable or disable TLS for this environment. Overrides app-level TLS setting.
+                        redirectDomains:
+                          type: array
+                          description: Domains that 301-redirect to the primary domain for this environment.
+                          items:
+                            type: string
+                        redirectTarget:
+                          type: string
+                          description: Explicit target domain for redirects in this environment. If omitted, redirects go to the first entry in domains.
                     service:
                       type: object
                       description: Per-environment service override.
@@ -458,6 +466,14 @@ spec:
                     type: object
                     additionalProperties:
                       type: string
+                  redirectDomains:
+                    type: array
+                    description: Domains that 301-redirect to the primary domain. Supports Traefik and NGINX ingress controllers.
+                    items:
+                      type: string
+                  redirectTarget:
+                    type: string
+                    description: Explicit target domain for redirects. If omitted, redirects go to the first entry in domains.
               cronjobs:
                 type: array
                 items:
