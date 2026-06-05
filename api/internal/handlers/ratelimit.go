@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -36,27 +35,37 @@ func (h *Handler) GetRateLimits(c *gin.Context) {
 		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
 		return
 	}
-	appSpec, _, _ := unstructuredNestedMap(app.Object, "spec")
-	project := getNestedString(appSpec, "project")
-	namespace := fmt.Sprintf("%s-%s", project, env)
 
-	// Try to find ingress for this app
-	ingressName := appID
-	ingress, err := h.K8s.GetResource(c.Request.Context(), k8s.IngressGVR, namespace, ingressName)
-	if err != nil {
+	// Read rate limits from the CRD's per-environment ingress annotations
+	envs, _, _ := unstructuredNestedSlice(app.Object, "spec", "environments")
+	limits := map[string]string{}
+	found := false
+	for _, e := range envs {
+		em, ok := e.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, _ := em["name"].(string); name == env {
+			found = true
+			if ingCfg, ok := em["ingress"].(map[string]interface{}); ok {
+				if ann, ok := ingCfg["annotations"].(map[string]interface{}); ok {
+					for _, key := range rateLimitAnnotationKeys {
+						if v, ok := ann[key].(string); ok {
+							limits[key] = v
+						}
+					}
+				}
+			}
+			break
+		}
+	}
+
+	if !found {
 		c.JSON(http.StatusOK, gin.H{"limits": map[string]string{}, "ingressFound": false})
 		return
 	}
 
-	annotations := ingress.GetAnnotations()
-	limits := map[string]string{}
-	for _, key := range rateLimitAnnotationKeys {
-		if v, ok := annotations[key]; ok {
-			limits[key] = v
-		}
-	}
-
-	c.JSON(http.StatusOK, gin.H{"limits": limits, "ingressFound": true, "ingress": ingressName})
+	c.JSON(http.StatusOK, gin.H{"limits": limits, "ingressFound": true, "ingress": appID})
 }
 
 func (h *Handler) UpdateRateLimits(c *gin.Context) {
@@ -90,38 +99,71 @@ func (h *Handler) UpdateRateLimits(c *gin.Context) {
 	}
 	appSpec, _, _ := unstructuredNestedMap(app.Object, "spec")
 	project := getNestedString(appSpec, "project")
-	namespace := fmt.Sprintf("%s-%s", project, req.Environment)
 
-	ingressName := appID
-	ingress, err := h.K8s.GetResource(c.Request.Context(), k8s.IngressGVR, namespace, ingressName)
-	if err != nil {
-		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "ingress not found"})
+	// Build the annotations map: keep existing non-rate-limit annotations, then apply new limits
+	envs, _, _ := unstructuredNestedSlice(app.Object, "spec", "environments")
+	envIndex := -1
+	for i, e := range envs {
+		em, ok := e.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, _ := em["name"].(string); name == req.Environment {
+			envIndex = i
+			break
+		}
+	}
+
+	if envIndex == -1 {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "environment not found in app spec"})
 		return
 	}
 
-	annotations := ingress.GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
+	// Read current per-env ingress annotations
+	existingAnnotations := map[string]interface{}{}
+	if envMap, ok := envs[envIndex].(map[string]interface{}); ok {
+		if ingCfg, ok := envMap["ingress"].(map[string]interface{}); ok {
+			if ann, ok := ingCfg["annotations"].(map[string]interface{}); ok {
+				existingAnnotations = ann
+			}
+		}
 	}
 
-	// Remove all rate limit annotations first, then set new ones
+	// Remove all rate limit keys from existing, then add new ones
 	for _, key := range rateLimitAnnotationKeys {
-		delete(annotations, key)
+		delete(existingAnnotations, key)
 	}
 	for key, value := range req.Limits {
 		if value != "" {
-			annotations[key] = value
+			existingAnnotations[key] = value
 		}
 	}
-	ingress.SetAnnotations(annotations)
+
+	// Build a strategic merge patch for the VestaApp CRD
+	envPatch := make([]interface{}, len(envs))
+	for i := range envs {
+		if i == envIndex {
+			envPatch[i] = map[string]interface{}{
+				"name": req.Environment,
+				"ingress": map[string]interface{}{
+					"annotations": existingAnnotations,
+				},
+			}
+		} else {
+			em, _ := envs[i].(map[string]interface{})
+			envPatch[i] = map[string]interface{}{
+				"name": em["name"],
+			}
+		}
+	}
 
 	patchData, _ := json.Marshal(map[string]interface{}{
-		"metadata": map[string]interface{}{
-			"annotations": annotations,
+		"spec": map[string]interface{}{
+			"environments": envPatch,
 		},
 	})
 
-	if _, err := h.K8s.PatchResource(c.Request.Context(), k8s.IngressGVR, namespace, ingressName, patchData); err != nil {
+	if _, err := h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID, patchData); err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
 	}

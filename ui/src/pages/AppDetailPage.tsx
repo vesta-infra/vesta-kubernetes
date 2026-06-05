@@ -336,6 +336,60 @@ export default function AppDetailPage() {
               </div>
             </section>
 
+            {/* Domains */}
+            {rawEnvs.some((e: any) => {
+              const env = typeof e === 'string' ? { name: e } : e
+              return env.ingress?.domains?.length > 0 || env.ingress?.domain || env.ingress?.redirectDomains?.length > 0
+            }) && (
+              <section className="card p-5">
+                <h3 className="section-title mb-3">Domains</h3>
+                <div className="space-y-3">
+                  {rawEnvs.map((e: any) => {
+                    const env = typeof e === 'string' ? { name: e } : e
+                    const envDomains = env.ingress?.domains || (env.ingress?.domain ? [env.ingress.domain] : [])
+                    const redirectDomains = env.ingress?.redirectDomains || []
+                    if (envDomains.length === 0 && redirectDomains.length === 0) return null
+                    const tlsEnabled = env.ingress?.tls
+                    const scheme = tlsEnabled ? 'https' : 'http'
+                    const targetDomain = env.ingress?.redirectTarget || envDomains[0] || ''
+                    return (
+                      <div key={env.name} className="bg-surface-1 border border-border rounded-lg p-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-xs font-semibold text-accent">{env.name}</span>
+                          {tlsEnabled && <span className="text-[10px] text-status-healthy font-medium">🔒 TLS</span>}
+                        </div>
+                        {envDomains.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 mb-1.5">
+                            {envDomains.map((d: string) => (
+                              <a
+                                key={d}
+                                href={`${scheme}://${d}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-2 border border-border rounded-md text-xs font-mono text-text-primary hover:border-accent hover:text-accent transition-colors"
+                              >
+                                {d}
+                                <svg className="w-3 h-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                        {redirectDomains.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 mt-1">
+                            {redirectDomains.map((d: string) => (
+                              <span key={d} className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-2 border border-border-subtle rounded-md text-[11px] font-mono text-text-secondary">
+                                {d} <span className="text-text-tertiary">→</span> <span className="text-text-primary">{targetDomain}</span>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </section>
+            )}
+
             {appEnvironments.length > 0 && (
             <section className="card p-5">
               <h3 className="section-title mb-4">Service Discovery</h3>
@@ -610,71 +664,6 @@ export default function AppDetailPage() {
                 )}
                 {app.spec?.ingress?.tls !== undefined && (
                   <ConfigItem label="TLS" value={app.spec.ingress.tls ? 'Enabled' : 'Disabled'} accent={app.spec.ingress.tls} />
-                )}
-                {rawEnvs.some((e: any) => {
-                  const env = typeof e === 'string' ? { name: e } : e
-                  return env.ingress?.domains?.length > 0 || env.ingress?.domain
-                }) && (
-                  <div className="col-span-full mt-3 pt-3 border-t border-border-subtle">
-                    <h4 className="text-[11px] font-mono uppercase tracking-wider text-text-tertiary mb-2">Domains</h4>
-                    <div className="space-y-2">
-                      {rawEnvs.map((e: any) => {
-                        const env = typeof e === 'string' ? { name: e } : e
-                        const envDomains = env.ingress?.domains || (env.ingress?.domain ? [env.ingress.domain] : [])
-                        if (envDomains.length === 0) return null
-                        const tlsEnabled = env.ingress?.tls
-                        const scheme = tlsEnabled ? 'https' : 'http'
-                        return (
-                          <div key={env.name} className="flex items-start gap-3">
-                            <span className="text-xs font-semibold text-accent min-w-[80px] pt-0.5">{env.name}</span>
-                            <div className="flex flex-wrap gap-1.5">
-                              {envDomains.map((d: string) => (
-                                <a
-                                  key={d}
-                                  href={`${scheme}://${d}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-1 border border-border rounded-md text-xs font-mono text-text-primary hover:border-accent hover:text-accent transition-colors"
-                                >
-                                  {d}
-                                  <svg className="w-3 h-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-                                </a>
-                              ))}
-                              {tlsEnabled && <span className="inline-flex items-center px-1.5 py-1 text-[10px] text-status-healthy font-medium">🔒 TLS</span>}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )}
-                {rawEnvs.some((e: any) => {
-                  const env = typeof e === 'string' ? { name: e } : e
-                  return env.ingress?.redirectDomains?.length > 0
-                }) && (
-                  <div className="col-span-full mt-2">
-                    <h4 className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1.5">Redirects</h4>
-                    <div className="space-y-1.5">
-                      {rawEnvs.map((e: any) => {
-                        const env = typeof e === 'string' ? { name: e } : e
-                        const redirectDomains = env.ingress?.redirectDomains || []
-                        if (redirectDomains.length === 0) return null
-                        const targetDomain = env.ingress?.redirectTarget || env.ingress?.domains?.[0] || env.ingress?.domain || ''
-                        return (
-                          <div key={env.name} className="flex items-start gap-3">
-                            <span className="text-xs font-semibold text-accent min-w-[80px] pt-0.5">{env.name}</span>
-                            <div className="flex flex-wrap gap-1.5">
-                              {redirectDomains.map((d: string) => (
-                                <span key={d} className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-1 border border-border-subtle rounded-md text-xs font-mono text-text-secondary">
-                                  {d} <span className="text-text-tertiary">→</span> <span className="text-text-primary">{targetDomain}</span>
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
                 )}
               </div>
               {app.spec?.cronjobs?.length > 0 && (

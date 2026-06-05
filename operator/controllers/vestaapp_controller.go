@@ -1099,6 +1099,12 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 					ing.Annotations[k] = v
 				}
 			}
+			// Per-environment annotations override app-level
+			if target.Config.Ingress != nil {
+				for k, v := range target.Config.Ingress.Annotations {
+					ing.Annotations[k] = v
+				}
+			}
 
 			rules := make([]networkingv1.IngressRule, 0, len(domains))
 			for _, d := range domains {
