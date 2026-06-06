@@ -140,20 +140,27 @@ func (h *Handler) UpdateRateLimits(c *gin.Context) {
 	}
 
 	// Build a strategic merge patch for the VestaApp CRD
+	// Preserve all existing fields — only update ingress annotations for the target environment
 	envPatch := make([]interface{}, len(envs))
 	for i := range envs {
+		em, _ := envs[i].(map[string]interface{})
 		if i == envIndex {
-			envPatch[i] = map[string]interface{}{
-				"name": req.Environment,
-				"ingress": map[string]interface{}{
-					"annotations": existingAnnotations,
-				},
+			// Deep copy the env map and only update annotations within ingress
+			envCopy := make(map[string]interface{}, len(em))
+			for k, v := range em {
+				envCopy[k] = v
 			}
+			ingress := map[string]interface{}{}
+			if existing, ok := em["ingress"].(map[string]interface{}); ok {
+				for k, v := range existing {
+					ingress[k] = v
+				}
+			}
+			ingress["annotations"] = existingAnnotations
+			envCopy["ingress"] = ingress
+			envPatch[i] = envCopy
 		} else {
-			em, _ := envs[i].(map[string]interface{})
-			envPatch[i] = map[string]interface{}{
-				"name": em["name"],
-			}
+			envPatch[i] = em
 		}
 	}
 

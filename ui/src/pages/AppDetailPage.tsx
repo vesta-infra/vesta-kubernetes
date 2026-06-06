@@ -38,6 +38,11 @@ export default function AppDetailPage() {
   const setActiveTab = useCallback((tab: TabType) => {
     setSearchParams(prev => { prev.set('tab', tab); return prev }, { replace: true })
   }, [setSearchParams])
+  const envParam = searchParams.get('env') || ''
+  const selectedEnv = envParam
+  const setSelectedEnv = useCallback((env: string) => {
+    setSearchParams(prev => { prev.set('env', env); return prev }, { replace: true })
+  }, [setSearchParams])
   const [showCloneModal, setShowCloneModal] = useState(false)
   const [historyEnvFilter, setHistoryEnvFilter] = useState('')
   const role = useUserRole()
@@ -51,6 +56,7 @@ export default function AppDetailPage() {
     if (appEnvironments.length > 0) {
       if (!secretEnv) setSecretEnv(appEnvironments[0])
       if (!deployEnv) setDeployEnv(appEnvironments[0])
+      if (!selectedEnv) setSelectedEnv(appEnvironments[0])
     }
   }, [appEnvironments.join(',')])
 
@@ -377,9 +383,15 @@ export default function AppDetailPage() {
                         {redirectDomains.length > 0 && (
                           <div className="flex flex-wrap gap-1.5 mt-1">
                             {redirectDomains.map((d: string) => (
-                              <span key={d} className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-2 border border-border-subtle rounded-md text-[11px] font-mono text-text-secondary">
+                              <a
+                                key={d}
+                                href={`${scheme}://${d}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-2 border border-border-subtle rounded-md text-[11px] font-mono text-text-secondary hover:border-accent hover:text-accent transition-colors"
+                              >
                                 {d} <span className="text-text-tertiary">→</span> <span className="text-text-primary">{targetDomain}</span>
-                              </span>
+                              </a>
                             ))}
                           </div>
                         )}
@@ -753,7 +765,7 @@ export default function AppDetailPage() {
       {activeTab === 'logs' && (
         <div>
           {appEnvironments.length > 0 ? (
-            <AppLogs appId={appId!} environments={appEnvironments} />
+            <AppLogs appId={appId!} environments={appEnvironments} selectedEnv={selectedEnv} onEnvChange={setSelectedEnv} />
           ) : (
             <div className="card p-5">
               <p className="text-sm text-text-tertiary">No environments configured</p>
@@ -765,7 +777,7 @@ export default function AppDetailPage() {
       {activeTab === 'terminal' && (
         <div>
           {appEnvironments.length > 0 ? (
-            <AppTerminal appId={appId!} environments={appEnvironments} />
+            <AppTerminal appId={appId!} environments={appEnvironments} selectedEnv={selectedEnv} onEnvChange={setSelectedEnv} />
           ) : (
             <div className="card p-5">
               <p className="text-sm text-text-tertiary">No environments configured</p>
@@ -777,7 +789,7 @@ export default function AppDetailPage() {
       {activeTab === 'metrics' && (
         <div>
           {appEnvironments.length > 0 ? (
-            <AppMetrics appId={appId!} environments={appEnvironments} />
+            <AppMetrics appId={appId!} environments={appEnvironments} selectedEnv={selectedEnv} onEnvChange={setSelectedEnv} />
           ) : (
             <div className="card p-5">
               <p className="text-sm text-text-tertiary">No environments configured</p>
@@ -795,7 +807,7 @@ export default function AppDetailPage() {
       )}
 
       {activeTab === 'files' && (
-        <PodFileBrowser appId={appId!} environments={appEnvironments} />
+        <PodFileBrowser appId={appId!} environments={appEnvironments} selectedEnv={selectedEnv} onEnvChange={setSelectedEnv} />
       )}
 
       {activeTab === 'schedule' && (
@@ -998,7 +1010,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         maxReplicas: env.autoscale?.maxReplicas || 5,
         targetCPU: env.autoscale?.metrics?.[0]?.targetAverageUtilization || env.autoscale?.targetCPU || 80,
         imageRepo: env.image?.repository || '',
-        imageTag: env.image?.tag || '',
+        imageTag: '',
         cpuRequest: env.resources?.requests?.cpu || '',
         cpuLimit: env.resources?.limits?.cpu || '',
         memoryRequest: env.resources?.requests?.memory || '',
@@ -1512,7 +1524,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                       value={cfg.imageTag}
                       onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageTag: e.target.value } }))}
                       className="input-field w-36 font-mono text-xs"
-                      placeholder="tag"
+                      placeholder={rawEnvs.find((e: any) => (typeof e === 'string' ? e : e.name) === envName)?.image?.tag || 'tag'}
                     />
                   </div>
                 </div>
@@ -2457,8 +2469,9 @@ function RateLimitSection({ appId, environments, role }: { appId: string; enviro
   )
 }
 
-function PodFileBrowser({ appId, environments }: { appId: string; environments: string[] }) {
-  const [env, setEnv] = useState(environments[0] || '')
+function PodFileBrowser({ appId, environments, selectedEnv, onEnvChange }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
+  const env = selectedEnv || environments[0] || ''
+  const setEnv = onEnvChange
   const [pod, setPod] = useState('')
   const [currentPath, setCurrentPath] = useState('/')
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -2687,8 +2700,9 @@ function CloneAppModal({ appName, isPending, error, onClone, onClose }: {
 
 const POD_LOG_COLORS = ['#56d4dd', '#e5c07b', '#98c379', '#c678dd', '#d19a66', '#61afef']
 
-function AppLogs({ appId, environments }: { appId: string; environments: string[] }) {
-  const [env, setEnv] = useState(environments[0] || '')
+function AppLogs({ appId, environments, selectedEnv, onEnvChange }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
+  const env = selectedEnv || environments[0] || ''
+  const setEnv = onEnvChange
   const [tail, setTail] = useState(100)
   const [previous, setPrevious] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(false)
@@ -2941,8 +2955,9 @@ function AppLogs({ appId, environments }: { appId: string; environments: string[
   )
 }
 
-function AppTerminal({ appId, environments }: { appId: string; environments: string[] }) {
-  const [env, setEnv] = useState(environments[0] || '')
+function AppTerminal({ appId, environments, selectedEnv, onEnvChange }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
+  const env = selectedEnv || environments[0] || ''
+  const setEnv = onEnvChange
   const [pod, setPod] = useState('')
   const [container, setContainer] = useState('')
   const [connected, setConnected] = useState(false)
@@ -3508,8 +3523,9 @@ function BuildLogViewer({ appId, buildId, onClose }: { appId: string; buildId: s
   )
 }
 
-function AppMetrics({ appId, environments }: { appId: string; environments: string[] }) {
-  const [env, setEnv] = useState(environments[0] || '')
+function AppMetrics({ appId, environments, selectedEnv, onEnvChange }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
+  const env = selectedEnv || environments[0] || ''
+  const setEnv = onEnvChange
   const [expandedPod, setExpandedPod] = useState<string | null>(null)
   const [promRange, setPromRange] = useState<string>('1h')
   const [metricsExpanded, setMetricsExpanded] = useState(false)

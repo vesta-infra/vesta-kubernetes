@@ -192,6 +192,7 @@ func (h *Handler) GetMetrics(c *gin.Context) {
 	totalReady := 0
 	var totalCPUUsageNano, totalMemUsageBytes int64
 	var totalCPUReqNano, totalMemReqBytes int64
+	var totalCPULimNano, totalMemLimBytes int64
 	for _, pod := range pods {
 		ready := false
 		restarts := int32(0)
@@ -276,10 +277,12 @@ func (h *Handler) GetMetrics(c *gin.Context) {
 			if q, ok := ctr.Resources.Limits["cpu"]; ok {
 				cpuLim = q.String()
 				podCPULimNano += q.MilliValue() * 1000000
+				totalCPULimNano += q.MilliValue() * 1000000
 			}
 			if q, ok := ctr.Resources.Limits["memory"]; ok {
 				memLim = q.String()
 				podMemLimBytes += q.Value()
+				totalMemLimBytes += q.Value()
 			}
 		}
 
@@ -356,10 +359,16 @@ func (h *Handler) GetMetrics(c *gin.Context) {
 		"totalCPURequest":  k8s.FormatCPUNano(totalCPUReqNano),
 		"totalMemoryRequest": k8s.FormatMemBytes(totalMemReqBytes),
 	}
-	if totalCPUReqNano > 0 {
+	if totalCPULimNano > 0 {
+		summary["totalCPULimit"] = k8s.FormatCPUNano(totalCPULimNano)
+		summary["cpuUtilization"] = float64(totalCPUUsageNano) / float64(totalCPULimNano) * 100
+	} else if totalCPUReqNano > 0 {
 		summary["cpuUtilization"] = float64(totalCPUUsageNano) / float64(totalCPUReqNano) * 100
 	}
-	if totalMemReqBytes > 0 {
+	if totalMemLimBytes > 0 {
+		summary["totalMemoryLimit"] = k8s.FormatMemBytes(totalMemLimBytes)
+		summary["memoryUtilization"] = float64(totalMemUsageBytes) / float64(totalMemLimBytes) * 100
+	} else if totalMemReqBytes > 0 {
 		summary["memoryUtilization"] = float64(totalMemUsageBytes) / float64(totalMemReqBytes) * 100
 	}
 
