@@ -641,10 +641,21 @@ func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envReso
 		}
 	}
 
+	// Start command handling.
+	//   - command + args  -> exec form: command becomes the container entrypoint
+	//     (shell-split so multi-word commands like "npm start" work) and args are
+	//     passed straight through, exactly like a Kubernetes command/args pair.
+	//     This works on distroless/scratch images and preserves PID-1 signalling.
+	//   - command only     -> convenience shell form: run as a "/bin/sh -c" one-liner.
+	//   - args only        -> override the image CMD while keeping its ENTRYPOINT.
 	if app.Spec.Runtime.Command != "" {
-		container.Command = []string{"/bin/sh", "-c", app.Spec.Runtime.Command}
-	}
-	if len(app.Spec.Runtime.Args) > 0 {
+		if len(app.Spec.Runtime.Args) > 0 {
+			container.Command = shellSplit(app.Spec.Runtime.Command)
+			container.Args = app.Spec.Runtime.Args
+		} else {
+			container.Command = []string{"/bin/sh", "-c", app.Spec.Runtime.Command}
+		}
+	} else if len(app.Spec.Runtime.Args) > 0 {
 		container.Args = app.Spec.Runtime.Args
 	}
 
@@ -2051,4 +2062,53 @@ func computeRolloutHash(spec corev1.PodSpec, fingerprintParts []string) string {
 	}
 	sum := h.Sum(nil)
 	return fmt.Sprintf("%x", sum[:8])
+}
+
+// shellSplit tokenizes a command string into argv the way a POSIX shell would
+// for simple cases: whitespace separates tokens, and single or double quotes
+// group tokens containing spaces. A backslash escapes the next character. It
+// does not attempt to interpret shell metacharacters (pipes, variables, globs)
+// — those only make sense under "/bin/sh -c" and are handled by the shell-form
+// path in buildContainer. If the string yields no tokens it returns nil, which
+// leaves the container entrypoint at the image default.
+func shellSplit(s string) []string {
+	var tokens []string
+	var cur strings.Builder
+	hasToken := false
+	var quote rune // 0, '\'' or '"'
+	escaped := false
+
+	for _, r := range s {
+		switch {
+		case escaped:
+			cur.WriteRune(r)
+			escaped = false
+			hasToken = true
+		case r == '\\' && quote != '\'':
+			escaped = true
+			hasToken = true
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			quote = r
+			hasToken = true
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			if hasToken {
+				tokens = append(tokens, cur.String())
+				cur.Reset()
+				hasToken = false
+			}
+		default:
+			cur.WriteRune(r)
+			hasToken = true
+		}
+	}
+	if hasToken {
+		tokens = append(tokens, cur.String())
+	}
+	return tokens
 }

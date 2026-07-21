@@ -950,6 +950,8 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const [imageRepo, setImageRepo] = useState(app.spec?.image?.repository || '')
   const [pullPolicy, setPullPolicy] = useState(app.spec?.image?.pullPolicy || 'IfNotPresent')
   const [port, setPort] = useState(String(app.spec?.runtime?.port || 3000))
+  const [startCommand, setStartCommand] = useState(app.spec?.runtime?.command || '')
+  const [startArgs, setStartArgs] = useState<string>((app.spec?.runtime?.args || []).join('\n'))
   const [domain, setDomain] = useState(app.spec?.ingress?.domain || '')
   const [tls, setTls] = useState(app.spec?.ingress?.tls || false)
   const [ingressAnnotations, setIngressAnnotations] = useState<{ key: string; value: string }[]>(() => {
@@ -1121,12 +1123,20 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     // Runtime & Service — carry forward existing runtime fields not managed by the form
     const existingRuntime = app.spec?.runtime || {}
     const preservedRuntime: Record<string, unknown> = {}
-    for (const key of ['command', 'args', 'env']) {
+    for (const key of ['env']) {
       if (existingRuntime[key] != null) preservedRuntime[key] = existingRuntime[key]
     }
 
+    // Start command / args (form-managed). Explicit null clears the field on the
+    // backend deep-merge; a non-empty command with args runs in exec form.
+    const argsList = startArgs.split('\n').map(s => s.trim()).filter(Boolean)
+    const commandFields = {
+      command: startCommand.trim() || null,
+      args: argsList.length > 0 ? argsList : null,
+    }
+
     if (useServiceConfig) {
-      patch.runtime = { ...preservedRuntime, port: 0, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
+      patch.runtime = { ...preservedRuntime, ...commandFields, port: 0, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
       patch.service = {
         type: serviceType,
         ports: servicePorts.filter(p => p.name && p.port).map(p => ({
@@ -1138,7 +1148,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         })),
       }
     } else {
-      patch.runtime = { ...preservedRuntime, port: Number.parseInt(port) || 3000, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
+      patch.runtime = { ...preservedRuntime, ...commandFields, port: Number.parseInt(port) || 3000, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
       patch.service = null
     }
 
@@ -1310,6 +1320,19 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             />
             <span className="text-xs text-text-secondary">Multi-port / Service config</span>
           </label>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="label">Start command</label>
+            <input value={startCommand} onChange={e => setStartCommand(e.target.value)} className="input-field font-mono" placeholder="e.g. blnk  or  npm start" />
+            <p className="text-[10px] text-text-tertiary mt-1">Overrides the image entrypoint. Leave blank to use the image default. With no arguments below, it runs via <code>/bin/sh -c</code>.</p>
+          </div>
+          <div>
+            <label className="label">Arguments <span className="text-text-tertiary font-normal">(one per line)</span></label>
+            <textarea value={startArgs} onChange={e => setStartArgs(e.target.value)} className="input-field font-mono h-[38px]" rows={1} placeholder="start" />
+            <p className="text-[10px] text-text-tertiary mt-1">When set, the command runs in exec form (no shell) — works on distroless images and forwards signals for graceful shutdown.</p>
+          </div>
         </div>
 
         {!useServiceConfig ? (
