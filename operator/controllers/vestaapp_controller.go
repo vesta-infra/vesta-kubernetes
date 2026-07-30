@@ -578,25 +578,35 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 	return nil
 }
 
-func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envResources *vestav1alpha1.ResourceConfig, envName string, envImage *vestav1alpha1.ImageConfig) corev1.Container {
-	image := "placeholder:latest"
+// resolveImage returns the image an environment runs, applying the per-environment
+// override on top of the app-level image. This is the single source of truth for
+// "what is deployed where" — status reporting must use it rather than reading
+// spec.image directly, which is only the default for environments without a tag.
+func resolveImage(app *vestav1alpha1.VestaApp, envImage *vestav1alpha1.ImageConfig) string {
 	// Per-environment image override takes precedence over app-level image
 	if envImage != nil && envImage.Repository != "" {
 		tag := "latest"
 		if envImage.Tag != "" {
 			tag = envImage.Tag
 		}
-		image = fmt.Sprintf("%s:%s", envImage.Repository, tag)
-	} else if envImage != nil && envImage.Tag != "" && app.Spec.Image != nil {
+		return fmt.Sprintf("%s:%s", envImage.Repository, tag)
+	}
+	if envImage != nil && envImage.Tag != "" && app.Spec.Image != nil {
 		// Environment overrides only the tag, keep the app-level repository
-		image = fmt.Sprintf("%s:%s", app.Spec.Image.Repository, envImage.Tag)
-	} else if app.Spec.Image != nil {
+		return fmt.Sprintf("%s:%s", app.Spec.Image.Repository, envImage.Tag)
+	}
+	if app.Spec.Image != nil {
 		tag := "latest"
 		if app.Spec.Image.Tag != "" {
 			tag = app.Spec.Image.Tag
 		}
-		image = fmt.Sprintf("%s:%s", app.Spec.Image.Repository, tag)
+		return fmt.Sprintf("%s:%s", app.Spec.Image.Repository, tag)
 	}
+	return "placeholder:latest"
+}
+
+func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envResources *vestav1alpha1.ResourceConfig, envName string, envImage *vestav1alpha1.ImageConfig) corev1.Container {
+	image := resolveImage(app, envImage)
 
 	container := corev1.Container{
 		Name:  "app",
@@ -1897,25 +1907,40 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 		}
 
 		// --- Existing metadata updates ---
+		// Record deployment history per environment. Each environment resolves its
+		// own image, so history has to be compared per environment — comparing a
+		// single app-wide image would attribute one environment's tag to all of them.
 		if app.Spec.Image != nil {
-			newImage := fmt.Sprintf("%s:%s", app.Spec.Image.Repository, app.Spec.Image.Tag)
-			if newImage != app.Status.CurrentImage {
-				nextVersion := 1
-				if len(app.Status.DeploymentHistory) > 0 {
-					nextVersion = app.Status.DeploymentHistory[len(app.Status.DeploymentHistory)-1].Version + 1
-				}
-				deployEnv := ""
-				if ann := app.GetAnnotations(); ann != nil {
-					deployEnv = ann["vesta.sh/last-deploy-environment"]
+			lastImageByEnv := map[string]string{}
+			for _, rec := range app.Status.DeploymentHistory {
+				lastImageByEnv[rec.Environment] = rec.Image
+			}
+
+			nextVersion := 1
+			if len(app.Status.DeploymentHistory) > 0 {
+				nextVersion = app.Status.DeploymentHistory[len(app.Status.DeploymentHistory)-1].Version + 1
+			}
+
+			for _, target := range targetNamespaces {
+				envName := target.Config.Name
+				envImage := resolveImage(&app, target.Config.Image)
+				if lastImageByEnv[envName] == envImage {
+					continue
 				}
 				app.Status.DeploymentHistory = append(app.Status.DeploymentHistory, vestav1alpha1.DeploymentRecord{
 					Version:     nextVersion,
-					Image:       newImage,
-					Environment: deployEnv,
+					Image:       envImage,
+					Environment: envName,
 					DeployedAt:  now,
 				})
+				lastImageByEnv[envName] = envImage
+				nextVersion++
+				app.Status.CurrentImage = envImage
 			}
-			app.Status.CurrentImage = newImage
+
+			if app.Status.CurrentImage == "" && len(app.Status.DeploymentHistory) > 0 {
+				app.Status.CurrentImage = app.Status.DeploymentHistory[len(app.Status.DeploymentHistory)-1].Image
+			}
 		}
 		if app.Spec.Ingress != nil {
 			scheme := "http"

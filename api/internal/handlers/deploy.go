@@ -111,16 +111,16 @@ func (h *Handler) DeployApp(c *gin.Context) {
 				}
 			}
 			if !updated {
-				// Fallback: also patch global image tag for apps without per-env entries
+				// Fallback: patch global image tag for apps without per-env entries
 				spec["image"] = map[string]interface{}{
 					"repository": repo,
 					"tag":        req.Tag,
 				}
 			} else {
+				// Only the target environment's tag changes. spec.image.tag is the
+				// default for environments that have no tag of their own, so writing
+				// it here would deploy this tag to every other such environment.
 				spec["environments"] = environments
-				// Also update global image tag so status.currentImage reflects the latest deploy
-				imageSpec["tag"] = req.Tag
-				spec["image"] = imageSpec
 			}
 			existing.Object["spec"] = spec
 
@@ -243,24 +243,35 @@ func (h *Handler) RollbackApp(c *gin.Context) {
 	status, _, _ := unstructuredNestedMap(existing.Object, "status")
 	history, _ := status["deploymentHistory"].([]interface{})
 
+	// History records are per-environment. Only roll back to a version that belongs
+	// to the target environment, otherwise a version from another environment would
+	// be deployed here. Legacy records carry no environment and stay eligible.
 	var targetImage string
+	var wrongEnv string
 	for _, entry := range history {
 		record, ok := entry.(map[string]interface{})
 		if !ok {
 			continue
 		}
 		ver, _ := record["version"].(float64)
-		if int(ver) == req.Version {
-			targetImage, _ = record["image"].(string)
+		if int(ver) != req.Version {
+			continue
+		}
+		recEnv, _ := record["environment"].(string)
+		if recEnv != "" && recEnv != req.Environment {
+			wrongEnv = recEnv
 			break
 		}
+		targetImage, _ = record["image"].(string)
+		break
 	}
 
 	if targetImage == "" {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{
-			Code:    400,
-			Message: fmt.Sprintf("deployment version %d not found in history", req.Version),
-		})
+		msg := fmt.Sprintf("deployment version %d not found in history", req.Version)
+		if wrongEnv != "" {
+			msg = fmt.Sprintf("deployment version %d belongs to environment %q, not %q", req.Version, wrongEnv, req.Environment)
+		}
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: msg})
 		return
 	}
 
