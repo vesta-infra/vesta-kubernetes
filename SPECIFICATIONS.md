@@ -230,6 +230,20 @@ spec:
       command: "npm run cleanup"
       resources:
         size: small
+    - name: nightly-report
+      schedule: "0 3 * * *"
+      command: "npm run report"
+      # Set to false to stop the job from firing without deleting it: the
+      # CronJob stays in the cluster with spec.suspend=true, so its schedule,
+      # run history and "Run Now" triggers are preserved. Defaults to true.
+      enabled: false
+      environments:
+        # A per-environment enabled flag overrides the cronjob-level one,
+        # so a job can be live in production and suspended in staging.
+        - name: staging
+          enabled: false
+        - name: production
+          schedule: "0 4 * * *"
 
   # --- Addons ---
   addons:

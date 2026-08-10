@@ -624,6 +624,16 @@ func (in *HealthCheckConfig) DeepCopy() *HealthCheckConfig {
 
 func (in *CronjobConfig) DeepCopyInto(out *CronjobConfig) {
 	*out = *in
+	if in.Enabled != nil {
+		in, out := &in.Enabled, &out.Enabled
+		*out = new(bool)
+		**out = **in
+	}
+	if in.BackoffLimit != nil {
+		in, out := &in.BackoffLimit, &out.BackoffLimit
+		*out = new(int32)
+		**out = **in
+	}
 	if in.Resources != nil {
 		in, out := &in.Resources, &out.Resources
 		*out = new(ResourceConfig)

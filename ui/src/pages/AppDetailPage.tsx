@@ -684,11 +684,14 @@ export default function AppDetailPage() {
                   <h4 className="text-[11px] font-mono uppercase tracking-wider text-text-tertiary mb-3">Cron Jobs</h4>
                   <div className="space-y-2">
                     {app.spec.cronjobs.map((cj: any) => (
-                      <div key={cj.name} className="px-3 py-2 bg-surface-1 border border-border rounded-lg">
+                      <div key={cj.name} className={`px-3 py-2 bg-surface-1 border border-border rounded-lg ${cj.enabled === false ? 'opacity-60' : ''}`}>
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-3">
                             <span className="text-xs font-mono text-accent">{cj.name}</span>
                             <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-2 py-0.5 rounded">{cj.schedule}</span>
+                            {cj.enabled === false && (
+                              <span className="text-[10px] uppercase tracking-wide text-status-failed bg-status-failed/5 border border-status-failed/20 px-1.5 py-0.5 rounded">Disabled</span>
+                            )}
                           </div>
                           <div className="flex items-center gap-3">
                             <span className="text-xs text-text-secondary font-mono truncate max-w-[200px]">{cj.command}</span>
@@ -2003,6 +2006,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
   const [size, setSize] = useState('')
   const [restartPolicy, setRestartPolicy] = useState('OnFailure')
   const [backoffLimit, setBackoffLimit] = useState('')
+  const [enabled, setEnabled] = useState(true)
   const [envOverrides, setEnvOverrides] = useState<{ name: string; enabled: boolean; schedule: string }[]>([])
   const [triggerEnv, setTriggerEnv] = useState(environments[0] || '')
 
@@ -2043,6 +2047,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
     setSize('')
     setRestartPolicy('OnFailure')
     setBackoffLimit('')
+    setEnabled(true)
     setEnvOverrides([])
   }
 
@@ -2056,6 +2061,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
     setSize(cj.resources?.size || '')
     setRestartPolicy(cj.restartPolicy || 'OnFailure')
     setBackoffLimit(cj.backoffLimit != null ? String(cj.backoffLimit) : '')
+    setEnabled(cj.enabled !== false)
     setEnvOverrides((cj.environments || []).map((e: any) => ({
       name: e.name || '',
       enabled: e.enabled !== false,
@@ -2102,6 +2108,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
       name,
       schedule,
       command,
+      ...(!enabled && { enabled: false }),
       ...(size && { resources: { size } }),
       restartPolicy,
       ...(backoffLimit !== '' && { backoffLimit: Number(backoffLimit) }),
@@ -2128,12 +2135,26 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
     mutation.mutate(updated)
   }
 
+  // Disabling keeps the cron job (and its run history) around — the operator
+  // suspends it in the cluster instead of deleting it.
+  const handleToggleEnabled = (i: number) => {
+    const updated = cronjobs.map((cj: any, j: number) =>
+      j === i ? { ...cj, enabled: cj.enabled === false } : cj
+    )
+    mutation.mutate(updated)
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm text-text-secondary">{cronjobs.length} cron job{cronjobs.length !== 1 ? 's' : ''}</p>
-          <p className="text-xs text-text-tertiary mt-0.5">Scheduled tasks that run using the same image and secrets as the app.</p>
+          <p className="text-sm text-text-secondary">
+            {cronjobs.length} cron job{cronjobs.length !== 1 ? 's' : ''}
+            {cronjobs.filter((cj: any) => cj.enabled === false).length > 0 && (
+              <span className="text-text-tertiary"> · {cronjobs.filter((cj: any) => cj.enabled === false).length} disabled</span>
+            )}
+          </p>
+          <p className="text-xs text-text-tertiary mt-0.5">Scheduled tasks that run using the same image and secrets as the app. Disabling one suspends it without deleting its history.</p>
         </div>
         {!showAdd && (
           <button onClick={() => { resetForm(); setShowAdd(true) }} className="btn-primary">
@@ -2193,7 +2214,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
               </select>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="label">Restart Policy</label>
               <select value={restartPolicy} onChange={e => setRestartPolicy(e.target.value)} className="input-field text-xs">
@@ -2204,6 +2225,21 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
             <div>
               <label className="label">Backoff Limit</label>
               <input type="number" min="0" value={backoffLimit} onChange={e => setBackoffLimit(e.target.value)} placeholder="6 (default)" className="input-field font-mono text-xs" />
+            </div>
+            <div>
+              <label className="label">Status</label>
+              <label className="flex items-center gap-2 cursor-pointer h-[38px]">
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={e => setEnabled(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                />
+                <span className="text-xs text-text-secondary">Enabled</span>
+              </label>
+              {!enabled && (
+                <p className="text-[11px] text-text-tertiary mt-1">Suspended — kept but never scheduled.</p>
+              )}
             </div>
           </div>
           <div>
@@ -2297,7 +2333,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
       {cronjobs.length > 0 && (
         <div className="space-y-2">
           {cronjobs.map((cj: any, i: number) => (
-            <div key={cj.name} className="card-hover px-5 py-4 group">
+            <div key={cj.name} className={`card-hover px-5 py-4 group ${cj.enabled === false ? 'opacity-60' : ''}`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4 min-w-0">
                   <div className="w-9 h-9 rounded-lg bg-surface-3 flex items-center justify-center flex-shrink-0">
@@ -2309,6 +2345,9 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
                     <div className="flex items-center gap-3">
                       <span className="text-sm font-mono text-accent">{cj.name}</span>
                       <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-2 py-0.5 rounded">{cj.schedule}</span>
+                      {cj.enabled === false && (
+                        <span className="text-[10px] uppercase tracking-wide text-status-failed bg-status-failed/5 border border-status-failed/20 px-1.5 py-0.5 rounded">Disabled</span>
+                      )}
                       {cj.resources?.size && (
                         <span className="text-[10px] text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded">{cj.resources.size}</span>
                       )}
@@ -2383,6 +2422,14 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
                     className="text-xs text-text-tertiary hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
                   >
                     Edit
+                  </button>
+                  <button
+                    onClick={() => handleToggleEnabled(i)}
+                    disabled={mutation.isPending}
+                    title={cj.enabled === false ? 'Resume scheduling' : 'Stop scheduling without deleting'}
+                    className="text-xs text-text-tertiary hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
+                  >
+                    {cj.enabled === false ? 'Enable' : 'Disable'}
                   </button>
                   <button
                     onClick={() => handleDelete(i)}

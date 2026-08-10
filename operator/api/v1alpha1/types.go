@@ -200,9 +200,12 @@ type HealthCheckConfig struct {
 }
 
 type CronjobConfig struct {
-	Name          string                       `json:"name"`
-	Schedule      string                       `json:"schedule"`
-	Command       string                       `json:"command"`
+	Name     string `json:"name"`
+	Schedule string `json:"schedule"`
+	Command  string `json:"command"`
+	// Enabled defaults to true. When false the CronJob is kept in the cluster
+	// but suspended, so it stops firing without losing its history.
+	Enabled       *bool                        `json:"enabled,omitempty"`
 	Resources     *ResourceConfig              `json:"resources,omitempty"`
 	RestartPolicy string                       `json:"restartPolicy,omitempty"`
 	BackoffLimit  *int32                       `json:"backoffLimit,omitempty"`
@@ -210,7 +213,9 @@ type CronjobConfig struct {
 }
 
 type CronjobEnvironmentOverride struct {
-	Name     string `json:"name"`
+	Name string `json:"name"`
+	// Enabled overrides the cronjob-level enabled flag for this environment.
+	// When false the CronJob is suspended in this environment only.
 	Enabled  *bool  `json:"enabled,omitempty"`
 	Schedule string `json:"schedule,omitempty"`
 }
