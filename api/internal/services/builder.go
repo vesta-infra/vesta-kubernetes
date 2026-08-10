@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 
 	"kubernetes.getvesta.sh/api/internal/db"
@@ -479,15 +481,92 @@ func (b *Builder) onBuildSuccess(ctx context.Context, req BuildRequest) {
 	}
 	tag := parts[1]
 
-	patch := fmt.Sprintf(`{"spec":{"image":{"tag":"%s"},"git":{"commitSHA":"%s"}}}`, tag, req.CommitSHA)
-	_, err := b.clientset.Discovery().RESTClient().
+	appPath := fmt.Sprintf("/apis/kubernetes.getvesta.sh/v1alpha1/namespaces/%s/vestaapps/%s", buildNamespace, req.AppID)
+
+	// commitSHA is app-wide; a merge patch creates spec.git if it is absent.
+	gitPatch := fmt.Sprintf(`{"spec":{"git":{"commitSHA":"%s"}}}`, req.CommitSHA)
+	if _, err := b.clientset.Discovery().RESTClient().
 		Patch("application/merge-patch+json").
-		AbsPath(fmt.Sprintf("/apis/kubernetes.getvesta.sh/v1alpha1/namespaces/%s/vestaapps/%s", buildNamespace, req.AppID)).
-		Body([]byte(patch)).
-		DoRaw(ctx)
+		AbsPath(appPath).
+		Body([]byte(gitPatch)).
+		DoRaw(ctx); err != nil {
+		log.Printf("[builder] failed to update commitSHA on VestaApp %s: %v", req.AppID, err)
+	}
+
+	// Pin the tag to the environment this build was for. spec.image.tag is only the
+	// default for environments without a tag of their own, so writing it would roll
+	// this build out to every other such environment.
+	envIndex, envImage, err := b.environmentImage(ctx, appPath, req.Environment)
 	if err != nil {
+		log.Printf("[builder] cannot resolve environment %q on VestaApp %s: %v", req.Environment, req.AppID, err)
+		return
+	}
+
+	var patchType types.PatchType
+	var patch []byte
+	if envIndex >= 0 {
+		// Preserve any other per-environment image fields (repository, pullPolicy…).
+		envImage["tag"] = tag
+		value, mErr := json.Marshal(envImage)
+		if mErr != nil {
+			log.Printf("[builder] failed to encode image config for %s: %v", req.AppID, mErr)
+			return
+		}
+		patchType = types.JSONPatchType
+		patch = []byte(fmt.Sprintf(`[{"op":"add","path":"/spec/environments/%d/image","value":%s}]`, envIndex, value))
+	} else {
+		// App declares no environments — the global tag is the only target.
+		patchType = types.MergePatchType
+		patch = []byte(fmt.Sprintf(`{"spec":{"image":{"tag":"%s"}}}`, tag))
+	}
+
+	if _, err := b.clientset.Discovery().RESTClient().
+		Patch(patchType).
+		AbsPath(appPath).
+		Body(patch).
+		DoRaw(ctx); err != nil {
 		log.Printf("[builder] failed to update VestaApp %s after build: %v", req.AppID, err)
 	}
+}
+
+// environmentImage returns the index of envName in spec.environments along with its
+// current image config, or -1 if the app declares no environments at all. An app
+// that declares environments but not envName is an error — falling back to the
+// global tag there would deploy the build to every environment.
+func (b *Builder) environmentImage(ctx context.Context, appPath, envName string) (int, map[string]interface{}, error) {
+	raw, err := b.clientset.Discovery().RESTClient().
+		Get().
+		AbsPath(appPath).
+		DoRaw(ctx)
+	if err != nil {
+		return -1, nil, fmt.Errorf("get vestaapp: %w", err)
+	}
+
+	var app struct {
+		Spec struct {
+			Environments []struct {
+				Name  string                 `json:"name"`
+				Image map[string]interface{} `json:"image"`
+			} `json:"environments"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(raw, &app); err != nil {
+		return -1, nil, fmt.Errorf("decode vestaapp: %w", err)
+	}
+
+	if len(app.Spec.Environments) == 0 {
+		return -1, nil, nil
+	}
+	for i, env := range app.Spec.Environments {
+		if env.Name == envName {
+			image := env.Image
+			if image == nil {
+				image = map[string]interface{}{}
+			}
+			return i, image, nil
+		}
+	}
+	return -1, nil, fmt.Errorf("environment %q not declared on app", envName)
 }
 
 func boolPtr(v bool) *bool { return &v }

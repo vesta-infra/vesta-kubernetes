@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -41,6 +42,10 @@ func (r *VestaSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	logger.Info("reconciling VestaSecret", "name", vs.Name, "namespace", vs.Namespace)
 
+	// Populated inside the mutate function below, which CreateOrUpdate may call more
+	// than once; each call resets it before rebuilding the data map.
+	var invalidKeys []string
+
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      vs.Name,
@@ -60,9 +65,17 @@ func (r *VestaSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		switch vs.Spec.Type {
 		case "Opaque":
 			secret.Data = make(map[string][]byte)
+			invalidKeys = nil
 			for k, v := range vs.Spec.Data {
+				if !validSecretKey(k) {
+					// Including this key would make the API server reject the whole
+					// Secret, taking every valid key down with it.
+					invalidKeys = append(invalidKeys, describeSecretKey(k))
+					continue
+				}
 				secret.Data[k] = []byte(v)
 			}
+			sort.Strings(invalidKeys)
 
 		case "kubernetes.io/dockerconfigjson":
 			if vs.Spec.DockerConfig != nil {
@@ -89,11 +102,20 @@ func (r *VestaSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	if err != nil {
 		vs.Status.Synced = false
+		vs.Status.InvalidKeys = invalidKeys
 		_ = r.Status().Update(ctx, &vs)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, err
 	}
 
+	if len(invalidKeys) > 0 {
+		// Retrying cannot fix a malformed key, so report it and move on rather than
+		// requeueing. The remaining keys are synced.
+		logger.Info("skipped invalid secret keys; they cannot be stored in a Kubernetes Secret",
+			"name", vs.Name, "namespace", vs.Namespace, "invalidKeys", invalidKeys)
+	}
+
 	vs.Status.Synced = true
+	vs.Status.InvalidKeys = invalidKeys
 	vs.Status.LastSyncedAt = time.Now().UTC().Format(time.RFC3339)
 	vs.Status.SecretName = secret.Name
 	if err := r.Status().Update(ctx, &vs); err != nil {

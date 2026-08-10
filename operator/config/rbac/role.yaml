@@ -85,6 +85,11 @@ rules:
   resources: [ "networkpolicies" ]
   verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
 
+# Traefik Middleware CRDs (for redirect and HTTPS redirect middlewares)
+- apiGroups: [ "traefik.io" ]
+  resources: [ "middlewares" ]
+  verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
+
 # Autoscaling
 - apiGroups: [ "autoscaling" ]
   resources: [ "horizontalpodautoscalers" ]

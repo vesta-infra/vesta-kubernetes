@@ -324,6 +324,15 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 			existingRuntime = r
 		}
 
+		// Capture the per-environment image overrides for the same reason: deploys
+		// record what an environment runs in spec.environments[].image, so a config
+		// update that omits it must not roll the environment back to spec.image.
+		envs, _, _ := unstructuredNestedSlice(spec, "environments")
+		existingEnvImages := collectEnvImages(envs)
+
+		existingImage, _, _ := unstructuredNestedMap(spec, "image")
+		existingTag := getNestedString(existingImage, "tag")
+
 		for k, v := range patch {
 			if v == nil {
 				// Delete the key from spec when value is nil (e.g., healthCheck: null)
@@ -343,6 +352,20 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 				merged[k] = v
 			}
 			spec["runtime"] = merged
+		}
+
+		// Restore per-environment image overrides the patch left out. An entry that
+		// sets "image" (including an explicit null) is respected as written.
+		if patchEnvs, ok := patch["environments"].([]interface{}); ok {
+			spec["environments"] = restoreEnvImages(patchEnvs, existingEnvImages)
+		}
+
+		// Same for the app-level tag: a config update that only sets the repository
+		// keeps the deployed tag rather than resetting the app to "latest".
+		if patchImage, ok := patch["image"].(map[string]interface{}); ok && existingTag != "" {
+			if _, ok := patchImage["tag"]; !ok {
+				patchImage["tag"] = existingTag
+			}
 		}
 
 		existing.Object["spec"] = spec
@@ -459,6 +482,45 @@ func (h *Handler) CloneApp(c *gin.Context) {
 
 	h.auditLog(c, "clone_app", "app", result.GetName(), result.GetName(), project, "",
 		map[string]interface{}{"clonedFrom": appID})
+}
+
+// collectEnvImages indexes the image override of each environment by environment
+// name. Deploys write the tag they roll out to spec.environments[].image.tag, so
+// this is the record of what each environment currently runs.
+func collectEnvImages(envs []interface{}) map[string]interface{} {
+	images := map[string]interface{}{}
+	for _, raw := range envs {
+		envMap, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if img, ok := envMap["image"]; ok && img != nil {
+			images[getNestedString(envMap, "name")] = img
+		}
+	}
+	return images
+}
+
+// restoreEnvImages carries previously deployed image overrides onto the environments
+// of an incoming patch. An environment that omits "image" keeps what it is running;
+// one that sets it — including an explicit null, which clears the override — wins.
+func restoreEnvImages(patchEnvs []interface{}, existing map[string]interface{}) []interface{} {
+	for _, raw := range patchEnvs {
+		envMap, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if img, ok := envMap["image"]; ok {
+			if img == nil {
+				delete(envMap, "image")
+			}
+			continue
+		}
+		if img, ok := existing[getNestedString(envMap, "name")]; ok {
+			envMap["image"] = img
+		}
+	}
+	return patchEnvs
 }
 
 func getNestedString(m map[string]interface{}, key string) string {

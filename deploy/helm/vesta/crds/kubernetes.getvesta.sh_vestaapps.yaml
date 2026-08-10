@@ -165,6 +165,19 @@ spec:
                         tls:
                           type: boolean
                           description: Enable or disable TLS for this environment. Overrides app-level TLS setting.
+                        annotations:
+                          type: object
+                          description: Per-environment ingress annotations (e.g., rate limiting). Merged after app-level annotations.
+                          additionalProperties:
+                            type: string
+                        redirectDomains:
+                          type: array
+                          description: Domains that 301-redirect to the primary domain for this environment.
+                          items:
+                            type: string
+                        redirectTarget:
+                          type: string
+                          description: Explicit target domain for redirects in this environment. If omitted, redirects go to the first entry in domains.
                     service:
                       type: object
                       description: Per-environment service override.
@@ -458,7 +471,14 @@ spec:
                     type: object
                     additionalProperties:
                       type: string
-                required: [ domain ]
+                  redirectDomains:
+                    type: array
+                    description: Domains that 301-redirect to the primary domain. Supports Traefik and NGINX ingress controllers.
+                    items:
+                      type: string
+                  redirectTarget:
+                    type: string
+                    description: Explicit target domain for redirects. If omitted, redirects go to the first entry in domains.
               cronjobs:
                 type: array
                 items:
@@ -470,6 +490,17 @@ spec:
                       type: string
                     command:
                       type: string
+                    enabled:
+                      type: boolean
+                      description: Set to false to suspend this cronjob in every environment without deleting it. Defaults to true.
+                    restartPolicy:
+                      type: string
+                      enum: [ OnFailure, Never ]
+                      description: Pod restart policy for job pods. Defaults to OnFailure.
+                    backoffLimit:
+                      type: integer
+                      format: int32
+                      description: Number of retries before marking a job failed.
                     resources:
                       type: object
                       properties:
@@ -485,7 +516,7 @@ spec:
                             type: string
                           enabled:
                             type: boolean
-                            description: Set to false to skip this cronjob in this environment.
+                            description: Set to false to suspend this cronjob in this environment only. Overrides the cronjob-level enabled flag.
                           schedule:
                             type: string
                             description: Override the cron schedule for this environment.
