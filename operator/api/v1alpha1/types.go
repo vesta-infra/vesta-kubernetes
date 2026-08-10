@@ -556,6 +556,13 @@ type VestaSecretSpec struct {
 	App         string `json:"app,omitempty"`
 	Environment string `json:"environment,omitempty"`
 
+	// Data keys become keys of the generated Kubernetes Secret and must satisfy the same
+	// rules the API server enforces there. Checking length here turns the common mistake —
+	// a value pasted into the key field — into a rejected write instead of a VestaSecret
+	// the operator can never sync. The character-set rule is deliberately not a CEL rule:
+	// matches() over an unbounded map inflates the estimated cost and can get the whole
+	// CRD rejected at install time. That check lives in the API handlers and the operator.
+	// +kubebuilder:validation:XValidation:rule="self.all(k, size(k) <= 253)",message="secret key must be no more than 253 characters (a key this long is usually a value entered in the key field)"
 	Data         map[string]string   `json:"data,omitempty"`
 	DockerConfig *DockerSecretConfig `json:"dockerConfig,omitempty"`
 	TLS          *TLSSecretConfig    `json:"tls,omitempty"`
@@ -589,6 +596,10 @@ type VestaSecretStatus struct {
 	Synced       bool   `json:"synced,omitempty"`
 	LastSyncedAt string `json:"lastSyncedAt,omitempty"`
 	SecretName   string `json:"secretName,omitempty"`
+
+	// InvalidKeys lists data keys the operator skipped because Kubernetes cannot store
+	// them. Entries are truncated — an over-long key is usually a pasted secret value.
+	InvalidKeys []string `json:"invalidKeys,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -1578,7 +1578,7 @@ func (in *VestaSecret) DeepCopyInto(out *VestaSecret) {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
 	in.Spec.DeepCopyInto(&out.Spec)
-	out.Status = in.Status
+	in.Status.DeepCopyInto(&out.Status)
 }
 
 func (in *VestaSecret) DeepCopy() *VestaSecret {
@@ -1669,6 +1669,10 @@ func (in *VestaSecretSpec) DeepCopy() *VestaSecretSpec {
 
 func (in *VestaSecretStatus) DeepCopyInto(out *VestaSecretStatus) {
 	*out = *in
+	if in.InvalidKeys != nil {
+		out.InvalidKeys = make([]string, len(in.InvalidKeys))
+		copy(out.InvalidKeys, in.InvalidKeys)
+	}
 }
 
 func (in *VestaSecretStatus) DeepCopy() *VestaSecretStatus {

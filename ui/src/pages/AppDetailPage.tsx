@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
 import { api } from '../lib/api'
 import { useUserRole, useIsProjectOwner } from '../lib/useRole'
+import { parseEnvContent, secretKeyError, truncateSecretKey } from '../lib/secretKeys'
 import RevealableInput from '../components/RevealableInput'
 
 export default function AppDetailPage() {
@@ -4232,27 +4233,13 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['appEnvVars', appId, env] }),
   })
 
-  const parseEnvContent = (content: string): Record<string, string> => {
-    const result: Record<string, string> = {}
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith('#')) continue
-      const eqIdx = trimmed.indexOf('=')
-      if (eqIdx === -1) continue
-      const key = trimmed.slice(0, eqIdx).trim()
-      let value = trimmed.slice(eqIdx + 1).trim()
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1)
-      }
-      if (key) result[key] = value
-    }
-    return result
-  }
+  const parsedEnv = parseEnvContent(envInput)
+  const newKeyErrors = newKeys.map(kv => (kv.key ? secretKeyError(kv.key) : null))
 
   const handleEnvImport = () => {
-    const parsed = parseEnvContent(envInput)
-    if (Object.keys(parsed).length === 0) return
-    addMutation.mutate(parsed)
+    if (parsedEnv.invalidKeys.length > 0) return
+    if (Object.keys(parsedEnv.data).length === 0) return
+    addMutation.mutate(parsedEnv.data)
   }
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -4404,15 +4391,26 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
             />
             {envInput && (
               <p className="text-[11px] text-text-tertiary mt-1">
-                {Object.keys(parseEnvContent(envInput)).length} variable{Object.keys(parseEnvContent(envInput)).length !== 1 ? 's' : ''} detected
+                {Object.keys(parsedEnv.data).length} variable{Object.keys(parsedEnv.data).length !== 1 ? 's' : ''} detected
               </p>
+            )}
+            {parsedEnv.invalidKeys.length > 0 && (
+              <div className="text-[11px] text-status-failed mt-1 space-y-1">
+                <p>
+                  {parsedEnv.invalidKeys.length} line{parsedEnv.invalidKeys.length !== 1 ? 's' : ''} cannot be used as a
+                  key. Multi-line values such as PEM certificates must be on a single line.
+                </p>
+                {parsedEnv.invalidKeys.slice(0, 3).map(k => (
+                  <p key={k} className="font-mono break-all">{truncateSecretKey(k)}</p>
+                ))}
+              </div>
             )}
           </div>
           <div className="flex gap-3">
             <button
               type="button"
               onClick={handleEnvImport}
-              disabled={addMutation.isPending || Object.keys(parseEnvContent(envInput)).length === 0}
+              disabled={addMutation.isPending || parsedEnv.invalidKeys.length > 0 || Object.keys(parsedEnv.data).length === 0}
               className="btn-primary text-xs"
             >
               {addMutation.isPending ? 'Importing...' : 'Import'}
@@ -4429,6 +4427,7 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
         <form
           onSubmit={(e) => {
             e.preventDefault()
+            if (newKeyErrors.some(Boolean)) return
             const varData: Record<string, string> = {}
             newKeys.forEach((kv) => { if (kv.key) varData[kv.key] = kv.value })
             addMutation.mutate(varData)
@@ -4439,26 +4438,29 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
             <label className="label">Key-Value Pairs</label>
             <div className="space-y-2">
               {newKeys.map((kv, i) => (
-                <div key={i} className="flex gap-2">
-                  <input
-                    value={kv.key}
-                    onChange={(e) => { const u = [...newKeys]; u[i].key = e.target.value; setNewKeys(u) }}
-                    placeholder="KEY"
-                    className="input-field flex-1 font-mono text-xs"
-                  />
-                  <input
-                    value={kv.value}
-                    onChange={(e) => { const u = [...newKeys]; u[i].value = e.target.value; setNewKeys(u) }}
-                    placeholder="value"
-                    className="input-field flex-1 font-mono text-xs"
-                  />
-                  {newKeys.length > 1 && (
-                    <button type="button" onClick={() => setNewKeys(newKeys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  )}
+                <div key={i} className="space-y-1">
+                  <div className="flex gap-2">
+                    <input
+                      value={kv.key}
+                      onChange={(e) => { const u = [...newKeys]; u[i].key = e.target.value; setNewKeys(u) }}
+                      placeholder="KEY"
+                      className={`input-field flex-1 font-mono text-xs ${newKeyErrors[i] ? 'border-status-failed' : ''}`}
+                    />
+                    <input
+                      value={kv.value}
+                      onChange={(e) => { const u = [...newKeys]; u[i].value = e.target.value; setNewKeys(u) }}
+                      placeholder="value"
+                      className="input-field flex-1 font-mono text-xs"
+                    />
+                    {newKeys.length > 1 && (
+                      <button type="button" onClick={() => setNewKeys(newKeys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  {newKeyErrors[i] && <p className="text-[11px] text-status-failed">{newKeyErrors[i]}</p>}
                 </div>
               ))}
             </div>
@@ -4467,7 +4469,7 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
             </button>
           </div>
           <div className="flex gap-3">
-            <button type="submit" disabled={addMutation.isPending || !newKeys.some(kv => kv.key)} className="btn-primary text-xs">
+            <button type="submit" disabled={addMutation.isPending || newKeyErrors.some(Boolean) || !newKeys.some(kv => kv.key)} className="btn-primary text-xs">
               {addMutation.isPending ? 'Saving...' : 'Save'}
             </button>
             <button type="button" onClick={() => setShowAdd(false)} className="btn-ghost text-xs">Cancel</button>
@@ -4523,28 +4525,13 @@ function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; pro
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['appEnvSecrets', appId, env] }),
   })
 
-  const parseEnvContent = (content: string): Record<string, string> => {
-    const result: Record<string, string> = {}
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith('#')) continue
-      const eqIdx = trimmed.indexOf('=')
-      if (eqIdx === -1) continue
-      const key = trimmed.slice(0, eqIdx).trim()
-      let value = trimmed.slice(eqIdx + 1).trim()
-      // Strip surrounding quotes
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1)
-      }
-      if (key) result[key] = value
-    }
-    return result
-  }
+  const parsedEnv = parseEnvContent(envInput)
+  const newKeyErrors = newKeys.map(kv => (kv.key ? secretKeyError(kv.key) : null))
 
   const handleEnvImport = () => {
-    const parsed = parseEnvContent(envInput)
-    if (Object.keys(parsed).length === 0) return
-    addMutation.mutate(parsed)
+    if (parsedEnv.invalidKeys.length > 0) return
+    if (Object.keys(parsedEnv.data).length === 0) return
+    addMutation.mutate(parsedEnv.data)
   }
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -4749,15 +4736,26 @@ function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; pro
             />
             {envInput && (
               <p className="text-[11px] text-text-tertiary mt-1">
-                {Object.keys(parseEnvContent(envInput)).length} key{Object.keys(parseEnvContent(envInput)).length !== 1 ? 's' : ''} detected
+                {Object.keys(parsedEnv.data).length} key{Object.keys(parsedEnv.data).length !== 1 ? 's' : ''} detected
               </p>
+            )}
+            {parsedEnv.invalidKeys.length > 0 && (
+              <div className="text-[11px] text-status-failed mt-1 space-y-1">
+                <p>
+                  {parsedEnv.invalidKeys.length} line{parsedEnv.invalidKeys.length !== 1 ? 's' : ''} cannot be used as a
+                  key. Multi-line values such as PEM certificates must be on a single line.
+                </p>
+                {parsedEnv.invalidKeys.slice(0, 3).map(k => (
+                  <p key={k} className="font-mono break-all">{truncateSecretKey(k)}</p>
+                ))}
+              </div>
             )}
           </div>
           <div className="flex gap-3">
             <button
               type="button"
               onClick={handleEnvImport}
-              disabled={addMutation.isPending || Object.keys(parseEnvContent(envInput)).length === 0}
+              disabled={addMutation.isPending || parsedEnv.invalidKeys.length > 0 || Object.keys(parsedEnv.data).length === 0}
               className="btn-primary text-xs"
             >
               {addMutation.isPending ? 'Importing...' : 'Import'}
@@ -4774,6 +4772,7 @@ function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; pro
         <form
           onSubmit={(e) => {
             e.preventDefault()
+            if (newKeyErrors.some(Boolean)) return
             const secretData: Record<string, string> = {}
             newKeys.forEach((kv) => { if (kv.key) secretData[kv.key] = kv.value })
             addMutation.mutate(secretData)
@@ -4784,27 +4783,30 @@ function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; pro
             <label className="label">Key-Value Pairs</label>
             <div className="space-y-2">
               {newKeys.map((kv, i) => (
-                <div key={i} className="flex gap-2">
-                  <input
-                    value={kv.key}
-                    onChange={(e) => { const u = [...newKeys]; u[i].key = e.target.value; setNewKeys(u) }}
-                    placeholder="KEY"
-                    className="input-field w-1/3 font-mono text-xs"
-                  />
-                  <RevealableInput
-                    value={kv.value}
-                    onChange={(e) => { const u = [...newKeys]; u[i].value = e.target.value; setNewKeys(u) }}
-                    placeholder="value"
-                    type="password"
-                    className="input-field flex-1"
-                  />
-                  {newKeys.length > 1 && (
-                    <button type="button" onClick={() => setNewKeys(newKeys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  )}
+                <div key={i} className="space-y-1">
+                  <div className="flex gap-2">
+                    <input
+                      value={kv.key}
+                      onChange={(e) => { const u = [...newKeys]; u[i].key = e.target.value; setNewKeys(u) }}
+                      placeholder="KEY"
+                      className={`input-field w-1/3 font-mono text-xs ${newKeyErrors[i] ? 'border-status-failed' : ''}`}
+                    />
+                    <RevealableInput
+                      value={kv.value}
+                      onChange={(e) => { const u = [...newKeys]; u[i].value = e.target.value; setNewKeys(u) }}
+                      placeholder="value"
+                      type="password"
+                      className="input-field flex-1"
+                    />
+                    {newKeys.length > 1 && (
+                      <button type="button" onClick={() => setNewKeys(newKeys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  {newKeyErrors[i] && <p className="text-[11px] text-status-failed">{newKeyErrors[i]}</p>}
                 </div>
               ))}
             </div>
@@ -4813,7 +4815,7 @@ function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; pro
             </button>
           </div>
           <div className="flex gap-3">
-            <button type="submit" disabled={addMutation.isPending || !newKeys.some(kv => kv.key)} className="btn-primary text-xs">
+            <button type="submit" disabled={addMutation.isPending || newKeyErrors.some(Boolean) || !newKeys.some(kv => kv.key)} className="btn-primary text-xs">
               {addMutation.isPending ? 'Saving...' : 'Save'}
             </button>
             <button type="button" onClick={() => setShowAdd(false)} className="btn-ghost text-xs">Cancel</button>
