@@ -101,9 +101,9 @@ helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
    --reuse-values \
-  --set operator.image.tag=0.5.19 \
-  --set api.image.tag=0.5.19 \
-  --set ui.image.tag=0.5.19
+  --set operator.image.tag=0.5.20 \
+  --set api.image.tag=0.5.20 \
+  --set ui.image.tag=0.5.20
 ```
 
 
