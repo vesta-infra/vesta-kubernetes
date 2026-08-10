@@ -1012,7 +1012,10 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         maxReplicas: env.autoscale?.maxReplicas || 5,
         targetCPU: env.autoscale?.metrics?.[0]?.targetAverageUtilization || env.autoscale?.targetCPU || 80,
         imageRepo: env.image?.repository || '',
-        imageTag: '',
+        // Seed the tag a deploy pinned to this environment — submitting the form
+        // rewrites spec.environments, so an empty value here would drop the tag
+        // and silently roll the environment back to the app-level default.
+        imageTag: env.image?.tag || '',
         cpuRequest: env.resources?.requests?.cpu || '',
         cpuLimit: env.resources?.limits?.cpu || '',
         memoryRequest: env.resources?.requests?.memory || '',
@@ -1105,9 +1108,10 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
     // Image
     if (imageRepo) {
+      // No tag: this form does not deploy. The backend keeps the tag currently on
+      // the app, which may have moved since this page was loaded.
       patch.image = {
         repository: imageRepo,
-        tag: app.spec?.image?.tag || 'latest',
         pullPolicy,
         ...(pullSecrets.length > 0 && { imagePullSecrets: pullSecrets.map(n => ({ name: n })) }),
       }
@@ -1219,6 +1223,10 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           ...(cfg.imageRepo && { repository: cfg.imageRepo }),
           ...(cfg.imageTag && { tag: cfg.imageTag }),
         }
+      } else {
+        // Explicit null clears the override; omitting the key makes the backend
+        // keep whatever tag is currently deployed to this environment.
+        env.image = null
       }
       const filteredDomains = cfg.domains.filter(d => d.trim())
       const filteredRedirectDomains = cfg.redirectDomains.filter(d => d.trim())
@@ -1547,7 +1555,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                       value={cfg.imageTag}
                       onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageTag: e.target.value } }))}
                       className="input-field w-36 font-mono text-xs"
-                      placeholder={rawEnvs.find((e: any) => (typeof e === 'string' ? e : e.name) === envName)?.image?.tag || 'tag'}
+                      placeholder={app.spec?.image?.tag || 'tag (inherits from app)'}
                     />
                   </div>
                 </div>
