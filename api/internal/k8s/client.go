@@ -507,6 +507,7 @@ type CronJobStatus struct {
 	LastSuccessfulTime *string `json:"lastSuccessfulTime"`
 	Active            int     `json:"active"`
 	RunCount          int     `json:"runCount"`
+	Suspended         bool    `json:"suspended"`
 }
 
 // GetCronJobStatuses returns status info for all cronjobs matching a label selector.
@@ -521,9 +522,10 @@ func (c *Client) GetCronJobStatuses(ctx context.Context, namespace, labelSelecto
 	var results []CronJobStatus
 	for _, cj := range cronJobs.Items {
 		status := CronJobStatus{
-			Name:     cj.Name,
-			Schedule: cj.Spec.Schedule,
-			Active:   len(cj.Status.Active),
+			Name:      cj.Name,
+			Schedule:  cj.Spec.Schedule,
+			Active:    len(cj.Status.Active),
+			Suspended: cj.Spec.Suspend != nil && *cj.Spec.Suspend,
 		}
 		if cj.Status.LastScheduleTime != nil {
 			t := cj.Status.LastScheduleTime.Format(time.RFC3339)

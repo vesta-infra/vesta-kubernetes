@@ -184,10 +184,10 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}
 		}
 
-		if len(app.Spec.Cronjobs) > 0 {
-			if err := r.reconcileCronJobs(ctx, &app, target, projectLabels, projectAnnotations); err != nil {
-				return r.updateStatusFailed(ctx, &app, err)
-			}
+		// Always run: with no cronjobs in the spec this prunes any left behind
+		// by a previous revision.
+		if err := r.reconcileCronJobs(ctx, &app, target, projectLabels, projectAnnotations); err != nil {
+			return r.updateStatusFailed(ctx, &app, err)
 		}
 	}
 
@@ -1608,12 +1608,10 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 	logger := log.FromContext(ctx)
 	labels := r.labelsForApp(app)
 
-	// Build the set of desired cronjob names so we can clean up orphans
+	// Build the set of desired cronjob names so we can clean up orphans.
+	// Disabled cronjobs are still desired — they are kept around suspended.
 	desiredCronJobs := map[string]bool{}
 	for _, cj := range app.Spec.Cronjobs {
-		if r.isCronjobDisabledForEnv(cj, target.Config.Name) {
-			continue
-		}
 		desiredCronJobs[fmt.Sprintf("%s-%s", app.Name, cj.Name)] = true
 	}
 
@@ -1627,11 +1625,9 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 	for _, cj := range app.Spec.Cronjobs {
 		cronjobName := fmt.Sprintf("%s-%s", app.Name, cj.Name)
 
-		// Check per-environment override: skip if disabled
-		if r.isCronjobDisabledForEnv(cj, target.Config.Name) {
-			logger.Info("cronjob disabled for environment, skipping", "cronjob", cj.Name, "environment", target.Config.Name)
-			continue
-		}
+		// A disabled cronjob is still reconciled, but suspended so it never fires.
+		// Keeping the object means schedule, history and manual triggers survive.
+		suspend := !r.isCronjobEnabled(cj, target.Config.Name)
 
 		// Resolve effective schedule (per-environment override wins)
 		effectiveSchedule := r.resolveCronjobSchedule(cj, target.Config.Name)
@@ -1738,6 +1734,7 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 				}
 				cronJob.Spec = batchv1.CronJobSpec{
 					Schedule:                   effectiveSchedule,
+					Suspend:                    &suspend,
 					ConcurrencyPolicy:          batchv1.ForbidConcurrent,
 					SuccessfulJobsHistoryLimit: &successLimit,
 					FailedJobsHistoryLimit:     &failedLimit,
@@ -1756,7 +1753,7 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 			return fmt.Errorf("reconcile cronjob %s in %s: %w", cronjobName, target.Namespace, err)
 		}
 
-		logger.Info("cronjob reconciled", "namespace", target.Namespace, "cronjob", cronjobName)
+		logger.Info("cronjob reconciled", "namespace", target.Namespace, "cronjob", cronjobName, "suspended", suspend)
 	}
 
 	// Clean up orphaned CronJobs: CronJobs that belong to this app but are no longer in spec
@@ -1780,14 +1777,18 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 	return nil
 }
 
-// isCronjobDisabledForEnv checks if a cronjob has been explicitly disabled for a given environment.
-func (r *VestaAppReconciler) isCronjobDisabledForEnv(cj vestav1alpha1.CronjobConfig, envName string) bool {
+// isCronjobEnabled reports whether a cronjob should fire in a given environment.
+// A per-environment override wins over the cronjob-level flag; both default to enabled.
+func (r *VestaAppReconciler) isCronjobEnabled(cj vestav1alpha1.CronjobConfig, envName string) bool {
 	for _, envOverride := range cj.Environments {
-		if envOverride.Name == envName && envOverride.Enabled != nil && !*envOverride.Enabled {
-			return true
+		if envOverride.Name == envName && envOverride.Enabled != nil {
+			return *envOverride.Enabled
 		}
 	}
-	return false
+	if cj.Enabled != nil {
+		return *cj.Enabled
+	}
+	return true
 }
 
 // resolveCronjobSchedule returns the effective schedule for a cronjob in a given environment.
