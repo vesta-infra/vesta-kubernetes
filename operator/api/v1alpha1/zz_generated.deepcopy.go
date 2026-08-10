@@ -206,10 +206,20 @@ func (in *AppEnvironmentConfig) DeepCopy() *AppEnvironmentConfig {
 
 func (in *IngressOverride) DeepCopyInto(out *IngressOverride) {
 	*out = *in
+	if in.Domains != nil {
+		in, out := &in.Domains, &out.Domains
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.TLS != nil {
 		in, out := &in.TLS, &out.TLS
 		*out = new(bool)
 		**out = **in
+	}
+	if in.RedirectDomains != nil {
+		in, out := &in.RedirectDomains, &out.RedirectDomains
+		*out = make([]string, len(*in))
+		copy(*out, *in)
 	}
 }
 
@@ -579,6 +589,11 @@ func (in *IngressConfig) DeepCopyInto(out *IngressConfig) {
 			(*out)[k] = v
 		}
 	}
+	if in.RedirectDomains != nil {
+		in, out := &in.RedirectDomains, &out.RedirectDomains
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 }
 
 func (in *IngressConfig) DeepCopy() *IngressConfig {
@@ -609,6 +624,16 @@ func (in *HealthCheckConfig) DeepCopy() *HealthCheckConfig {
 
 func (in *CronjobConfig) DeepCopyInto(out *CronjobConfig) {
 	*out = *in
+	if in.Enabled != nil {
+		in, out := &in.Enabled, &out.Enabled
+		*out = new(bool)
+		**out = **in
+	}
+	if in.BackoffLimit != nil {
+		in, out := &in.BackoffLimit, &out.BackoffLimit
+		*out = new(int32)
+		**out = **in
+	}
 	if in.Resources != nil {
 		in, out := &in.Resources, &out.Resources
 		*out = new(ResourceConfig)
@@ -1563,7 +1588,7 @@ func (in *VestaSecret) DeepCopyInto(out *VestaSecret) {
 	out.TypeMeta = in.TypeMeta
 	in.ObjectMeta.DeepCopyInto(&out.ObjectMeta)
 	in.Spec.DeepCopyInto(&out.Spec)
-	out.Status = in.Status
+	in.Status.DeepCopyInto(&out.Status)
 }
 
 func (in *VestaSecret) DeepCopy() *VestaSecret {
@@ -1654,6 +1679,10 @@ func (in *VestaSecretSpec) DeepCopy() *VestaSecretSpec {
 
 func (in *VestaSecretStatus) DeepCopyInto(out *VestaSecretStatus) {
 	*out = *in
+	if in.InvalidKeys != nil {
+		out.InvalidKeys = make([]string, len(in.InvalidKeys))
+		copy(out.InvalidKeys, in.InvalidKeys)
+	}
 }
 
 func (in *VestaSecretStatus) DeepCopy() *VestaSecretStatus {

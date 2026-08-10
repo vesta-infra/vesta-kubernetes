@@ -5,11 +5,11 @@ export default {
     extend: {
       colors: {
         surface: {
-          0: '#07090f',
-          1: '#0c1019',
-          2: '#121825',
-          3: '#1a2235',
-          4: '#222d42',
+          0: '#040608',
+          1: '#090d14',
+          2: '#0f1520',
+          3: '#161e2e',
+          4: '#1d2838',
         },
         border: {
           DEFAULT: '#1e293b',
@@ -26,7 +26,7 @@ export default {
           primary: '#e8ecf4',
           secondary: '#7c8ba1',
           tertiary: '#475569',
-          inverse: '#07090f',
+          inverse: '#040608',
         },
         status: {
           running: '#22c55e',

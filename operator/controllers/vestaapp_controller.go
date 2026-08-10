@@ -17,7 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -155,10 +157,25 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			return r.updateStatusFailed(ctx, &app, err)
 		}
 
-		if app.Spec.Ingress != nil {
+		if app.Spec.Ingress != nil || target.Config.Ingress != nil {
 			if err := r.reconcileIngress(ctx, &app, target); err != nil {
 				return r.updateStatusFailed(ctx, &app, err)
 			}
+			// Reconcile HTTPS redirect middleware for Traefik when TLS is enabled
+			r.reconcileHTTPSRedirectMiddleware(ctx, &app, target)
+		} else {
+			// Clean up orphaned Ingress if ingress config was removed
+			orphanIng := &networkingv1.Ingress{}
+			if err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: app.Name}, orphanIng); err == nil {
+				if err := r.Client.Delete(ctx, orphanIng); err != nil {
+					logger.Error(err, "failed to delete orphaned ingress", "namespace", target.Namespace)
+				}
+			}
+		}
+
+		// Reconcile redirect ingress (handles both creation and cleanup)
+		if err := r.reconcileRedirectIngress(ctx, &app, target); err != nil {
+			return r.updateStatusFailed(ctx, &app, err)
 		}
 
 		if target.Config.Autoscale != nil && target.Config.Autoscale.Enabled {
@@ -167,10 +184,10 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}
 		}
 
-		if len(app.Spec.Cronjobs) > 0 {
-			if err := r.reconcileCronJobs(ctx, &app, target, projectLabels, projectAnnotations); err != nil {
-				return r.updateStatusFailed(ctx, &app, err)
-			}
+		// Always run: with no cronjobs in the spec this prunes any left behind
+		// by a previous revision.
+		if err := r.reconcileCronJobs(ctx, &app, target, projectLabels, projectAnnotations); err != nil {
+			return r.updateStatusFailed(ctx, &app, err)
 		}
 	}
 
@@ -561,25 +578,35 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 	return nil
 }
 
-func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envResources *vestav1alpha1.ResourceConfig, envName string, envImage *vestav1alpha1.ImageConfig) corev1.Container {
-	image := "placeholder:latest"
+// resolveImage returns the image an environment runs, applying the per-environment
+// override on top of the app-level image. This is the single source of truth for
+// "what is deployed where" — status reporting must use it rather than reading
+// spec.image directly, which is only the default for environments without a tag.
+func resolveImage(app *vestav1alpha1.VestaApp, envImage *vestav1alpha1.ImageConfig) string {
 	// Per-environment image override takes precedence over app-level image
 	if envImage != nil && envImage.Repository != "" {
 		tag := "latest"
 		if envImage.Tag != "" {
 			tag = envImage.Tag
 		}
-		image = fmt.Sprintf("%s:%s", envImage.Repository, tag)
-	} else if envImage != nil && envImage.Tag != "" && app.Spec.Image != nil {
+		return fmt.Sprintf("%s:%s", envImage.Repository, tag)
+	}
+	if envImage != nil && envImage.Tag != "" && app.Spec.Image != nil {
 		// Environment overrides only the tag, keep the app-level repository
-		image = fmt.Sprintf("%s:%s", app.Spec.Image.Repository, envImage.Tag)
-	} else if app.Spec.Image != nil {
+		return fmt.Sprintf("%s:%s", app.Spec.Image.Repository, envImage.Tag)
+	}
+	if app.Spec.Image != nil {
 		tag := "latest"
 		if app.Spec.Image.Tag != "" {
 			tag = app.Spec.Image.Tag
 		}
-		image = fmt.Sprintf("%s:%s", app.Spec.Image.Repository, tag)
+		return fmt.Sprintf("%s:%s", app.Spec.Image.Repository, tag)
 	}
+	return "placeholder:latest"
+}
+
+func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envResources *vestav1alpha1.ResourceConfig, envName string, envImage *vestav1alpha1.ImageConfig) corev1.Container {
+	image := resolveImage(app, envImage)
 
 	container := corev1.Container{
 		Name:  "app",
@@ -624,10 +651,21 @@ func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envReso
 		}
 	}
 
+	// Start command handling.
+	//   - command + args  -> exec form: command becomes the container entrypoint
+	//     (shell-split so multi-word commands like "npm start" work) and args are
+	//     passed straight through, exactly like a Kubernetes command/args pair.
+	//     This works on distroless/scratch images and preserves PID-1 signalling.
+	//   - command only     -> convenience shell form: run as a "/bin/sh -c" one-liner.
+	//   - args only        -> override the image CMD while keeping its ENTRYPOINT.
 	if app.Spec.Runtime.Command != "" {
-		container.Command = []string{"/bin/sh", "-c", app.Spec.Runtime.Command}
-	}
-	if len(app.Spec.Runtime.Args) > 0 {
+		if len(app.Spec.Runtime.Args) > 0 {
+			container.Command = shellSplit(app.Spec.Runtime.Command)
+			container.Args = app.Spec.Runtime.Args
+		} else {
+			container.Command = []string{"/bin/sh", "-c", app.Spec.Runtime.Command}
+		}
+	} else if len(app.Spec.Runtime.Args) > 0 {
 		container.Args = app.Spec.Runtime.Args
 	}
 
@@ -1014,12 +1052,30 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 		expanded = strings.ReplaceAll(expanded, "{{env}}", target.Config.Name)
 		expanded = strings.ReplaceAll(expanded, "{{domain}}", r.ConfigResolver.GetDomain())
 		domains = []string{expanded}
-	} else {
+	} else if app.Spec.Ingress != nil && app.Spec.Ingress.Domain != "" {
 		domains = []string{app.Spec.Ingress.Domain}
+	} else {
+		// No domains resolvable — skip ingress creation
+		return nil
 	}
 
-	// Resolve per-environment TLS: env override → app-level TLS
-	tlsEnabled := app.Spec.Ingress.TLS
+	// Filter out empty-string domains
+	filtered := domains[:0]
+	for _, d := range domains {
+		if strings.TrimSpace(d) != "" {
+			filtered = append(filtered, d)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	domains = filtered
+
+	// Resolve per-environment TLS: env override → app-level TLS → default false
+	tlsEnabled := false
+	if app.Spec.Ingress != nil {
+		tlsEnabled = app.Spec.Ingress.TLS
+	}
 	if target.Config.Ingress != nil && target.Config.Ingress.TLS != nil {
 		tlsEnabled = *target.Config.Ingress.TLS
 	}
@@ -1042,7 +1098,11 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			ing.Labels = labels
 			ing.Annotations = map[string]string{}
 
-			clusterIssuer := app.Spec.Ingress.ClusterIssuer
+			var clusterIssuer, ingressClassName string
+			if app.Spec.Ingress != nil {
+				clusterIssuer = app.Spec.Ingress.ClusterIssuer
+				ingressClassName = app.Spec.Ingress.IngressClassName
+			}
 			if clusterIssuer == "" {
 				clusterIssuer = r.ConfigResolver.GetClusterIssuer()
 			}
@@ -1050,7 +1110,6 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuer
 			}
 
-			ingressClassName := app.Spec.Ingress.IngressClassName
 			if ingressClassName == "" {
 				ingressClassName = r.ConfigResolver.GetIngressClassName()
 			}
@@ -1058,8 +1117,16 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Annotations["kubernetes.io/ingress.class"] = ingressClassName
 			}
 
-			for k, v := range app.Spec.Ingress.Annotations {
-				ing.Annotations[k] = v
+			if app.Spec.Ingress != nil {
+				for k, v := range app.Spec.Ingress.Annotations {
+					ing.Annotations[k] = v
+				}
+			}
+			// Per-environment annotations override app-level
+			if target.Config.Ingress != nil {
+				for k, v := range target.Config.Ingress.Annotations {
+					ing.Annotations[k] = v
+				}
 			}
 
 			rules := make([]networkingv1.IngressRule, 0, len(domains))
@@ -1096,7 +1163,18 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			}
 
 			if tlsEnabled {
-				ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
+				if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
+					ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
+					// Reference the HTTPS redirect middleware (redirectScheme is no-op for HTTPS requests)
+					httpsMiddlewareName := fmt.Sprintf("%s-https-redirect", app.Name)
+					middlewareRef := fmt.Sprintf("%s-%s@kubernetescrd", target.Namespace, httpsMiddlewareName)
+					// Append to existing middlewares if any (e.g., from per-env annotations)
+					if existing, ok := ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"]; ok && existing != "" {
+						ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = existing + "," + middlewareRef
+					} else {
+						ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = middlewareRef
+					}
+				}
 				ing.Spec.TLS = []networkingv1.IngressTLS{
 					{
 						Hosts:      domains,
@@ -1109,6 +1187,323 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 		})
 		return err
 	})
+}
+
+func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
+	logger := log.FromContext(ctx)
+
+	// Resolve redirect domains: per-env override → app-level
+	var redirectDomains []string
+	if target.Config.Ingress != nil && len(target.Config.Ingress.RedirectDomains) > 0 {
+		redirectDomains = target.Config.Ingress.RedirectDomains
+	} else if app.Spec.Ingress != nil && len(app.Spec.Ingress.RedirectDomains) > 0 {
+		redirectDomains = app.Spec.Ingress.RedirectDomains
+	}
+
+	redirectIngressName := fmt.Sprintf("%s-redirect", app.Name)
+
+	// If no redirect domains, clean up any existing redirect resources
+	if len(redirectDomains) == 0 {
+		r.cleanupRedirectResources(ctx, app, target.Namespace, redirectIngressName)
+		return nil
+	}
+
+	// Resolve the primary domain (redirect target): explicit redirectTarget → first domain → template → app-level
+	var primaryDomain string
+	if target.Config.Ingress != nil && target.Config.Ingress.RedirectTarget != "" {
+		primaryDomain = target.Config.Ingress.RedirectTarget
+	} else if app.Spec.Ingress != nil && app.Spec.Ingress.RedirectTarget != "" {
+		primaryDomain = app.Spec.Ingress.RedirectTarget
+	} else if target.Config.Ingress != nil && len(target.Config.Ingress.Domains) > 0 {
+		primaryDomain = target.Config.Ingress.Domains[0]
+	} else if target.Config.Ingress != nil && target.Config.Ingress.Domain != "" {
+		primaryDomain = target.Config.Ingress.Domain
+	} else if tpl := r.ConfigResolver.GetDomainTemplate(); tpl != "" && target.Config.Name != "" {
+		expanded := strings.ReplaceAll(tpl, "{{app}}", app.Name)
+		expanded = strings.ReplaceAll(expanded, "{{env}}", target.Config.Name)
+		expanded = strings.ReplaceAll(expanded, "{{domain}}", r.ConfigResolver.GetDomain())
+		primaryDomain = expanded
+	} else if app.Spec.Ingress != nil && app.Spec.Ingress.Domain != "" {
+		primaryDomain = app.Spec.Ingress.Domain
+	}
+
+	if primaryDomain == "" {
+		logger.Info("no primary domain resolved for redirect, skipping", "app", app.Name)
+		return nil
+	}
+
+	// Determine scheme based on TLS setting
+	scheme := "http"
+	tlsEnabled := false
+	if app.Spec.Ingress != nil {
+		tlsEnabled = app.Spec.Ingress.TLS
+	}
+	if target.Config.Ingress != nil && target.Config.Ingress.TLS != nil {
+		tlsEnabled = *target.Config.Ingress.TLS
+	}
+	if tlsEnabled {
+		scheme = "https"
+	}
+	redirectTarget := fmt.Sprintf("%s://%s", scheme, primaryDomain)
+
+	// Resolve ingress class
+	var ingressClassName string
+	if app.Spec.Ingress != nil && app.Spec.Ingress.IngressClassName != "" {
+		ingressClassName = app.Spec.Ingress.IngressClassName
+	}
+	if ingressClassName == "" {
+		ingressClassName = r.ConfigResolver.GetIngressClassName()
+	}
+
+	labels := r.labelsForApp(app)
+	labels["vesta.sh/redirect"] = "true"
+	pathType := networkingv1.PathTypePrefix
+
+	// Determine the service port for the ingress backend (same logic as main ingress)
+	servicePort := int32(80)
+	if app.Spec.Service != nil && len(app.Spec.Service.Ports) > 0 {
+		servicePort = app.Spec.Service.Ports[0].Port
+		for _, p := range app.Spec.Service.Ports {
+			if p.Name == "http" {
+				servicePort = p.Port
+				break
+			}
+		}
+	}
+
+	// Resolve TLS config for redirect domains
+	tlsSecretName := fmt.Sprintf("%s-redirect-tls", app.Name)
+	if target.Config.Name != "" {
+		tlsSecretName = fmt.Sprintf("%s-%s-redirect-tls", app.Name, target.Config.Name)
+	}
+
+	// For Traefik: create a Middleware CRD
+	if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
+		if err := r.reconcileTraefikRedirectMiddleware(ctx, app, target.Namespace, redirectIngressName, primaryDomain, scheme); err != nil {
+			logger.Error(err, "failed to reconcile traefik redirect middleware")
+			// Fall through to create ingress anyway — annotations will reference the middleware
+		}
+	}
+
+	return retry.OnError(retry.DefaultRetry, isRetriable, func() error {
+		ing := &networkingv1.Ingress{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      redirectIngressName,
+				Namespace: target.Namespace,
+			},
+		}
+
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, ing, func() error {
+			ing.Labels = labels
+			ing.Annotations = map[string]string{}
+
+			// Apply ingress class
+			if ingressClassName != "" {
+				ing.Annotations["kubernetes.io/ingress.class"] = ingressClassName
+			}
+
+			// Apply controller-specific redirect annotations
+			switch {
+			case strings.Contains(strings.ToLower(ingressClassName), "nginx"):
+				// NGINX Ingress Controller: native permanent-redirect
+				ing.Annotations["nginx.ingress.kubernetes.io/permanent-redirect"] = redirectTarget + "/$request_uri"
+				ing.Annotations["nginx.ingress.kubernetes.io/permanent-redirect-code"] = "301"
+
+			case strings.Contains(strings.ToLower(ingressClassName), "traefik"):
+				// Traefik: reference the Middleware we created
+				middlewareRef := fmt.Sprintf("%s-%s@kubernetescrd", target.Namespace, redirectIngressName)
+				ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = middlewareRef
+			}
+
+			// Cert-manager annotation for TLS on redirect domains
+			var clusterIssuer string
+			if app.Spec.Ingress != nil {
+				clusterIssuer = app.Spec.Ingress.ClusterIssuer
+			}
+			if clusterIssuer == "" {
+				clusterIssuer = r.ConfigResolver.GetClusterIssuer()
+			}
+			if clusterIssuer != "" && tlsEnabled {
+				ing.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuer
+			}
+
+			// Build ingress rules for redirect domains
+			rules := make([]networkingv1.IngressRule, 0, len(redirectDomains))
+			for _, d := range redirectDomains {
+				if strings.TrimSpace(d) == "" {
+					continue
+				}
+				rules = append(rules, networkingv1.IngressRule{
+					Host: d,
+					IngressRuleValue: networkingv1.IngressRuleValue{
+						HTTP: &networkingv1.HTTPIngressRuleValue{
+							Paths: []networkingv1.HTTPIngressPath{
+								{
+									Path:     "/",
+									PathType: &pathType,
+									Backend: networkingv1.IngressBackend{
+										Service: &networkingv1.IngressServiceBackend{
+											Name: app.Name,
+											Port: networkingv1.ServiceBackendPort{
+												Number: servicePort,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				})
+			}
+
+			ing.Spec = networkingv1.IngressSpec{
+				Rules: rules,
+			}
+
+			if ingressClassName != "" {
+				ing.Spec.IngressClassName = &ingressClassName
+			}
+
+			if tlsEnabled {
+				ing.Spec.TLS = []networkingv1.IngressTLS{
+					{
+						Hosts:      redirectDomains,
+						SecretName: tlsSecretName,
+					},
+				}
+			}
+
+			return nil
+		})
+		return err
+	})
+}
+
+// reconcileTraefikRedirectMiddleware creates/updates a Traefik Middleware CRD for domain redirects.
+func (r *VestaAppReconciler) reconcileTraefikRedirectMiddleware(ctx context.Context, app *vestav1alpha1.VestaApp, namespace, name, primaryDomain, scheme string) error {
+	middleware := &unstructured.Unstructured{}
+	middleware.SetGroupVersionKind(traefikMiddlewareGVK())
+	middleware.SetName(name)
+	middleware.SetNamespace(namespace)
+	middleware.SetLabels(r.labelsForApp(app))
+
+	middleware.Object["spec"] = map[string]interface{}{
+		"redirectRegex": map[string]interface{}{
+			"regex":       "^https?://[^/]+(.*)",
+			"replacement": fmt.Sprintf("%s://%s${1}", scheme, primaryDomain),
+			"permanent":   true,
+		},
+	}
+
+	existing := &unstructured.Unstructured{}
+	existing.SetGroupVersionKind(traefikMiddlewareGVK())
+	err := r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, existing)
+	if errors.IsNotFound(err) {
+		return r.Client.Create(ctx, middleware)
+	} else if err != nil {
+		return err
+	}
+	// Update existing
+	existing.Object["spec"] = middleware.Object["spec"]
+	existing.SetLabels(middleware.GetLabels())
+	return r.Client.Update(ctx, existing)
+}
+
+// cleanupRedirectResources removes the redirect Ingress and Traefik Middleware if they exist.
+func (r *VestaAppReconciler) cleanupRedirectResources(ctx context.Context, app *vestav1alpha1.VestaApp, namespace, redirectIngressName string) {
+	logger := log.FromContext(ctx)
+
+	// Delete redirect Ingress
+	ing := &networkingv1.Ingress{}
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: redirectIngressName}, ing); err == nil {
+		if err := r.Client.Delete(ctx, ing); err != nil {
+			logger.Error(err, "failed to delete redirect ingress", "namespace", namespace, "name", redirectIngressName)
+		}
+	}
+
+	// Delete Traefik Middleware if it exists
+	mw := &unstructured.Unstructured{}
+	mw.SetGroupVersionKind(traefikMiddlewareGVK())
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: redirectIngressName}, mw); err == nil {
+		if err := r.Client.Delete(ctx, mw); err != nil {
+			logger.Error(err, "failed to delete traefik redirect middleware", "namespace", namespace, "name", redirectIngressName)
+		}
+	}
+}
+
+func traefikMiddlewareGVK() schema.GroupVersionKind {
+	return schema.GroupVersionKind{
+		Group:   "traefik.io",
+		Version: "v1alpha1",
+		Kind:    "Middleware",
+	}
+}
+
+// reconcileHTTPSRedirectMiddleware creates or deletes the HTTPS redirect middleware per app/env.
+// When TLS is enabled and ingress class is Traefik, it creates a redirectScheme middleware.
+// When TLS is not enabled, it cleans up any existing middleware.
+func (r *VestaAppReconciler) reconcileHTTPSRedirectMiddleware(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) {
+	logger := log.FromContext(ctx)
+	middlewareName := fmt.Sprintf("%s-https-redirect", app.Name)
+
+	// Determine if TLS is enabled for this env
+	tlsEnabled := false
+	if app.Spec.Ingress != nil {
+		tlsEnabled = app.Spec.Ingress.TLS
+	}
+	if target.Config.Ingress != nil && target.Config.Ingress.TLS != nil {
+		tlsEnabled = *target.Config.Ingress.TLS
+	}
+
+	// Determine ingress class
+	ingressClassName := ""
+	if app.Spec.Ingress != nil {
+		ingressClassName = app.Spec.Ingress.IngressClassName
+	}
+	if ingressClassName == "" {
+		ingressClassName = r.ConfigResolver.GetIngressClassName()
+	}
+	isTraefik := strings.Contains(strings.ToLower(ingressClassName), "traefik")
+
+	if tlsEnabled && isTraefik {
+		// Create/update the redirect middleware
+		middleware := &unstructured.Unstructured{}
+		middleware.SetGroupVersionKind(traefikMiddlewareGVK())
+		middleware.SetName(middlewareName)
+		middleware.SetNamespace(target.Namespace)
+		middleware.SetLabels(r.labelsForApp(app))
+
+		middleware.Object["spec"] = map[string]interface{}{
+			"redirectScheme": map[string]interface{}{
+				"scheme":    "https",
+				"permanent": true,
+			},
+		}
+
+		existing := &unstructured.Unstructured{}
+		existing.SetGroupVersionKind(traefikMiddlewareGVK())
+		err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: middlewareName}, existing)
+		if errors.IsNotFound(err) {
+			if err := r.Client.Create(ctx, middleware); err != nil {
+				logger.Error(err, "failed to create HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
+			}
+		} else if err == nil {
+			existing.Object["spec"] = middleware.Object["spec"]
+			existing.SetLabels(middleware.GetLabels())
+			if err := r.Client.Update(ctx, existing); err != nil {
+				logger.Error(err, "failed to update HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
+			}
+		}
+	} else {
+		// Cleanup: delete the middleware if it exists (TLS was disabled or not Traefik)
+		mw := &unstructured.Unstructured{}
+		mw.SetGroupVersionKind(traefikMiddlewareGVK())
+		if err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: middlewareName}, mw); err == nil {
+			if err := r.Client.Delete(ctx, mw); err != nil {
+				logger.Error(err, "failed to delete HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
+			}
+		}
+	}
 }
 
 func (r *VestaAppReconciler) reconcileHPA(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
@@ -1213,12 +1608,10 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 	logger := log.FromContext(ctx)
 	labels := r.labelsForApp(app)
 
-	// Build the set of desired cronjob names so we can clean up orphans
+	// Build the set of desired cronjob names so we can clean up orphans.
+	// Disabled cronjobs are still desired — they are kept around suspended.
 	desiredCronJobs := map[string]bool{}
 	for _, cj := range app.Spec.Cronjobs {
-		if r.isCronjobDisabledForEnv(cj, target.Config.Name) {
-			continue
-		}
 		desiredCronJobs[fmt.Sprintf("%s-%s", app.Name, cj.Name)] = true
 	}
 
@@ -1232,11 +1625,9 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 	for _, cj := range app.Spec.Cronjobs {
 		cronjobName := fmt.Sprintf("%s-%s", app.Name, cj.Name)
 
-		// Check per-environment override: skip if disabled
-		if r.isCronjobDisabledForEnv(cj, target.Config.Name) {
-			logger.Info("cronjob disabled for environment, skipping", "cronjob", cj.Name, "environment", target.Config.Name)
-			continue
-		}
+		// A disabled cronjob is still reconciled, but suspended so it never fires.
+		// Keeping the object means schedule, history and manual triggers survive.
+		suspend := !r.isCronjobEnabled(cj, target.Config.Name)
 
 		// Resolve effective schedule (per-environment override wins)
 		effectiveSchedule := r.resolveCronjobSchedule(cj, target.Config.Name)
@@ -1343,6 +1734,7 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 				}
 				cronJob.Spec = batchv1.CronJobSpec{
 					Schedule:                   effectiveSchedule,
+					Suspend:                    &suspend,
 					ConcurrencyPolicy:          batchv1.ForbidConcurrent,
 					SuccessfulJobsHistoryLimit: &successLimit,
 					FailedJobsHistoryLimit:     &failedLimit,
@@ -1361,7 +1753,7 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 			return fmt.Errorf("reconcile cronjob %s in %s: %w", cronjobName, target.Namespace, err)
 		}
 
-		logger.Info("cronjob reconciled", "namespace", target.Namespace, "cronjob", cronjobName)
+		logger.Info("cronjob reconciled", "namespace", target.Namespace, "cronjob", cronjobName, "suspended", suspend)
 	}
 
 	// Clean up orphaned CronJobs: CronJobs that belong to this app but are no longer in spec
@@ -1385,14 +1777,18 @@ func (r *VestaAppReconciler) reconcileCronJobs(ctx context.Context, app *vestav1
 	return nil
 }
 
-// isCronjobDisabledForEnv checks if a cronjob has been explicitly disabled for a given environment.
-func (r *VestaAppReconciler) isCronjobDisabledForEnv(cj vestav1alpha1.CronjobConfig, envName string) bool {
+// isCronjobEnabled reports whether a cronjob should fire in a given environment.
+// A per-environment override wins over the cronjob-level flag; both default to enabled.
+func (r *VestaAppReconciler) isCronjobEnabled(cj vestav1alpha1.CronjobConfig, envName string) bool {
 	for _, envOverride := range cj.Environments {
-		if envOverride.Name == envName && envOverride.Enabled != nil && !*envOverride.Enabled {
-			return true
+		if envOverride.Name == envName && envOverride.Enabled != nil {
+			return *envOverride.Enabled
 		}
 	}
-	return false
+	if cj.Enabled != nil {
+		return *cj.Enabled
+	}
+	return true
 }
 
 // resolveCronjobSchedule returns the effective schedule for a cronjob in a given environment.
@@ -1512,25 +1908,40 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 		}
 
 		// --- Existing metadata updates ---
+		// Record deployment history per environment. Each environment resolves its
+		// own image, so history has to be compared per environment — comparing a
+		// single app-wide image would attribute one environment's tag to all of them.
 		if app.Spec.Image != nil {
-			newImage := fmt.Sprintf("%s:%s", app.Spec.Image.Repository, app.Spec.Image.Tag)
-			if newImage != app.Status.CurrentImage {
-				nextVersion := 1
-				if len(app.Status.DeploymentHistory) > 0 {
-					nextVersion = app.Status.DeploymentHistory[len(app.Status.DeploymentHistory)-1].Version + 1
-				}
-				deployEnv := ""
-				if ann := app.GetAnnotations(); ann != nil {
-					deployEnv = ann["vesta.sh/last-deploy-environment"]
+			lastImageByEnv := map[string]string{}
+			for _, rec := range app.Status.DeploymentHistory {
+				lastImageByEnv[rec.Environment] = rec.Image
+			}
+
+			nextVersion := 1
+			if len(app.Status.DeploymentHistory) > 0 {
+				nextVersion = app.Status.DeploymentHistory[len(app.Status.DeploymentHistory)-1].Version + 1
+			}
+
+			for _, target := range targetNamespaces {
+				envName := target.Config.Name
+				envImage := resolveImage(&app, target.Config.Image)
+				if lastImageByEnv[envName] == envImage {
+					continue
 				}
 				app.Status.DeploymentHistory = append(app.Status.DeploymentHistory, vestav1alpha1.DeploymentRecord{
 					Version:     nextVersion,
-					Image:       newImage,
-					Environment: deployEnv,
+					Image:       envImage,
+					Environment: envName,
 					DeployedAt:  now,
 				})
+				lastImageByEnv[envName] = envImage
+				nextVersion++
+				app.Status.CurrentImage = envImage
 			}
-			app.Status.CurrentImage = newImage
+
+			if app.Status.CurrentImage == "" && len(app.Status.DeploymentHistory) > 0 {
+				app.Status.CurrentImage = app.Status.DeploymentHistory[len(app.Status.DeploymentHistory)-1].Image
+			}
 		}
 		if app.Spec.Ingress != nil {
 			scheme := "http"
@@ -1563,8 +1974,8 @@ func isRetriable(err error) bool {
 
 func (r *VestaAppReconciler) labelsForApp(app *vestav1alpha1.VestaApp) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":       app.Name,
-		"app.kubernetes.io/managed-by": "vesta-operator",
+		"app.kubernetes.io/name":         app.Name,
+		"app.kubernetes.io/managed-by":   "vesta-operator",
 		"kubernetes.getvesta.sh/project": app.Spec.Project,
 		"kubernetes.getvesta.sh/app":     app.Name,
 	}
@@ -1677,4 +2088,53 @@ func computeRolloutHash(spec corev1.PodSpec, fingerprintParts []string) string {
 	}
 	sum := h.Sum(nil)
 	return fmt.Sprintf("%x", sum[:8])
+}
+
+// shellSplit tokenizes a command string into argv the way a POSIX shell would
+// for simple cases: whitespace separates tokens, and single or double quotes
+// group tokens containing spaces. A backslash escapes the next character. It
+// does not attempt to interpret shell metacharacters (pipes, variables, globs)
+// — those only make sense under "/bin/sh -c" and are handled by the shell-form
+// path in buildContainer. If the string yields no tokens it returns nil, which
+// leaves the container entrypoint at the image default.
+func shellSplit(s string) []string {
+	var tokens []string
+	var cur strings.Builder
+	hasToken := false
+	var quote rune // 0, '\'' or '"'
+	escaped := false
+
+	for _, r := range s {
+		switch {
+		case escaped:
+			cur.WriteRune(r)
+			escaped = false
+			hasToken = true
+		case r == '\\' && quote != '\'':
+			escaped = true
+			hasToken = true
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			quote = r
+			hasToken = true
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			if hasToken {
+				tokens = append(tokens, cur.String())
+				cur.Reset()
+				hasToken = false
+			}
+		default:
+			cur.WriteRune(r)
+			hasToken = true
+		}
+	}
+	if hasToken {
+		tokens = append(tokens, cur.String())
+	}
+	return tokens
 }

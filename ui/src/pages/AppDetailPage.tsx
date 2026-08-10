@@ -4,6 +4,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
 import { api } from '../lib/api'
 import { useUserRole, useIsProjectOwner } from '../lib/useRole'
+import { parseEnvContent, secretKeyError, truncateSecretKey } from '../lib/secretKeys'
 import RevealableInput from '../components/RevealableInput'
 
 export default function AppDetailPage() {
@@ -38,6 +39,11 @@ export default function AppDetailPage() {
   const setActiveTab = useCallback((tab: TabType) => {
     setSearchParams(prev => { prev.set('tab', tab); return prev }, { replace: true })
   }, [setSearchParams])
+  const envParam = searchParams.get('env') || ''
+  const selectedEnv = envParam
+  const setSelectedEnv = useCallback((env: string) => {
+    setSearchParams(prev => { prev.set('env', env); return prev }, { replace: true })
+  }, [setSearchParams])
   const [showCloneModal, setShowCloneModal] = useState(false)
   const [historyEnvFilter, setHistoryEnvFilter] = useState('')
   const role = useUserRole()
@@ -51,6 +57,7 @@ export default function AppDetailPage() {
     if (appEnvironments.length > 0) {
       if (!secretEnv) setSecretEnv(appEnvironments[0])
       if (!deployEnv) setDeployEnv(appEnvironments[0])
+      if (!selectedEnv) setSelectedEnv(appEnvironments[0])
     }
   }, [appEnvironments.join(',')])
 
@@ -336,6 +343,66 @@ export default function AppDetailPage() {
               </div>
             </section>
 
+            {/* Domains */}
+            {rawEnvs.some((e: any) => {
+              const env = typeof e === 'string' ? { name: e } : e
+              return env.ingress?.domains?.length > 0 || env.ingress?.domain || env.ingress?.redirectDomains?.length > 0
+            }) && (
+              <section className="card p-5">
+                <h3 className="section-title mb-3">Domains</h3>
+                <div className="space-y-3">
+                  {rawEnvs.map((e: any) => {
+                    const env = typeof e === 'string' ? { name: e } : e
+                    const envDomains = env.ingress?.domains || (env.ingress?.domain ? [env.ingress.domain] : [])
+                    const redirectDomains = env.ingress?.redirectDomains || []
+                    if (envDomains.length === 0 && redirectDomains.length === 0) return null
+                    const tlsEnabled = env.ingress?.tls
+                    const scheme = tlsEnabled ? 'https' : 'http'
+                    const targetDomain = env.ingress?.redirectTarget || envDomains[0] || ''
+                    return (
+                      <div key={env.name} className="bg-surface-1 border border-border rounded-lg p-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-xs font-semibold text-accent">{env.name}</span>
+                          {tlsEnabled && <span className="text-[10px] text-status-healthy font-medium">🔒 TLS</span>}
+                        </div>
+                        {envDomains.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 mb-1.5">
+                            {envDomains.map((d: string) => (
+                              <a
+                                key={d}
+                                href={`${scheme}://${d}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-2 border border-border rounded-md text-xs font-mono text-text-primary hover:border-accent hover:text-accent transition-colors"
+                              >
+                                {d}
+                                <svg className="w-3 h-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                        {redirectDomains.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5 mt-1">
+                            {redirectDomains.map((d: string) => (
+                              <a
+                                key={d}
+                                href={`${scheme}://${d}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-2 border border-border-subtle rounded-md text-[11px] font-mono text-text-secondary hover:border-accent hover:text-accent transition-colors"
+                              >
+                                {d} <span className="text-text-tertiary">→</span> <span className="text-text-primary">{targetDomain}</span>
+                              </a>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </section>
+            )}
+
             {appEnvironments.length > 0 && (
             <section className="card p-5">
               <h3 className="section-title mb-4">Service Discovery</h3>
@@ -611,41 +678,20 @@ export default function AppDetailPage() {
                 {app.spec?.ingress?.tls !== undefined && (
                   <ConfigItem label="TLS" value={app.spec.ingress.tls ? 'Enabled' : 'Disabled'} accent={app.spec.ingress.tls} />
                 )}
-                {rawEnvs.some((e: any) => {
-                  const env = typeof e === 'string' ? { name: e } : e
-                  return env.ingress?.domains?.length > 0 || env.ingress?.domain
-                }) && (
-                  <div className="overflow-hidden">
-                    <dt className="text-[10px] font-mono uppercase tracking-wider text-text-tertiary mb-1">Domains per Environment</dt>
-                    <dd className="flex flex-col gap-1.5">
-                      {rawEnvs.map((e: any) => {
-                        const env = typeof e === 'string' ? { name: e } : e
-                        const envDomains = env.ingress?.domains || (env.ingress?.domain ? [env.ingress.domain] : [])
-                        if (envDomains.length === 0) return null
-                        return (
-                          <div key={env.name} className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-xs font-mono text-accent">{env.name}:</span>
-                            {envDomains.map((d: string) => (
-                              <span key={d} className="px-2 py-0.5 bg-surface-1 border border-border rounded text-xs font-mono truncate max-w-full">{d}</span>
-                            ))}
-                            {env.ingress?.tls && <span className="text-[10px] text-status-healthy font-medium">TLS</span>}
-                          </div>
-                        )
-                      })}
-                    </dd>
-                  </div>
-                )}
               </div>
               {app.spec?.cronjobs?.length > 0 && (
                 <div className="mt-5 pt-4 border-t border-border-subtle">
                   <h4 className="text-[11px] font-mono uppercase tracking-wider text-text-tertiary mb-3">Cron Jobs</h4>
                   <div className="space-y-2">
                     {app.spec.cronjobs.map((cj: any) => (
-                      <div key={cj.name} className="px-3 py-2 bg-surface-1 border border-border rounded-lg">
+                      <div key={cj.name} className={`px-3 py-2 bg-surface-1 border border-border rounded-lg ${cj.enabled === false ? 'opacity-60' : ''}`}>
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-3">
                             <span className="text-xs font-mono text-accent">{cj.name}</span>
                             <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-2 py-0.5 rounded">{cj.schedule}</span>
+                            {cj.enabled === false && (
+                              <span className="text-[10px] uppercase tracking-wide text-status-failed bg-status-failed/5 border border-status-failed/20 px-1.5 py-0.5 rounded">Disabled</span>
+                            )}
                           </div>
                           <div className="flex items-center gap-3">
                             <span className="text-xs text-text-secondary font-mono truncate max-w-[200px]">{cj.command}</span>
@@ -723,7 +769,7 @@ export default function AppDetailPage() {
       {activeTab === 'logs' && (
         <div>
           {appEnvironments.length > 0 ? (
-            <AppLogs appId={appId!} environments={appEnvironments} />
+            <AppLogs appId={appId!} environments={appEnvironments} selectedEnv={selectedEnv} onEnvChange={setSelectedEnv} />
           ) : (
             <div className="card p-5">
               <p className="text-sm text-text-tertiary">No environments configured</p>
@@ -735,7 +781,7 @@ export default function AppDetailPage() {
       {activeTab === 'terminal' && (
         <div>
           {appEnvironments.length > 0 ? (
-            <AppTerminal appId={appId!} environments={appEnvironments} />
+            <AppTerminal appId={appId!} environments={appEnvironments} selectedEnv={selectedEnv} onEnvChange={setSelectedEnv} />
           ) : (
             <div className="card p-5">
               <p className="text-sm text-text-tertiary">No environments configured</p>
@@ -747,7 +793,7 @@ export default function AppDetailPage() {
       {activeTab === 'metrics' && (
         <div>
           {appEnvironments.length > 0 ? (
-            <AppMetrics appId={appId!} environments={appEnvironments} />
+            <AppMetrics appId={appId!} environments={appEnvironments} selectedEnv={selectedEnv} onEnvChange={setSelectedEnv} />
           ) : (
             <div className="card p-5">
               <p className="text-sm text-text-tertiary">No environments configured</p>
@@ -765,7 +811,7 @@ export default function AppDetailPage() {
       )}
 
       {activeTab === 'files' && (
-        <PodFileBrowser appId={appId!} environments={appEnvironments} />
+        <PodFileBrowser appId={appId!} environments={appEnvironments} selectedEnv={selectedEnv} onEnvChange={setSelectedEnv} />
       )}
 
       {activeTab === 'schedule' && (
@@ -908,8 +954,15 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const [imageRepo, setImageRepo] = useState(app.spec?.image?.repository || '')
   const [pullPolicy, setPullPolicy] = useState(app.spec?.image?.pullPolicy || 'IfNotPresent')
   const [port, setPort] = useState(String(app.spec?.runtime?.port || 3000))
+  const [startCommand, setStartCommand] = useState(app.spec?.runtime?.command || '')
+  const [startArgs, setStartArgs] = useState<string>((app.spec?.runtime?.args || []).join('\n'))
   const [domain, setDomain] = useState(app.spec?.ingress?.domain || '')
   const [tls, setTls] = useState(app.spec?.ingress?.tls || false)
+  const [ingressAnnotations, setIngressAnnotations] = useState<{ key: string; value: string }[]>(() => {
+    const a = app.spec?.ingress?.annotations || {}
+    const entries = Object.entries(a)
+    return entries.length > 0 ? entries.map(([key, value]) => ({ key, value: value as string })) : []
+  })
 
   // Service config (multi-port + service type)
   const [serviceType, setServiceType] = useState<string>(app.spec?.service?.type || 'ClusterIP')
@@ -950,7 +1003,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
-  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string; domains: string[]; tls: boolean }>>(() => {
+  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string; domains: string[]; tls: boolean; redirectDomains: string[]; redirectTarget: string }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
       const env = typeof e === 'string' ? { name: e } : e
@@ -963,6 +1016,9 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         maxReplicas: env.autoscale?.maxReplicas || 5,
         targetCPU: env.autoscale?.metrics?.[0]?.targetAverageUtilization || env.autoscale?.targetCPU || 80,
         imageRepo: env.image?.repository || '',
+        // Seed the tag a deploy pinned to this environment — submitting the form
+        // rewrites spec.environments, so an empty value here would drop the tag
+        // and silently roll the environment back to the app-level default.
         imageTag: env.image?.tag || '',
         cpuRequest: env.resources?.requests?.cpu || '',
         cpuLimit: env.resources?.limits?.cpu || '',
@@ -970,6 +1026,8 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         memoryLimit: env.resources?.limits?.memory || '',
         domains: envDomains,
         tls: env.ingress?.tls || false,
+        redirectDomains: env.ingress?.redirectDomains || [],
+        redirectTarget: env.ingress?.redirectTarget || '',
       }
     }
     return configs
@@ -1054,9 +1112,10 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
     // Image
     if (imageRepo) {
+      // No tag: this form does not deploy. The backend keeps the tag currently on
+      // the app, which may have moved since this page was loaded.
       patch.image = {
         repository: imageRepo,
-        tag: app.spec?.image?.tag || 'latest',
         pullPolicy,
         ...(pullSecrets.length > 0 && { imagePullSecrets: pullSecrets.map(n => ({ name: n })) }),
       }
@@ -1072,12 +1131,20 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     // Runtime & Service — carry forward existing runtime fields not managed by the form
     const existingRuntime = app.spec?.runtime || {}
     const preservedRuntime: Record<string, unknown> = {}
-    for (const key of ['command', 'args', 'env']) {
+    for (const key of ['env']) {
       if (existingRuntime[key] != null) preservedRuntime[key] = existingRuntime[key]
     }
 
+    // Start command / args (form-managed). Explicit null clears the field on the
+    // backend deep-merge; a non-empty command with args runs in exec form.
+    const argsList = startArgs.split('\n').map(s => s.trim()).filter(Boolean)
+    const commandFields = {
+      command: startCommand.trim() || null,
+      args: argsList.length > 0 ? argsList : null,
+    }
+
     if (useServiceConfig) {
-      patch.runtime = { ...preservedRuntime, port: 0, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
+      patch.runtime = { ...preservedRuntime, ...commandFields, port: 0, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
       patch.service = {
         type: serviceType,
         ports: servicePorts.filter(p => p.name && p.port).map(p => ({
@@ -1089,13 +1156,25 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         })),
       }
     } else {
-      patch.runtime = { ...preservedRuntime, port: Number.parseInt(port) || 3000, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
+      patch.runtime = { ...preservedRuntime, ...commandFields, port: Number.parseInt(port) || 3000, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
       patch.service = null
     }
 
     // Ingress
-    if (domain) {
-      patch.ingress = { domain, tls }
+    const ingressAnns: Record<string, string> = {}
+    ingressAnnotations.forEach(a => { if (a.key) ingressAnns[a.key] = a.value })
+    if (domain || Object.keys(ingressAnns).length > 0) {
+      const existingIngress = app.spec?.ingress || {}
+      patch.ingress = {
+        ...existingIngress,
+        ...(domain && { domain }),
+        tls,
+        annotations: Object.keys(ingressAnns).length > 0 ? ingressAnns : undefined,
+      }
+      // Remove undefined keys so they don't serialize as null
+      if (!patch.ingress.annotations) delete patch.ingress.annotations
+    } else if (!domain && !app.spec?.ingress?.clusterIssuer && !app.spec?.ingress?.ingressClassName) {
+      patch.ingress = null
     }
 
     // Health check
@@ -1148,10 +1227,22 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           ...(cfg.imageRepo && { repository: cfg.imageRepo }),
           ...(cfg.imageTag && { tag: cfg.imageTag }),
         }
+      } else {
+        // Explicit null clears the override; omitting the key makes the backend
+        // keep whatever tag is currently deployed to this environment.
+        env.image = null
       }
       const filteredDomains = cfg.domains.filter(d => d.trim())
-      if (filteredDomains.length > 0) {
-        env.ingress = { domains: filteredDomains, tls: cfg.tls }
+      const filteredRedirectDomains = cfg.redirectDomains.filter(d => d.trim())
+      if (filteredDomains.length > 0 || filteredRedirectDomains.length > 0) {
+        env.ingress = {
+          ...(filteredDomains.length > 0 && { domains: filteredDomains }),
+          tls: cfg.tls,
+          ...(filteredRedirectDomains.length > 0 && { redirectDomains: filteredRedirectDomains }),
+          ...(cfg.redirectTarget.trim() && { redirectTarget: cfg.redirectTarget.trim() }),
+        }
+      } else {
+        env.ingress = null
       }
       return env
     })
@@ -1241,6 +1332,19 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             />
             <span className="text-xs text-text-secondary">Multi-port / Service config</span>
           </label>
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="label">Start command</label>
+            <input value={startCommand} onChange={e => setStartCommand(e.target.value)} className="input-field font-mono" placeholder="e.g. blnk  or  npm start" />
+            <p className="text-[10px] text-text-tertiary mt-1">Overrides the image entrypoint. Leave blank to use the image default. With no arguments below, it runs via <code>/bin/sh -c</code>.</p>
+          </div>
+          <div>
+            <label className="label">Arguments <span className="text-text-tertiary font-normal">(one per line)</span></label>
+            <textarea value={startArgs} onChange={e => setStartArgs(e.target.value)} className="input-field font-mono h-[38px]" rows={1} placeholder="start" />
+            <p className="text-[10px] text-text-tertiary mt-1">When set, the command runs in exec form (no shell) — works on distroless images and forwards signals for graceful shutdown.</p>
+          </div>
         </div>
 
         {!useServiceConfig ? (
@@ -1455,7 +1559,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                       value={cfg.imageTag}
                       onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageTag: e.target.value } }))}
                       className="input-field w-36 font-mono text-xs"
-                      placeholder="tag"
+                      placeholder={app.spec?.image?.tag || 'tag (inherits from app)'}
                     />
                   </div>
                 </div>
@@ -1505,6 +1609,54 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                       >&times;</button>
                     </div>
                   ))}
+                </div>
+                <div className="mt-2 mb-2 p-2.5 rounded-md border border-border bg-surface-2">
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-medium text-text-secondary">Redirect Domains</label>
+                    <button
+                      type="button"
+                      onClick={() => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], redirectDomains: [...prev[envName].redirectDomains, ''] } }))}
+                      className="text-[10px] text-accent hover:text-accent-glow"
+                    >+ Add Redirect</button>
+                  </div>
+                  <p className="text-[10px] text-text-tertiary mb-1.5">Domains that 301-redirect to the primary domain. Works with Traefik and NGINX.</p>
+                  {cfg.redirectDomains.length === 0 && (
+                    <p className="text-[10px] text-text-tertiary italic">No redirect domains configured</p>
+                  )}
+                  {cfg.redirectDomains.map((d, di) => (
+                    <div key={di} className="flex gap-2 items-center mb-1.5">
+                      <span className="text-text-tertiary text-xs">↳</span>
+                      <input
+                        value={d}
+                        onChange={e => {
+                          const updated = [...cfg.redirectDomains]
+                          updated[di] = e.target.value
+                          setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], redirectDomains: updated } }))
+                        }}
+                        className="input-field flex-1 font-mono text-xs"
+                        placeholder="example.com → redirects to primary"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const updated = cfg.redirectDomains.filter((_, j) => j !== di)
+                          setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], redirectDomains: updated } }))
+                        }}
+                        className="text-text-tertiary hover:text-status-failed text-xs px-1"
+                      >&times;</button>
+                    </div>
+                  ))}
+                  {cfg.redirectDomains.length > 0 && (
+                    <div className="mt-1.5">
+                      <label className="text-[10px] text-text-tertiary">Redirect Target</label>
+                      <input
+                        value={cfg.redirectTarget}
+                        onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], redirectTarget: e.target.value } }))}
+                        className="input-field w-full font-mono text-xs mt-0.5"
+                        placeholder={cfg.domains[0] || 'www.example.com (defaults to first domain)'}
+                      />
+                    </div>
+                  )}
                 </div>
                 <div className="mt-2 flex items-center gap-4 flex-wrap">
                   <div>
@@ -1791,6 +1943,20 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
       <div>
         <div className="flex items-center justify-between mb-2">
+          <label className="label">Ingress Annotations</label>
+          <button type="button" onClick={() => setIngressAnnotations(prev => [...prev, { key: '', value: '' }])} className="text-xs text-accent hover:text-accent-glow">+ Add</button>
+        </div>
+        {ingressAnnotations.map((a, i) => (
+          <div key={i} className="flex gap-2 mb-2">
+            <input value={a.key} onChange={e => { const u = [...ingressAnnotations]; u[i].key = e.target.value; setIngressAnnotations(u) }} placeholder="traefik.ingress.kubernetes.io/body-size" className="input-field flex-1 font-mono text-xs" />
+            <input value={a.value} onChange={e => { const u = [...ingressAnnotations]; u[i].value = e.target.value; setIngressAnnotations(u) }} placeholder="10MB" className="input-field flex-1 text-xs" />
+            <button type="button" onClick={() => setIngressAnnotations(prev => prev.filter((_, j) => j !== i))} className="text-text-tertiary hover:text-status-failed text-xs px-2">&times;</button>
+          </div>
+        ))}
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
           <label className="label">Custom Labels</label>
           <button type="button" onClick={() => setLabels(prev => [...prev, { key: '', value: '' }])} className="text-xs text-accent hover:text-accent-glow">+ Add</button>
         </div>
@@ -1840,6 +2006,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
   const [size, setSize] = useState('')
   const [restartPolicy, setRestartPolicy] = useState('OnFailure')
   const [backoffLimit, setBackoffLimit] = useState('')
+  const [enabled, setEnabled] = useState(true)
   const [envOverrides, setEnvOverrides] = useState<{ name: string; enabled: boolean; schedule: string }[]>([])
   const [triggerEnv, setTriggerEnv] = useState(environments[0] || '')
 
@@ -1880,6 +2047,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
     setSize('')
     setRestartPolicy('OnFailure')
     setBackoffLimit('')
+    setEnabled(true)
     setEnvOverrides([])
   }
 
@@ -1893,6 +2061,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
     setSize(cj.resources?.size || '')
     setRestartPolicy(cj.restartPolicy || 'OnFailure')
     setBackoffLimit(cj.backoffLimit != null ? String(cj.backoffLimit) : '')
+    setEnabled(cj.enabled !== false)
     setEnvOverrides((cj.environments || []).map((e: any) => ({
       name: e.name || '',
       enabled: e.enabled !== false,
@@ -1939,6 +2108,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
       name,
       schedule,
       command,
+      ...(!enabled && { enabled: false }),
       ...(size && { resources: { size } }),
       restartPolicy,
       ...(backoffLimit !== '' && { backoffLimit: Number(backoffLimit) }),
@@ -1965,12 +2135,26 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
     mutation.mutate(updated)
   }
 
+  // Disabling keeps the cron job (and its run history) around — the operator
+  // suspends it in the cluster instead of deleting it.
+  const handleToggleEnabled = (i: number) => {
+    const updated = cronjobs.map((cj: any, j: number) =>
+      j === i ? { ...cj, enabled: cj.enabled === false } : cj
+    )
+    mutation.mutate(updated)
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-sm text-text-secondary">{cronjobs.length} cron job{cronjobs.length !== 1 ? 's' : ''}</p>
-          <p className="text-xs text-text-tertiary mt-0.5">Scheduled tasks that run using the same image and secrets as the app.</p>
+          <p className="text-sm text-text-secondary">
+            {cronjobs.length} cron job{cronjobs.length !== 1 ? 's' : ''}
+            {cronjobs.filter((cj: any) => cj.enabled === false).length > 0 && (
+              <span className="text-text-tertiary"> · {cronjobs.filter((cj: any) => cj.enabled === false).length} disabled</span>
+            )}
+          </p>
+          <p className="text-xs text-text-tertiary mt-0.5">Scheduled tasks that run using the same image and secrets as the app. Disabling one suspends it without deleting its history.</p>
         </div>
         {!showAdd && (
           <button onClick={() => { resetForm(); setShowAdd(true) }} className="btn-primary">
@@ -2030,7 +2214,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
               </select>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="label">Restart Policy</label>
               <select value={restartPolicy} onChange={e => setRestartPolicy(e.target.value)} className="input-field text-xs">
@@ -2041,6 +2225,21 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
             <div>
               <label className="label">Backoff Limit</label>
               <input type="number" min="0" value={backoffLimit} onChange={e => setBackoffLimit(e.target.value)} placeholder="6 (default)" className="input-field font-mono text-xs" />
+            </div>
+            <div>
+              <label className="label">Status</label>
+              <label className="flex items-center gap-2 cursor-pointer h-[38px]">
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={e => setEnabled(e.target.checked)}
+                  className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                />
+                <span className="text-xs text-text-secondary">Enabled</span>
+              </label>
+              {!enabled && (
+                <p className="text-[11px] text-text-tertiary mt-1">Suspended — kept but never scheduled.</p>
+              )}
             </div>
           </div>
           <div>
@@ -2134,7 +2333,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
       {cronjobs.length > 0 && (
         <div className="space-y-2">
           {cronjobs.map((cj: any, i: number) => (
-            <div key={cj.name} className="card-hover px-5 py-4 group">
+            <div key={cj.name} className={`card-hover px-5 py-4 group ${cj.enabled === false ? 'opacity-60' : ''}`}>
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4 min-w-0">
                   <div className="w-9 h-9 rounded-lg bg-surface-3 flex items-center justify-center flex-shrink-0">
@@ -2146,6 +2345,9 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
                     <div className="flex items-center gap-3">
                       <span className="text-sm font-mono text-accent">{cj.name}</span>
                       <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-2 py-0.5 rounded">{cj.schedule}</span>
+                      {cj.enabled === false && (
+                        <span className="text-[10px] uppercase tracking-wide text-status-failed bg-status-failed/5 border border-status-failed/20 px-1.5 py-0.5 rounded">Disabled</span>
+                      )}
                       {cj.resources?.size && (
                         <span className="text-[10px] text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded">{cj.resources.size}</span>
                       )}
@@ -2220,6 +2422,14 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
                     className="text-xs text-text-tertiary hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
                   >
                     Edit
+                  </button>
+                  <button
+                    onClick={() => handleToggleEnabled(i)}
+                    disabled={mutation.isPending}
+                    title={cj.enabled === false ? 'Resume scheduling' : 'Stop scheduling without deleting'}
+                    className="text-xs text-text-tertiary hover:text-accent transition-colors opacity-0 group-hover:opacity-100"
+                  >
+                    {cj.enabled === false ? 'Enable' : 'Disable'}
                   </button>
                   <button
                     onClick={() => handleDelete(i)}
@@ -2338,8 +2548,9 @@ function RateLimitSection({ appId, environments, role }: { appId: string; enviro
   )
 }
 
-function PodFileBrowser({ appId, environments }: { appId: string; environments: string[] }) {
-  const [env, setEnv] = useState(environments[0] || '')
+function PodFileBrowser({ appId, environments, selectedEnv, onEnvChange }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
+  const env = selectedEnv || environments[0] || ''
+  const setEnv = onEnvChange
   const [pod, setPod] = useState('')
   const [currentPath, setCurrentPath] = useState('/')
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
@@ -2568,8 +2779,9 @@ function CloneAppModal({ appName, isPending, error, onClone, onClose }: {
 
 const POD_LOG_COLORS = ['#56d4dd', '#e5c07b', '#98c379', '#c678dd', '#d19a66', '#61afef']
 
-function AppLogs({ appId, environments }: { appId: string; environments: string[] }) {
-  const [env, setEnv] = useState(environments[0] || '')
+function AppLogs({ appId, environments, selectedEnv, onEnvChange }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
+  const env = selectedEnv || environments[0] || ''
+  const setEnv = onEnvChange
   const [tail, setTail] = useState(100)
   const [previous, setPrevious] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(false)
@@ -2822,8 +3034,9 @@ function AppLogs({ appId, environments }: { appId: string; environments: string[
   )
 }
 
-function AppTerminal({ appId, environments }: { appId: string; environments: string[] }) {
-  const [env, setEnv] = useState(environments[0] || '')
+function AppTerminal({ appId, environments, selectedEnv, onEnvChange }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
+  const env = selectedEnv || environments[0] || ''
+  const setEnv = onEnvChange
   const [pod, setPod] = useState('')
   const [container, setContainer] = useState('')
   const [connected, setConnected] = useState(false)
@@ -3389,8 +3602,9 @@ function BuildLogViewer({ appId, buildId, onClose }: { appId: string; buildId: s
   )
 }
 
-function AppMetrics({ appId, environments }: { appId: string; environments: string[] }) {
-  const [env, setEnv] = useState(environments[0] || '')
+function AppMetrics({ appId, environments, selectedEnv, onEnvChange }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
+  const env = selectedEnv || environments[0] || ''
+  const setEnv = onEnvChange
   const [expandedPod, setExpandedPod] = useState<string | null>(null)
   const [promRange, setPromRange] = useState<string>('1h')
   const [metricsExpanded, setMetricsExpanded] = useState(false)
@@ -4066,27 +4280,13 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['appEnvVars', appId, env] }),
   })
 
-  const parseEnvContent = (content: string): Record<string, string> => {
-    const result: Record<string, string> = {}
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith('#')) continue
-      const eqIdx = trimmed.indexOf('=')
-      if (eqIdx === -1) continue
-      const key = trimmed.slice(0, eqIdx).trim()
-      let value = trimmed.slice(eqIdx + 1).trim()
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1)
-      }
-      if (key) result[key] = value
-    }
-    return result
-  }
+  const parsedEnv = parseEnvContent(envInput)
+  const newKeyErrors = newKeys.map(kv => (kv.key ? secretKeyError(kv.key) : null))
 
   const handleEnvImport = () => {
-    const parsed = parseEnvContent(envInput)
-    if (Object.keys(parsed).length === 0) return
-    addMutation.mutate(parsed)
+    if (parsedEnv.invalidKeys.length > 0) return
+    if (Object.keys(parsedEnv.data).length === 0) return
+    addMutation.mutate(parsedEnv.data)
   }
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -4238,15 +4438,26 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
             />
             {envInput && (
               <p className="text-[11px] text-text-tertiary mt-1">
-                {Object.keys(parseEnvContent(envInput)).length} variable{Object.keys(parseEnvContent(envInput)).length !== 1 ? 's' : ''} detected
+                {Object.keys(parsedEnv.data).length} variable{Object.keys(parsedEnv.data).length !== 1 ? 's' : ''} detected
               </p>
+            )}
+            {parsedEnv.invalidKeys.length > 0 && (
+              <div className="text-[11px] text-status-failed mt-1 space-y-1">
+                <p>
+                  {parsedEnv.invalidKeys.length} line{parsedEnv.invalidKeys.length !== 1 ? 's' : ''} cannot be used as a
+                  key. Multi-line values such as PEM certificates must be on a single line.
+                </p>
+                {parsedEnv.invalidKeys.slice(0, 3).map(k => (
+                  <p key={k} className="font-mono break-all">{truncateSecretKey(k)}</p>
+                ))}
+              </div>
             )}
           </div>
           <div className="flex gap-3">
             <button
               type="button"
               onClick={handleEnvImport}
-              disabled={addMutation.isPending || Object.keys(parseEnvContent(envInput)).length === 0}
+              disabled={addMutation.isPending || parsedEnv.invalidKeys.length > 0 || Object.keys(parsedEnv.data).length === 0}
               className="btn-primary text-xs"
             >
               {addMutation.isPending ? 'Importing...' : 'Import'}
@@ -4263,6 +4474,7 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
         <form
           onSubmit={(e) => {
             e.preventDefault()
+            if (newKeyErrors.some(Boolean)) return
             const varData: Record<string, string> = {}
             newKeys.forEach((kv) => { if (kv.key) varData[kv.key] = kv.value })
             addMutation.mutate(varData)
@@ -4273,26 +4485,29 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
             <label className="label">Key-Value Pairs</label>
             <div className="space-y-2">
               {newKeys.map((kv, i) => (
-                <div key={i} className="flex gap-2">
-                  <input
-                    value={kv.key}
-                    onChange={(e) => { const u = [...newKeys]; u[i].key = e.target.value; setNewKeys(u) }}
-                    placeholder="KEY"
-                    className="input-field flex-1 font-mono text-xs"
-                  />
-                  <input
-                    value={kv.value}
-                    onChange={(e) => { const u = [...newKeys]; u[i].value = e.target.value; setNewKeys(u) }}
-                    placeholder="value"
-                    className="input-field flex-1 font-mono text-xs"
-                  />
-                  {newKeys.length > 1 && (
-                    <button type="button" onClick={() => setNewKeys(newKeys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  )}
+                <div key={i} className="space-y-1">
+                  <div className="flex gap-2">
+                    <input
+                      value={kv.key}
+                      onChange={(e) => { const u = [...newKeys]; u[i].key = e.target.value; setNewKeys(u) }}
+                      placeholder="KEY"
+                      className={`input-field flex-1 font-mono text-xs ${newKeyErrors[i] ? 'border-status-failed' : ''}`}
+                    />
+                    <input
+                      value={kv.value}
+                      onChange={(e) => { const u = [...newKeys]; u[i].value = e.target.value; setNewKeys(u) }}
+                      placeholder="value"
+                      className="input-field flex-1 font-mono text-xs"
+                    />
+                    {newKeys.length > 1 && (
+                      <button type="button" onClick={() => setNewKeys(newKeys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  {newKeyErrors[i] && <p className="text-[11px] text-status-failed">{newKeyErrors[i]}</p>}
                 </div>
               ))}
             </div>
@@ -4301,7 +4516,7 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
             </button>
           </div>
           <div className="flex gap-3">
-            <button type="submit" disabled={addMutation.isPending || !newKeys.some(kv => kv.key)} className="btn-primary text-xs">
+            <button type="submit" disabled={addMutation.isPending || newKeyErrors.some(Boolean) || !newKeys.some(kv => kv.key)} className="btn-primary text-xs">
               {addMutation.isPending ? 'Saving...' : 'Save'}
             </button>
             <button type="button" onClick={() => setShowAdd(false)} className="btn-ghost text-xs">Cancel</button>
@@ -4357,28 +4572,13 @@ function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; pro
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['appEnvSecrets', appId, env] }),
   })
 
-  const parseEnvContent = (content: string): Record<string, string> => {
-    const result: Record<string, string> = {}
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith('#')) continue
-      const eqIdx = trimmed.indexOf('=')
-      if (eqIdx === -1) continue
-      const key = trimmed.slice(0, eqIdx).trim()
-      let value = trimmed.slice(eqIdx + 1).trim()
-      // Strip surrounding quotes
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1)
-      }
-      if (key) result[key] = value
-    }
-    return result
-  }
+  const parsedEnv = parseEnvContent(envInput)
+  const newKeyErrors = newKeys.map(kv => (kv.key ? secretKeyError(kv.key) : null))
 
   const handleEnvImport = () => {
-    const parsed = parseEnvContent(envInput)
-    if (Object.keys(parsed).length === 0) return
-    addMutation.mutate(parsed)
+    if (parsedEnv.invalidKeys.length > 0) return
+    if (Object.keys(parsedEnv.data).length === 0) return
+    addMutation.mutate(parsedEnv.data)
   }
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -4583,15 +4783,26 @@ function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; pro
             />
             {envInput && (
               <p className="text-[11px] text-text-tertiary mt-1">
-                {Object.keys(parseEnvContent(envInput)).length} key{Object.keys(parseEnvContent(envInput)).length !== 1 ? 's' : ''} detected
+                {Object.keys(parsedEnv.data).length} key{Object.keys(parsedEnv.data).length !== 1 ? 's' : ''} detected
               </p>
+            )}
+            {parsedEnv.invalidKeys.length > 0 && (
+              <div className="text-[11px] text-status-failed mt-1 space-y-1">
+                <p>
+                  {parsedEnv.invalidKeys.length} line{parsedEnv.invalidKeys.length !== 1 ? 's' : ''} cannot be used as a
+                  key. Multi-line values such as PEM certificates must be on a single line.
+                </p>
+                {parsedEnv.invalidKeys.slice(0, 3).map(k => (
+                  <p key={k} className="font-mono break-all">{truncateSecretKey(k)}</p>
+                ))}
+              </div>
             )}
           </div>
           <div className="flex gap-3">
             <button
               type="button"
               onClick={handleEnvImport}
-              disabled={addMutation.isPending || Object.keys(parseEnvContent(envInput)).length === 0}
+              disabled={addMutation.isPending || parsedEnv.invalidKeys.length > 0 || Object.keys(parsedEnv.data).length === 0}
               className="btn-primary text-xs"
             >
               {addMutation.isPending ? 'Importing...' : 'Import'}
@@ -4608,6 +4819,7 @@ function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; pro
         <form
           onSubmit={(e) => {
             e.preventDefault()
+            if (newKeyErrors.some(Boolean)) return
             const secretData: Record<string, string> = {}
             newKeys.forEach((kv) => { if (kv.key) secretData[kv.key] = kv.value })
             addMutation.mutate(secretData)
@@ -4618,27 +4830,30 @@ function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; pro
             <label className="label">Key-Value Pairs</label>
             <div className="space-y-2">
               {newKeys.map((kv, i) => (
-                <div key={i} className="flex gap-2">
-                  <input
-                    value={kv.key}
-                    onChange={(e) => { const u = [...newKeys]; u[i].key = e.target.value; setNewKeys(u) }}
-                    placeholder="KEY"
-                    className="input-field w-1/3 font-mono text-xs"
-                  />
-                  <RevealableInput
-                    value={kv.value}
-                    onChange={(e) => { const u = [...newKeys]; u[i].value = e.target.value; setNewKeys(u) }}
-                    placeholder="value"
-                    type="password"
-                    className="input-field flex-1"
-                  />
-                  {newKeys.length > 1 && (
-                    <button type="button" onClick={() => setNewKeys(newKeys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  )}
+                <div key={i} className="space-y-1">
+                  <div className="flex gap-2">
+                    <input
+                      value={kv.key}
+                      onChange={(e) => { const u = [...newKeys]; u[i].key = e.target.value; setNewKeys(u) }}
+                      placeholder="KEY"
+                      className={`input-field w-1/3 font-mono text-xs ${newKeyErrors[i] ? 'border-status-failed' : ''}`}
+                    />
+                    <RevealableInput
+                      value={kv.value}
+                      onChange={(e) => { const u = [...newKeys]; u[i].value = e.target.value; setNewKeys(u) }}
+                      placeholder="value"
+                      type="password"
+                      className="input-field flex-1"
+                    />
+                    {newKeys.length > 1 && (
+                      <button type="button" onClick={() => setNewKeys(newKeys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  {newKeyErrors[i] && <p className="text-[11px] text-status-failed">{newKeyErrors[i]}</p>}
                 </div>
               ))}
             </div>
@@ -4647,7 +4862,7 @@ function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; pro
             </button>
           </div>
           <div className="flex gap-3">
-            <button type="submit" disabled={addMutation.isPending || !newKeys.some(kv => kv.key)} className="btn-primary text-xs">
+            <button type="submit" disabled={addMutation.isPending || newKeyErrors.some(Boolean) || !newKeys.some(kv => kv.key)} className="btn-primary text-xs">
               {addMutation.isPending ? 'Saving...' : 'Save'}
             </button>
             <button type="button" onClick={() => setShowAdd(false)} className="btn-ghost text-xs">Cancel</button>

@@ -207,10 +207,11 @@ type PodMetricsUsage struct {
 // GetPodMetrics queries the metrics.k8s.io API for live resource usage.
 func (c *Client) GetPodMetrics(ctx context.Context, namespace, labelSelector string) (map[string]PodMetricsUsage, error) {
 	path := fmt.Sprintf("/apis/metrics.k8s.io/v1beta1/namespaces/%s/pods", namespace)
+	req := c.Clientset.Discovery().RESTClient().Get().AbsPath(path)
 	if labelSelector != "" {
-		path += "?labelSelector=" + labelSelector
+		req = req.Param("labelSelector", labelSelector)
 	}
-	raw, err := c.Clientset.Discovery().RESTClient().Get().AbsPath(path).DoRaw(ctx)
+	raw, err := req.DoRaw(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -506,6 +507,7 @@ type CronJobStatus struct {
 	LastSuccessfulTime *string `json:"lastSuccessfulTime"`
 	Active            int     `json:"active"`
 	RunCount          int     `json:"runCount"`
+	Suspended         bool    `json:"suspended"`
 }
 
 // GetCronJobStatuses returns status info for all cronjobs matching a label selector.
@@ -520,9 +522,10 @@ func (c *Client) GetCronJobStatuses(ctx context.Context, namespace, labelSelecto
 	var results []CronJobStatus
 	for _, cj := range cronJobs.Items {
 		status := CronJobStatus{
-			Name:     cj.Name,
-			Schedule: cj.Spec.Schedule,
-			Active:   len(cj.Status.Active),
+			Name:      cj.Name,
+			Schedule:  cj.Spec.Schedule,
+			Active:    len(cj.Status.Active),
+			Suspended: cj.Spec.Suspend != nil && *cj.Spec.Suspend,
 		}
 		if cj.Status.LastScheduleTime != nil {
 			t := cj.Status.LastScheduleTime.Format(time.RFC3339)

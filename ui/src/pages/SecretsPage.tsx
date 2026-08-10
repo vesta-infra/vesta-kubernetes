@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { useUserRole, useIsProjectOwner } from '../lib/useRole'
+import { parseEnvContent, secretKeyError, truncateSecretKey } from '../lib/secretKeys'
 import RevealableInput from '../components/RevealableInput'
 
 export default function SecretsPage() {
@@ -788,24 +789,12 @@ function CreateSecretForm({ apps, onClose }: { apps: any[]; onClose: () => void 
   const selectedApp = apps.find((a: any) => a.id === selectedAppId)
   const appEnvironments: string[] = selectedApp?.environments || selectedApp?.spec?.environments || []
 
-  const parseEnvContent = (content: string): Record<string, string> => {
-    const result: Record<string, string> = {}
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim()
-      if (!trimmed || trimmed.startsWith('#')) continue
-      const eqIdx = trimmed.indexOf('=')
-      if (eqIdx === -1) continue
-      const key = trimmed.slice(0, eqIdx).trim()
-      let value = trimmed.slice(eqIdx + 1).trim()
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1)
-      }
-      if (key) result[key] = value
-    }
-    return result
-  }
-
-  const parsedEnvKeys = inputMode === 'env' ? parseEnvContent(envInput) : {}
+  const parsedEnv = inputMode === 'env' ? parseEnvContent(envInput) : { data: {}, invalidKeys: [] }
+  const parsedEnvKeys = parsedEnv.data
+  const manualKeyErrors = inputMode === 'manual'
+    ? keys.map(kv => (kv.key ? secretKeyError(kv.key) : null))
+    : []
+  const hasInvalidKeys = parsedEnv.invalidKeys.length > 0 || manualKeyErrors.some(Boolean)
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -831,9 +820,10 @@ function CreateSecretForm({ apps, onClose }: { apps: any[]; onClose: () => void 
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
+    if (hasInvalidKeys) return
     let data: Record<string, string> = {}
     if (inputMode === 'env') {
-      data = parseEnvContent(envInput)
+      data = parsedEnvKeys
     } else {
       keys.forEach((kv) => { if (kv.key) data[kv.key] = kv.value })
     }
@@ -932,26 +922,31 @@ function CreateSecretForm({ apps, onClose }: { apps: any[]; onClose: () => void 
           <>
             <div className="space-y-2">
               {keys.map((kv, i) => (
-                <div key={i} className="flex gap-2">
-                  <input
-                    value={kv.key}
-                    onChange={(e) => { const u = [...keys]; u[i].key = e.target.value; setKeys(u) }}
-                    placeholder="KEY"
-                    className="input-field flex-1 font-mono text-xs"
-                  />
-                  <RevealableInput
-                    value={kv.value}
-                    onChange={(e) => { const u = [...keys]; u[i].value = e.target.value; setKeys(u) }}
-                    placeholder="value"
-                    type="password"
-                    className="input-field flex-1"
-                  />
-                  {keys.length > 1 && (
-                    <button type="button" onClick={() => setKeys(keys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
+                <div key={i} className="space-y-1">
+                  <div className="flex gap-2">
+                    <input
+                      value={kv.key}
+                      onChange={(e) => { const u = [...keys]; u[i].key = e.target.value; setKeys(u) }}
+                      placeholder="KEY"
+                      className={`input-field flex-1 font-mono text-xs ${manualKeyErrors[i] ? 'border-status-failed' : ''}`}
+                    />
+                    <RevealableInput
+                      value={kv.value}
+                      onChange={(e) => { const u = [...keys]; u[i].value = e.target.value; setKeys(u) }}
+                      placeholder="value"
+                      type="password"
+                      className="input-field flex-1"
+                    />
+                    {keys.length > 1 && (
+                      <button type="button" onClick={() => setKeys(keys.filter((_, idx) => idx !== i))} className="px-2 text-text-tertiary hover:text-status-failed transition-colors">
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  {manualKeyErrors[i] && (
+                    <p className="text-[11px] text-status-failed">{manualKeyErrors[i]}</p>
                   )}
                 </div>
               ))}
@@ -988,12 +983,23 @@ function CreateSecretForm({ apps, onClose }: { apps: any[]; onClose: () => void 
                 {Object.keys(parsedEnvKeys).length} key{Object.keys(parsedEnvKeys).length !== 1 ? 's' : ''} detected
               </p>
             )}
+            {parsedEnv.invalidKeys.length > 0 && (
+              <div className="text-[11px] text-status-failed space-y-1">
+                <p>
+                  {parsedEnv.invalidKeys.length} line{parsedEnv.invalidKeys.length !== 1 ? 's' : ''} cannot be used as a
+                  key. Multi-line values such as PEM certificates must be on a single line.
+                </p>
+                {parsedEnv.invalidKeys.slice(0, 3).map(k => (
+                  <p key={k} className="font-mono break-all">{truncateSecretKey(k)}</p>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
 
       <div className="flex gap-3 pt-1">
-        <button type="submit" disabled={!selectedAppId || !selectedEnv || !name || !hasData || mutation.isPending} className="btn-primary">
+        <button type="submit" disabled={!selectedAppId || !selectedEnv || !name || !hasData || hasInvalidKeys || mutation.isPending} className="btn-primary">
           {mutation.isPending ? 'Creating...' : 'Create Secret'}
         </button>
         <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>

@@ -43,6 +43,11 @@ func (h *Handler) CreateAppEnvSecret(c *gin.Context) {
 		req.Type = "Opaque"
 	}
 
+	if err := validateSecretDataKeys(req.Data); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
 	app, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
@@ -344,6 +349,10 @@ func (h *Handler) UpdateSecret(c *gin.Context) {
 
 	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
 	if data, ok := patch["data"].(map[string]interface{}); ok {
+		if err := validateSecretDataKeysAny(data); err != nil {
+			c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+			return
+		}
 		spec["data"] = data
 	}
 	existing.Object["spec"] = spec
@@ -577,6 +586,11 @@ func (h *Handler) UpdateSharedSecret(c *gin.Context) {
 		return
 	}
 
+	if err := validateSecretDataKeys(req.Data); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
 	list, err := h.K8s.ListResources(c.Request.Context(), k8s.VestaSecretGVR, "",
 		"kubernetes.getvesta.sh/project="+projectID+",kubernetes.getvesta.sh/shared=true")
 	if err != nil {
@@ -677,6 +691,11 @@ func (h *Handler) CreateSharedSecret(c *gin.Context) {
 		Environments []string          `json:"environments,omitempty"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
+	if err := validateSecretDataKeys(req.Data); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
 		return
 	}

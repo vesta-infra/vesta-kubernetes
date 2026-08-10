@@ -101,10 +101,12 @@ helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
    --reuse-values \
-  --set operator.image.tag=0.5.1 \
-  --set api.image.tag=0.5.1 \
-  --set ui.image.tag=0.5.1
+  --set operator.image.tag=0.5.21 \
+  --set api.image.tag=0.5.21 \
+  --set ui.image.tag=0.5.21
 ```
+
+
 ```bash
   kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaapps.yaml
 ```
@@ -113,9 +115,9 @@ helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
   --set api.database.existingSecret=vesta-db-secret \
-  --set operator.image.tag=0.2.1 \
-  --set api.image.tag=0.2.1 \
-  --set ui.image.tag=0.2.1 
+  --set operator.image.tag=0.5.21 \
+  --set api.image.tag=0.5.21 \
+  --set ui.image.tag=0.5.21 
 ```
   
   

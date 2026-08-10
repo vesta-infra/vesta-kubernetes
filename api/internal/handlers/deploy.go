@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
 	"kubernetes.getvesta.sh/api/internal/services"
@@ -73,54 +74,76 @@ func (h *Handler) DeployApp(c *gin.Context) {
 		repo, _ := imageSpec["repository"].(string)
 		targetImage := fmt.Sprintf("%s:%s", repo, req.Tag)
 
-		// Update the per-environment image tag on the VestaApp CRD.
-		// The operator reads env.image.tag (falling back to spec.image) per-environment.
-		environments, _, _ := unstructuredNestedSlice(spec, "environments")
-		updated := false
-		for i, raw := range environments {
-			envMap, ok := raw.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			if getNestedString(envMap, "name") == req.Environment {
-				envImage, _ := envMap["image"].(map[string]interface{})
-				if envImage == nil {
-					envImage = map[string]interface{}{}
+		// Retry loop to handle optimistic concurrency conflicts on the VestaApp CR.
+		const maxRetries = 5
+		var updateErr error
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			if attempt > 0 {
+				// Re-fetch the latest version of the resource
+				existing, err = h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId)
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to re-fetch app: %v", err)})
+					return
 				}
-				envImage["tag"] = req.Tag
-				envMap["image"] = envImage
-				environments[i] = envMap
-				updated = true
+				spec, _, _ = unstructuredNestedMap(existing.Object, "spec")
+				imageSpec, _, _ = unstructuredNestedMap(spec, "image")
+			}
+
+			// Update the per-environment image tag on the VestaApp CRD.
+			// The operator reads env.image.tag (falling back to spec.image) per-environment.
+			environments, _, _ := unstructuredNestedSlice(spec, "environments")
+			updated := false
+			for i, raw := range environments {
+				envMap, ok := raw.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				if getNestedString(envMap, "name") == req.Environment {
+					envImage, _ := envMap["image"].(map[string]interface{})
+					if envImage == nil {
+						envImage = map[string]interface{}{}
+					}
+					envImage["tag"] = req.Tag
+					envMap["image"] = envImage
+					environments[i] = envMap
+					updated = true
+					break
+				}
+			}
+			if !updated {
+				// Fallback: patch global image tag for apps without per-env entries
+				spec["image"] = map[string]interface{}{
+					"repository": repo,
+					"tag":        req.Tag,
+				}
+			} else {
+				// Only the target environment's tag changes. spec.image.tag is the
+				// default for environments that have no tag of their own, so writing
+				// it here would deploy this tag to every other such environment.
+				spec["environments"] = environments
+			}
+			existing.Object["spec"] = spec
+
+			// Store the target environment as an annotation for the operator to record in deployment history
+			metadata, _ := existing.Object["metadata"].(map[string]interface{})
+			annotations, _ := metadata["annotations"].(map[string]interface{})
+			if annotations == nil {
+				annotations = map[string]interface{}{}
+			}
+			annotations["vesta.sh/last-deploy-environment"] = req.Environment
+			metadata["annotations"] = annotations
+			existing.Object["metadata"] = metadata
+
+			_, updateErr = h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, existing)
+			if updateErr == nil {
+				break
+			}
+			if !k8serrors.IsConflict(updateErr) {
 				break
 			}
 		}
-		if !updated {
-			// Fallback: also patch global image tag for apps without per-env entries
-			spec["image"] = map[string]interface{}{
-				"repository": repo,
-				"tag":        req.Tag,
-			}
-		} else {
-			spec["environments"] = environments
-			// Also update global image tag so status.currentImage reflects the latest deploy
-			imageSpec["tag"] = req.Tag
-			spec["image"] = imageSpec
-		}
-		existing.Object["spec"] = spec
-
-		// Store the target environment as an annotation for the operator to record in deployment history
-		metadata, _ := existing.Object["metadata"].(map[string]interface{})
-		annotations, _ := metadata["annotations"].(map[string]interface{})
-		if annotations == nil {
-			annotations = map[string]interface{}{}
-		}
-		annotations["vesta.sh/last-deploy-environment"] = req.Environment
-		metadata["annotations"] = annotations
-		existing.Object["metadata"] = metadata
-
-		_, err = h.K8s.UpdateResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, existing)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to update app image tag: %v", err)})
+		if updateErr != nil {
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to update app image tag: %v", updateErr)})
 			return
 		}
 
@@ -220,24 +243,35 @@ func (h *Handler) RollbackApp(c *gin.Context) {
 	status, _, _ := unstructuredNestedMap(existing.Object, "status")
 	history, _ := status["deploymentHistory"].([]interface{})
 
+	// History records are per-environment. Only roll back to a version that belongs
+	// to the target environment, otherwise a version from another environment would
+	// be deployed here. Legacy records carry no environment and stay eligible.
 	var targetImage string
+	var wrongEnv string
 	for _, entry := range history {
 		record, ok := entry.(map[string]interface{})
 		if !ok {
 			continue
 		}
 		ver, _ := record["version"].(float64)
-		if int(ver) == req.Version {
-			targetImage, _ = record["image"].(string)
+		if int(ver) != req.Version {
+			continue
+		}
+		recEnv, _ := record["environment"].(string)
+		if recEnv != "" && recEnv != req.Environment {
+			wrongEnv = recEnv
 			break
 		}
+		targetImage, _ = record["image"].(string)
+		break
 	}
 
 	if targetImage == "" {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{
-			Code:    400,
-			Message: fmt.Sprintf("deployment version %d not found in history", req.Version),
-		})
+		msg := fmt.Sprintf("deployment version %d not found in history", req.Version)
+		if wrongEnv != "" {
+			msg = fmt.Sprintf("deployment version %d belongs to environment %q, not %q", req.Version, wrongEnv, req.Environment)
+		}
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: msg})
 		return
 	}
 

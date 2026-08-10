@@ -54,6 +54,7 @@ uninstall: ## Remove CRDs from the cluster
 docker-build: ## Build all Docker images
 	docker build -t $(REGISTRY)/operator:$(VERSION) operator/
 	docker build -t $(REGISTRY)/api:$(VERSION) api/
+	docker build -t $(REGISTRY)/ui:$(VERSION) --build-arg APP_VERSION=$(VERSION) ui/
 
 docker-push: docker-build ## Push all Docker images
 	docker push $(REGISTRY)/operator:$(VERSION)
