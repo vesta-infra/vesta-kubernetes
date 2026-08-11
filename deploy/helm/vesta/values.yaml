@@ -36,6 +36,8 @@ api:
     host: kubernetes.getvesta.sh
     tls: true
     clusterIssuer: letsencrypt-prod
+    # -- IngressClass for this ingress. Defaults to config.ingressClassName.
+    ingressClassName: ""
     annotations: {}
   # -- Database configuration
   database:
@@ -70,6 +72,8 @@ ui:
     host: ui.getvesta.sh
     tls: true
     clusterIssuer: letsencrypt-prod
+    # -- IngressClass for this ingress. Defaults to config.ingressClassName.
+    ingressClassName: ""
     annotations: {}
 
 # -- Vesta platform configuration (creates VestaConfig CRD)
