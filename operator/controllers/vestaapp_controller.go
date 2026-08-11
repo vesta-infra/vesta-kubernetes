@@ -51,6 +51,7 @@ type targetEnv struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingressclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
@@ -1024,6 +1025,35 @@ func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1a
 	})
 }
 
+// defaultIngressClassAnnotation marks the cluster-wide default IngressClass.
+const defaultIngressClassAnnotation = "ingressclass.kubernetes.io/is-default-class"
+
+// resolveIngressClassName resolves which IngressClass an app's ingresses belong to:
+// app-level override → platform default (VestaConfig) → the cluster's default IngressClass.
+// The last fallback matters because controllers such as Traefik only load an ingress'
+// TLS secret for ingresses they own — an unclassed ingress is served with the
+// controller's default self-signed certificate instead. Returns "" if none is found.
+func (r *VestaAppReconciler) resolveIngressClassName(ctx context.Context, app *vestav1alpha1.VestaApp) string {
+	if app.Spec.Ingress != nil && app.Spec.Ingress.IngressClassName != "" {
+		return app.Spec.Ingress.IngressClassName
+	}
+	if name := r.ConfigResolver.GetIngressClassName(); name != "" {
+		return name
+	}
+
+	classes := &networkingv1.IngressClassList{}
+	if err := r.Client.List(ctx, classes); err != nil {
+		log.FromContext(ctx).V(1).Info("unable to list IngressClasses to resolve the default", "error", err.Error())
+		return ""
+	}
+	for i := range classes.Items {
+		if classes.Items[i].Annotations[defaultIngressClassAnnotation] == "true" {
+			return classes.Items[i].Name
+		}
+	}
+	return ""
+}
+
 func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
 	labels := r.labelsForApp(app)
 	pathType := networkingv1.PathTypePrefix
@@ -1086,6 +1116,8 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 		tlsSecretName = fmt.Sprintf("%s-%s-tls", app.Name, target.Config.Name)
 	}
 
+	ingressClassName := r.resolveIngressClassName(ctx, app)
+
 	return retry.OnError(retry.DefaultRetry, isRetriable, func() error {
 		ing := &networkingv1.Ingress{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1098,10 +1130,9 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			ing.Labels = labels
 			ing.Annotations = map[string]string{}
 
-			var clusterIssuer, ingressClassName string
+			var clusterIssuer string
 			if app.Spec.Ingress != nil {
 				clusterIssuer = app.Spec.Ingress.ClusterIssuer
-				ingressClassName = app.Spec.Ingress.IngressClassName
 			}
 			if clusterIssuer == "" {
 				clusterIssuer = r.ConfigResolver.GetClusterIssuer()
@@ -1110,9 +1141,6 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuer
 			}
 
-			if ingressClassName == "" {
-				ingressClassName = r.ConfigResolver.GetIngressClassName()
-			}
 			if ingressClassName != "" {
 				ing.Annotations["kubernetes.io/ingress.class"] = ingressClassName
 			}
@@ -1154,12 +1182,19 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				})
 			}
 
+			// Keep any class already on the object (e.g. defaulted by the API server
+			// at creation) — the wholesale Spec assignment below would drop it.
+			existingClass := ing.Spec.IngressClassName
+
 			ing.Spec = networkingv1.IngressSpec{
 				Rules: rules,
 			}
 
-			if ingressClassName != "" {
+			switch {
+			case ingressClassName != "":
 				ing.Spec.IngressClassName = &ingressClassName
+			case existingClass != nil:
+				ing.Spec.IngressClassName = existingClass
 			}
 
 			if tlsEnabled {
@@ -1247,13 +1282,7 @@ func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *
 	redirectTarget := fmt.Sprintf("%s://%s", scheme, primaryDomain)
 
 	// Resolve ingress class
-	var ingressClassName string
-	if app.Spec.Ingress != nil && app.Spec.Ingress.IngressClassName != "" {
-		ingressClassName = app.Spec.Ingress.IngressClassName
-	}
-	if ingressClassName == "" {
-		ingressClassName = r.ConfigResolver.GetIngressClassName()
-	}
+	ingressClassName := r.resolveIngressClassName(ctx, app)
 
 	labels := r.labelsForApp(app)
 	labels["vesta.sh/redirect"] = "true"
@@ -1356,12 +1385,17 @@ func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *
 				})
 			}
 
+			existingClass := ing.Spec.IngressClassName
+
 			ing.Spec = networkingv1.IngressSpec{
 				Rules: rules,
 			}
 
-			if ingressClassName != "" {
+			switch {
+			case ingressClassName != "":
 				ing.Spec.IngressClassName = &ingressClassName
+			case existingClass != nil:
+				ing.Spec.IngressClassName = existingClass
 			}
 
 			if tlsEnabled {
@@ -1456,13 +1490,7 @@ func (r *VestaAppReconciler) reconcileHTTPSRedirectMiddleware(ctx context.Contex
 	}
 
 	// Determine ingress class
-	ingressClassName := ""
-	if app.Spec.Ingress != nil {
-		ingressClassName = app.Spec.Ingress.IngressClassName
-	}
-	if ingressClassName == "" {
-		ingressClassName = r.ConfigResolver.GetIngressClassName()
-	}
+	ingressClassName := r.resolveIngressClassName(ctx, app)
 	isTraefik := strings.Contains(strings.ToLower(ingressClassName), "traefik")
 
 	if tlsEnabled && isTraefik {

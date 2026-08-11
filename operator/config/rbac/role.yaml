@@ -84,6 +84,9 @@ rules:
 - apiGroups: [ "networking.k8s.io" ]
   resources: [ "networkpolicies" ]
   verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
+- apiGroups: [ "networking.k8s.io" ]
+  resources: [ "ingressclasses" ]
+  verbs: [ "get", "list", "watch" ]
 
 # Traefik Middleware CRDs (for redirect and HTTPS redirect middlewares)
 - apiGroups: [ "traefik.io" ]
