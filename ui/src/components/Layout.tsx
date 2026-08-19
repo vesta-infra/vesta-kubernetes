@@ -75,6 +75,11 @@ const bottomNavItems = [
 
 const allNavItems = [...mainNavItems, ...bottomNavItems]
 
+// The release workflow passes the git tag as APP_VERSION, which already carries a
+// leading "v" -- prefixing another one rendered "vv0.6.1".
+const rawVersion = import.meta.env.VITE_APP_VERSION || 'dev'
+const appVersion = /^\d/.test(rawVersion) ? `v${rawVersion}` : rawVersion
+
 export default function Layout() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -233,7 +238,7 @@ export default function Layout() {
           <div className="flex items-center justify-between max-w-6xl mx-auto">
             <h2 className="page-title">{pageTitle}</h2>
             <div className="flex items-center gap-2">
-              <span className="text-[10px] font-mono text-text-tertiary/60 tracking-wider">v{import.meta.env.VITE_APP_VERSION || 'dev'}</span>
+              <span className="text-[10px] font-mono text-text-tertiary/60 tracking-wider">{appVersion}</span>
               <div className="w-1.5 h-1.5 rounded-full bg-status-running shadow-[0_0_6px_rgba(34,197,94,0.4)] animate-glow-pulse" />
             </div>
           </div>

@@ -140,50 +140,63 @@ export default function AppsPage() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filteredApps.map((app: any, i: number) => (
-          <Link
-            key={app.id}
-            to={{ pathname: `/apps/${app.id}`, search: searchParams.toString() }}
-            className="card-hover p-5 group relative overflow-hidden"
-            style={{ animationDelay: `${i * 0.03}s` }}
-          >
-            {/* Top accent line on hover */}
-            <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-accent/0 to-transparent group-hover:via-accent/30 transition-all duration-500" />
-
-            <div className="flex items-start justify-between mb-3">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-lg bg-surface-3 border border-border flex items-center justify-center text-xs font-mono font-semibold text-text-tertiary group-hover:text-accent group-hover:bg-accent/10 group-hover:border-accent/20 transition-all duration-300">
-                  {app.name?.charAt(0)?.toUpperCase() || 'A'}
+        {filteredApps.map((app: any, i: number) => {
+          const envs = (app.environments || []).map((e: any) => (typeof e === 'string' ? e : e.name))
+          const subtitle = app.status?.url || app.status?.currentImage || app.spec?.image
+          return (
+            <Link
+              key={app.id}
+              to={{ pathname: `/apps/${app.id}`, search: searchParams.toString() }}
+              className="card-hover top-sheen p-5 h-full flex flex-col group relative overflow-hidden animate-slide-up"
+              style={{ animationDelay: `${i * 0.04}s` }}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-9 h-9 rounded-lg bg-surface-3 border border-border/80 flex items-center justify-center text-xs font-mono font-semibold text-text-secondary shrink-0 group-hover:text-accent group-hover:bg-accent/10 group-hover:border-accent/25 transition-all duration-300">
+                    {app.name?.charAt(0)?.toUpperCase() || 'A'}
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-text-primary truncate group-hover:text-accent transition-colors duration-200">
+                      {app.name}
+                    </h3>
+                    <p className="text-[11px] text-text-tertiary font-mono truncate mt-0.5">
+                      {app.projectName || app.project || '—'}
+                    </p>
+                  </div>
                 </div>
-                <h3 className="text-sm font-semibold text-text-primary group-hover:text-accent transition-colors duration-200">
-                  {app.name}
-                </h3>
+                <StatusBadge phase={app.status?.phase} />
               </div>
-              <StatusBadge phase={app.status?.phase} />
-            </div>
-            <p className="text-[11px] text-text-tertiary font-mono mb-2.5">
-              {app.projectName || app.project || '—'}
-            </p>
-            {app.environments && app.environments.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 mb-2.5">
-                {app.environments.map((e: any) => {
-                  const name = typeof e === 'string' ? e : e.name
-                  return (
-                    <span key={name} className="text-[10px] font-mono bg-surface-3/80 text-text-tertiary px-2 py-0.5 rounded border border-border/50">
-                      {name}
-                    </span>
-                  )
-                })}
+
+              {envs.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-4">
+                  {envs.map((name: string) => (
+                    <span key={name} className="chip">{name}</span>
+                  ))}
+                </div>
+              )}
+
+              {/* Footer is bottom-anchored so cards in a row line up whatever they carry.
+                  When an app is unhealthy the cause matters more than its image. */}
+              <div className="mt-auto flex items-center justify-between gap-3 pt-4 mt-5 border-t border-border/50">
+                {app.status?.reason ? (
+                  <span
+                    className="text-[11px] font-mono text-status-failed truncate"
+                    title={app.status.message || app.status.reason}
+                  >
+                    {app.status.reason}
+                  </span>
+                ) : (
+                  <span className="text-[11px] font-mono text-text-tertiary truncate" title={subtitle || undefined}>
+                    {subtitle || 'not deployed'}
+                  </span>
+                )}
+                <svg className="w-3.5 h-3.5 shrink-0 text-text-quaternary group-hover:text-accent group-hover:translate-x-0.5 transition-all duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                </svg>
               </div>
-            )}
-            {app.status?.url && (
-              <p className="text-[11px] text-accent/50 truncate">{app.status.url}</p>
-            )}
-            {app.status?.currentImage && (
-              <p className="text-[10px] text-text-tertiary mt-1.5 truncate font-mono">{app.status.currentImage}</p>
-            )}
-          </Link>
-        ))}
+            </Link>
+          )
+        })}
       </div>
     </div>
   )

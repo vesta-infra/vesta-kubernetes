@@ -23,6 +23,9 @@ spec:
     - name: Phase
       type: string
       jsonPath: .status.phase
+    - name: Reason
+      type: string
+      jsonPath: .status.reason
     - name: URL
       type: string
       jsonPath: .status.url
@@ -552,6 +555,12 @@ spec:
               phase:
                 type: string
                 enum: [ Pending, Building, Deploying, Running, Degraded, Failed, Sleeping, CrashLoopBackOff ]
+              reason:
+                type: string
+                description: Short CamelCase token naming why the app is in its current phase (ImagePullBackOff, CrashLoopBackOff, Unschedulable, InvalidSpec, ...). Empty while healthy.
+              message:
+                type: string
+                description: Human-readable explanation of reason, naming the specific pod, container, and underlying error where known.
               buildStatus:
                 type: string
               url:

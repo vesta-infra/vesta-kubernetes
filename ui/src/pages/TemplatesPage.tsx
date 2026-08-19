@@ -25,7 +25,7 @@ export default function TemplatesPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-xl font-display italic text-text-primary">Templates</h2>
+        <p className="text-sm text-text-secondary">One-click deploys for databases, caches, and tooling.</p>
         <div className="flex items-center gap-3">
           <input
             value={search}
@@ -68,31 +68,49 @@ export default function TemplatesPage() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {templates?.items?.map((tmpl: any) => (
-          <div key={tmpl.id} className="card p-5 hover:border-accent/20 transition-colors group">
-            <div className="flex items-start gap-3 mb-3">
-              <span className="text-2xl">{tmpl.icon}</span>
-              <div className="flex-1 min-w-0">
-                <h3 className="text-sm font-semibold text-text-primary group-hover:text-accent transition-colors">
-                  {tmpl.name}
-                </h3>
-                <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-1.5 py-0.5 rounded mt-1 inline-block">
-                  {tmpl.category}
-                </span>
+        {templates?.items?.map((tmpl: any, i: number) => {
+          // tag is optional -- joining it unconditionally rendered "postgres:16:".
+          const ref = [tmpl.image, tmpl.tag].filter(Boolean).join(':')
+          return (
+            <div
+              key={tmpl.id}
+              className="card-hover top-sheen p-5 h-full flex flex-col group animate-slide-up"
+              style={{ animationDelay: `${i * 0.04}s` }}
+            >
+              <div className="flex items-start gap-3">
+                <div className="w-9 h-9 rounded-lg bg-surface-3 border border-border/80 flex items-center justify-center shrink-0 text-sm group-hover:border-accent/25 group-hover:bg-accent/[0.06] transition-all duration-300">
+                  {tmpl.icon || (
+                    <span className="text-xs font-mono font-semibold text-text-secondary group-hover:text-accent transition-colors">
+                      {(tmpl.displayName || tmpl.name || '?').charAt(0).toUpperCase()}
+                    </span>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-sm font-semibold text-text-primary truncate group-hover:text-accent transition-colors">
+                    {tmpl.displayName || tmpl.name}
+                  </h3>
+                  {tmpl.category && <span className="chip mt-1.5">{tmpl.category}</span>}
+                </div>
+              </div>
+
+              <p className="text-xs text-text-secondary leading-relaxed mt-4 line-clamp-2">{tmpl.description}</p>
+
+              <div className="mt-auto flex items-center justify-between gap-3 pt-4 mt-5 border-t border-border/50">
+                <span className="text-[11px] font-mono text-text-tertiary truncate" title={ref}>{ref}</span>
+                {/* Outline until intent is shown -- three filled buttons per row all
+                    shouted at once and none read as primary. */}
+                <button
+                  onClick={() => setDeployingId(tmpl.id)}
+                  className="shrink-0 px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-border bg-surface-2/60 text-text-secondary
+                             transition-all duration-200 group-hover:border-accent/30 group-hover:text-accent
+                             hover:!bg-accent hover:!text-surface-0 hover:!border-accent"
+                >
+                  Deploy
+                </button>
               </div>
             </div>
-            <p className="text-xs text-text-secondary mb-3 line-clamp-2">{tmpl.description}</p>
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-mono text-text-tertiary truncate">{tmpl.image}:{tmpl.tag}</span>
-              <button
-                onClick={() => setDeployingId(tmpl.id)}
-                className="btn-primary text-[11px] px-3 py-1"
-              >
-                Deploy
-              </button>
-            </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
       {deployingId && (

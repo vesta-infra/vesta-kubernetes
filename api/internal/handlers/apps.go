@@ -89,6 +89,13 @@ func (h *Handler) CreateApp(c *gin.Context) {
 		return
 	}
 
+	// Port names must be unique -- Kubernetes rejects duplicates in the operator's
+	// reconcile loop, where the caller would never see the reason.
+	if err := validateServicePorts(req.Service, "service"); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
 	spec := map[string]interface{}{
 		"project": projectID,
 	}
@@ -302,6 +309,13 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 
 	var patch map[string]interface{}
 	if err := c.ShouldBindJSON(&patch); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
+	patchService, _ := patch["service"].(map[string]interface{})
+	patchEnvs, _ := patch["environments"].([]interface{})
+	if err := validateAppServiceConfig(patchService, patchEnvs); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
 		return
 	}

@@ -19,21 +19,28 @@ func (h *Handler) GetHealthDashboard(c *gin.Context) {
 	}
 
 	type appHealth struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		Project     string `json:"project"`
-		Phase       string `json:"phase"`
-		Replicas    int64  `json:"replicas"`
-		ReadyPods   int    `json:"readyPods"`
-		TotalPods   int    `json:"totalPods"`
-		Restarts    int32  `json:"restarts"`
-		URL         string `json:"url,omitempty"`
-		LastDeploy  string `json:"lastDeployedAt,omitempty"`
-		SleepMode   bool   `json:"sleepMode"`
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Project string `json:"project"`
+		Phase   string `json:"phase"`
+		// Reason and Message explain a non-Running phase; without them the table
+		// showed a status with no way to find out what went wrong.
+		Reason     string `json:"reason,omitempty"`
+		Message    string `json:"message,omitempty"`
+		Replicas   int64  `json:"replicas"`
+		ReadyPods  int    `json:"readyPods"`
+		TotalPods  int    `json:"totalPods"`
+		Restarts   int32  `json:"restarts"`
+		URL        string `json:"url,omitempty"`
+		LastDeploy string `json:"lastDeployedAt,omitempty"`
+		SleepMode  bool   `json:"sleepMode"`
 	}
 
 	var results []appHealth
-	statusCounts := map[string]int{"Running": 0, "Failed": 0, "Pending": 0, "Sleeping": 0}
+	statusCounts := map[string]int{
+		"Running": 0, "Deploying": 0, "Pending": 0, "Degraded": 0,
+		"CrashLoopBackOff": 0, "Failed": 0, "Sleeping": 0,
+	}
 
 	for _, app := range appsList.Items {
 		spec, _, _ := unstructuredNestedMap(app.Object, "spec")
@@ -70,6 +77,8 @@ func (h *Handler) GetHealthDashboard(c *gin.Context) {
 			Name:       app.GetName(),
 			Project:    project,
 			Phase:      phase,
+			Reason:     getNestedString(status, "reason"),
+			Message:    getNestedString(status, "message"),
 			Replicas:   replicas,
 			URL:        getNestedString(status, "url"),
 			LastDeploy: getNestedString(status, "lastDeployedAt"),

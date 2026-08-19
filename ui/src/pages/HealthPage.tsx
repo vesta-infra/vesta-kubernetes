@@ -14,7 +14,7 @@ export default function HealthPage() {
 
   return (
     <div className="space-y-6">
-      <h2 className="page-title">Health Dashboard</h2>
+      <p className="text-sm text-text-secondary">Live pod readiness and restart counts across every app.</p>
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -69,6 +69,11 @@ export default function HealthPage() {
                   </td>
                   <td className="px-5 py-3">
                     <PhaseIndicator phase={app.phase} />
+                    {app.reason && (
+                      <p className="text-[10px] font-mono text-status-failed mt-1.5 max-w-[220px] truncate" title={app.message || app.reason}>
+                        {app.reason}
+                      </p>
+                    )}
                   </td>
                   <td className="px-5 py-3">
                     <PodBar ready={app.readyPods} total={app.totalPods} />
@@ -106,8 +111,10 @@ function PhaseIndicator({ phase }: { phase: string }) {
   const styles =
     phase === 'Running'
       ? 'bg-status-running-bg text-status-running border-status-running/10'
-      : phase === 'Failed'
+      : phase === 'Failed' || phase === 'CrashLoopBackOff'
       ? 'bg-status-failed-bg text-status-failed border-status-failed/10'
+      : phase === 'Degraded'
+      ? 'bg-status-degraded-bg text-status-degraded border-status-degraded/10'
       : phase === 'Sleeping'
       ? 'bg-surface-3 text-text-tertiary border-border'
       : 'bg-status-pending-bg text-status-pending border-status-pending/10'

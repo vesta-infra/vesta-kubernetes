@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -606,6 +607,133 @@ func resolveImage(app *vestav1alpha1.VestaApp, envImage *vestav1alpha1.ImageConf
 	return "placeholder:latest"
 }
 
+// Kubernetes requires port names to be unique within a container and within a
+// Service, at most 15 characters, lowercase alphanumeric or '-', and to contain
+// at least one letter. A spec that violates this is rejected on every reconcile,
+// so the app can never converge -- the helpers below repair what they can instead
+// of letting one bad field wedge the whole object. The API rejects these specs at
+// the door; this is for specs already stored from before that check existed.
+
+var portNameInvalidChars = regexp.MustCompile(`[^a-z0-9-]`)
+
+// sanitizePortName coerces a name into a legal port name, falling back to one
+// derived from the port number when nothing usable is left.
+func sanitizePortName(name string, port int32) string {
+	n := portNameInvalidChars.ReplaceAllString(strings.ToLower(name), "-")
+	n = strings.Trim(n, "-")
+	if len(n) > 15 {
+		n = strings.Trim(n[:15], "-")
+	}
+	// Must contain at least one letter, so a purely numeric name is not legal.
+	if n == "" || !strings.ContainsAny(n, "abcdefghijklmnopqrstuvwxyz") {
+		n = fmt.Sprintf("p-%d", port)
+		if len(n) > 15 {
+			n = n[:15]
+		}
+	}
+	return n
+}
+
+// uniquePortName returns a legal name not already in used, suffixing -2, -3, ...
+// until it finds one. The returned name is recorded in used.
+func uniquePortName(name string, port int32, used map[string]bool) string {
+	base := sanitizePortName(name, port)
+	candidate := base
+	for i := 2; used[candidate]; i++ {
+		suffix := fmt.Sprintf("-%d", i)
+		trimmed := base
+		if len(trimmed)+len(suffix) > 15 {
+			trimmed = strings.Trim(base[:15-len(suffix)], "-")
+			if trimmed == "" {
+				trimmed = "p"
+			}
+		}
+		candidate = trimmed + suffix
+	}
+	used[candidate] = true
+	return candidate
+}
+
+// buildContainerPorts maps service ports onto container ports, collapsing entries
+// that resolve to the same container port and protocol (listing one twice adds
+// nothing) and forcing names to be unique. Container port names are informational
+// here -- probes and Service targets both address ports numerically -- so renaming
+// a duplicate changes no behaviour.
+func buildContainerPorts(ports []vestav1alpha1.ServicePort) []corev1.ContainerPort {
+	var out []corev1.ContainerPort
+	seen := map[string]bool{}
+	usedNames := map[string]bool{}
+
+	for _, p := range ports {
+		protocol := corev1.ProtocolTCP
+		if p.Protocol != "" {
+			protocol = corev1.Protocol(p.Protocol)
+		}
+		targetPort := p.TargetPort
+		if targetPort == 0 {
+			targetPort = p.Port
+		}
+		if targetPort <= 0 {
+			continue
+		}
+
+		key := fmt.Sprintf("%d/%s", targetPort, protocol)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		out = append(out, corev1.ContainerPort{
+			Name:          uniquePortName(p.Name, targetPort, usedNames),
+			ContainerPort: targetPort,
+			Protocol:      protocol,
+		})
+	}
+	return out
+}
+
+// buildServicePorts maps spec ports onto Service ports, dropping entries that
+// repeat a port/protocol pair (a Service cannot expose the same port twice) and
+// forcing names to be unique.
+func buildServicePorts(ports []vestav1alpha1.ServicePort) []corev1.ServicePort {
+	var out []corev1.ServicePort
+	seen := map[string]bool{}
+	usedNames := map[string]bool{}
+
+	for _, p := range ports {
+		if p.Port <= 0 {
+			continue
+		}
+		protocol := corev1.ProtocolTCP
+		if p.Protocol != "" {
+			protocol = corev1.Protocol(p.Protocol)
+		}
+
+		key := fmt.Sprintf("%d/%s", p.Port, protocol)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		targetPort := p.TargetPort
+		if targetPort == 0 {
+			targetPort = p.Port
+		}
+
+		sp := corev1.ServicePort{
+			Name:       uniquePortName(p.Name, p.Port, usedNames),
+			Port:       p.Port,
+			TargetPort: intstr.FromInt32(targetPort),
+			Protocol:   protocol,
+		}
+		if p.NodePort > 0 {
+			sp.NodePort = p.NodePort
+		}
+		out = append(out, sp)
+	}
+	return out
+}
+
 func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envResources *vestav1alpha1.ResourceConfig, envName string, envImage *vestav1alpha1.ImageConfig) corev1.Container {
 	image := resolveImage(app, envImage)
 
@@ -625,23 +753,7 @@ func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envReso
 	}
 
 	if app.Spec.Service != nil && len(app.Spec.Service.Ports) > 0 {
-		var containerPorts []corev1.ContainerPort
-		for _, p := range app.Spec.Service.Ports {
-			protocol := corev1.ProtocolTCP
-			if p.Protocol != "" {
-				protocol = corev1.Protocol(p.Protocol)
-			}
-			targetPort := p.TargetPort
-			if targetPort == 0 {
-				targetPort = p.Port
-			}
-			containerPorts = append(containerPorts, corev1.ContainerPort{
-				Name:          p.Name,
-				ContainerPort: targetPort,
-				Protocol:      protocol,
-			})
-		}
-		container.Ports = containerPorts
+		container.Ports = buildContainerPorts(app.Spec.Service.Ports)
 	} else if app.Spec.Runtime.Port > 0 {
 		container.Ports = []corev1.ContainerPort{
 			{
@@ -961,26 +1073,7 @@ func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1a
 	var svcType corev1.ServiceType
 
 	if svcCfg != nil && len(svcCfg.Ports) > 0 {
-		for _, p := range svcCfg.Ports {
-			protocol := corev1.ProtocolTCP
-			if p.Protocol != "" {
-				protocol = corev1.Protocol(p.Protocol)
-			}
-			targetPort := p.TargetPort
-			if targetPort == 0 {
-				targetPort = p.Port
-			}
-			sp := corev1.ServicePort{
-				Name:       p.Name,
-				Port:       p.Port,
-				TargetPort: intstr.FromInt32(targetPort),
-				Protocol:   protocol,
-			}
-			if p.NodePort > 0 {
-				sp.NodePort = p.NodePort
-			}
-			svcPorts = append(svcPorts, sp)
-		}
+		svcPorts = buildServicePorts(svcCfg.Ports)
 		switch svcCfg.Type {
 		case "NodePort":
 			svcType = corev1.ServiceTypeNodePort
@@ -1851,6 +1944,7 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 		hasCrashLoop := false
 		hasImagePullErr := false
 		autoscaleActive := false
+		var issues []appIssue
 
 		for _, target := range targetNamespaces {
 			// Check if any environment has autoscale
@@ -1864,6 +1958,7 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 			if err := r.Get(ctx, deployKey, &deploy); err != nil {
 				continue // Deployment may not exist yet
 			}
+			issues = append(issues, diagnoseDeployment(target.Config.Name, &deploy)...)
 
 			if deploy.Spec.Replicas != nil {
 				totalDesired += *deploy.Spec.Replicas
@@ -1880,6 +1975,8 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 			); err != nil {
 				continue
 			}
+
+			issues = append(issues, diagnosePods(target.Config.Name, podList.Items)...)
 
 			for _, pod := range podList.Items {
 				// Skip pods that belong to cron jobs
@@ -1927,6 +2024,19 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 		default:
 			app.Status.Phase = "Pending"
 		}
+
+		// Record why, not just what. A healthy app carries no reason; anything else
+		// names the specific pod, container, and underlying error.
+		reason, message := summarizeIssues(issues)
+		switch app.Status.Phase {
+		case "Running", "Sleeping":
+			app.Status.Reason = ""
+			app.Status.Message = ""
+		default:
+			app.Status.Reason = reason
+			app.Status.Message = message
+		}
+		r.setReadyCondition(&app, reason, message)
 
 		// Populate scaling status
 		app.Status.Scaling = &vestav1alpha1.ScalingStatus{
@@ -1984,15 +2094,59 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 }
 
 func (r *VestaAppReconciler) updateStatusFailed(ctx context.Context, app *vestav1alpha1.VestaApp, reconcileErr error) (ctrl.Result, error) {
+	reason, message := classifyReconcileError(reconcileErr)
+
 	_ = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var latest vestav1alpha1.VestaApp
 		if err := r.Get(ctx, client.ObjectKeyFromObject(app), &latest); err != nil {
 			return err
 		}
 		latest.Status.Phase = "Failed"
+		// The reconcile error used to be dropped here, leaving the bare word
+		// "Failed" with the cause only in the operator's logs.
+		latest.Status.Reason = reason
+		latest.Status.Message = truncateMessage(message)
+		r.setReadyCondition(&latest, reason, message)
 		return r.Status().Update(ctx, &latest)
 	})
 	return ctrl.Result{}, reconcileErr
+}
+
+// setReadyCondition mirrors the reason onto a standard Ready condition so
+// kubectl wait, kubectl describe, and controller-runtime tooling can read it.
+func (r *VestaAppReconciler) setReadyCondition(app *vestav1alpha1.VestaApp, reason, message string) {
+	ready := metav1.ConditionTrue
+	condReason := "AppReady"
+	condMessage := "All environments are running"
+
+	if reason != "" {
+		ready = metav1.ConditionFalse
+		condReason = reason
+		condMessage = truncateMessage(message)
+	}
+
+	condition := metav1.Condition{
+		Type:               "Ready",
+		Status:             ready,
+		Reason:             condReason,
+		Message:            condMessage,
+		LastTransitionTime: metav1.Now(),
+		ObservedGeneration: app.Generation,
+	}
+
+	for i, existing := range app.Status.Conditions {
+		if existing.Type != condition.Type {
+			continue
+		}
+		// Keep the original transition time when the state itself hasn't changed,
+		// otherwise every reconcile looks like a fresh transition.
+		if existing.Status == condition.Status {
+			condition.LastTransitionTime = existing.LastTransitionTime
+		}
+		app.Status.Conditions[i] = condition
+		return
+	}
+	app.Status.Conditions = append(app.Status.Conditions, condition)
 }
 
 // isRetriable returns true for errors that are safe to retry (conflicts and already-exists)

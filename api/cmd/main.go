@@ -177,6 +177,7 @@ func main() {
 		auth.DELETE("/projects/:projectId/members/:userId", middleware.RequireRole("admin"), h.RemoveProjectMember)
 
 		// Logs and monitoring
+		auth.GET("/apps/:appId/diagnostics", middleware.RequireScope("read"), h.GetAppDiagnostics)
 		auth.GET("/apps/:appId/logs", h.StreamLogs)
 		auth.GET("/apps/:appId/logs/ws", h.StreamLogsWS)
 		auth.GET("/apps/:appId/exec", dv, h.ExecWS)

@@ -264,9 +264,20 @@ type CustomConfig struct {
 
 type VestaAppStatus struct {
 	// +kubebuilder:validation:Enum=Pending;Building;Deploying;Running;Degraded;Failed;Sleeping;CrashLoopBackOff
-	Phase       string `json:"phase,omitempty"`
-	BuildStatus string `json:"buildStatus,omitempty"`
-	URL         string `json:"url,omitempty"`
+	Phase string `json:"phase,omitempty"`
+
+	// Reason is a short CamelCase token naming why the app is in its current
+	// phase (ImagePullBackOff, CrashLoopBackOff, Unschedulable, InvalidSpec, ...).
+	// Empty while the app is healthy.
+	Reason string `json:"reason,omitempty"`
+
+	// Message is a human-readable explanation of Reason, including the specific
+	// pod, container, and underlying error where known. Without this a failed app
+	// showed only "Failed" and the cause lived in operator logs.
+	Message string `json:"message,omitempty"`
+
+	BuildStatus  string `json:"buildStatus,omitempty"`
+	URL          string `json:"url,omitempty"`
 	CurrentImage string `json:"currentImage,omitempty"`
 
 	LastDeployedAt string `json:"lastDeployedAt,omitempty"`

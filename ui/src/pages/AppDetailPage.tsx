@@ -6,6 +6,7 @@ import { api } from '../lib/api'
 import { useUserRole, useIsProjectOwner } from '../lib/useRole'
 import { parseEnvContent, secretKeyError, truncateSecretKey } from '../lib/secretKeys'
 import RevealableInput from '../components/RevealableInput'
+import AppDiagnostics from '../components/AppDiagnostics'
 
 export default function AppDetailPage() {
   const { appId } = useParams<{ appId: string }>()
@@ -308,6 +309,8 @@ export default function AppDetailPage() {
       {activeTab === 'overview' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2 space-y-4">
+            <AppDiagnostics appId={appId!} phase={phase} />
+
             <section className="card p-5">
               <h3 className="section-title mb-4">Status</h3>
               <div className="grid grid-cols-2 gap-x-6 gap-y-4">
@@ -979,6 +982,33 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     }
     return []
   })
+
+  // Kubernetes rejects a Deployment whose container ports repeat a name, and it
+  // does so in the operator's reconcile loop -- far from this form. Catch it here.
+  const servicePortErrors = useMemo(() => {
+    const nameAt = new Map<string, number>()
+    const portAt = new Map<string, number>()
+    return servicePorts.map((sp, i) => {
+      const name = sp.name.trim()
+      if (name) {
+        if (nameAt.has(name)) return `Duplicate name: already used by port ${nameAt.get(name)! + 1}`
+        if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name)) return 'Lowercase letters, numbers and - only'
+        if (name.length > 15) return 'Max 15 characters'
+        if (!/[a-z]/.test(name)) return 'Must contain a letter'
+        nameAt.set(name, i)
+      } else if (servicePorts.length > 1) {
+        return 'Name is required when there is more than one port'
+      }
+      if (sp.port) {
+        const key = `${sp.port}/${sp.protocol || 'TCP'}`
+        if (portAt.has(key)) return `Port ${sp.port} is already exposed by port ${portAt.get(key)! + 1}`
+        portAt.set(key, i)
+      }
+      return ''
+    })
+  }, [servicePorts])
+  const hasServicePortErrors = servicePortErrors.some(Boolean)
+
   const useServiceConfig = servicePorts.length > 0
 
   // Health check config
@@ -1401,8 +1431,16 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                 </thead>
                 <tbody>
                   {servicePorts.map((sp, i) => (
-                    <tr key={i} className="border-t border-border">
-                      <td className="px-2 py-1"><input value={sp.name} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, name: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="http" /></td>
+                    <tr key={i} className="border-t border-border align-top">
+                      <td className="px-2 py-1">
+                        <input
+                          value={sp.name}
+                          onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, name: e.target.value }; setServicePorts(u) }}
+                          className={`input-field text-xs ${servicePortErrors[i] ? '!border-status-failed/60 focus:!border-status-failed/60 focus:!ring-status-failed/10' : ''}`}
+                          placeholder="http"
+                          aria-invalid={!!servicePortErrors[i]}
+                        />
+                      </td>
                       <td className="px-2 py-1"><input type="number" value={sp.port} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, port: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="80" /></td>
                       <td className="px-2 py-1"><input type="number" value={sp.targetPort} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, targetPort: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="3000" /></td>
                       <td className="px-2 py-1">
@@ -1420,11 +1458,31 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                         )}
                       </td>
                     </tr>
-                  ))}
+                  )).flatMap((row, i) => servicePortErrors[i]
+                    ? [row, (
+                        <tr key={`err-${i}`}>
+                          <td colSpan={serviceType === 'NodePort' ? 6 : 5} className="px-3 pb-2 pt-0">
+                            <span className="text-[11px] text-status-failed">{servicePortErrors[i]}</span>
+                          </td>
+                        </tr>
+                      )]
+                    : [row])}
                 </tbody>
               </table>
             </div>
-            <button type="button" onClick={() => setServicePorts([...servicePorts, { name: '', port: '', targetPort: '', protocol: 'TCP', nodePort: '' }])} className="btn-ghost text-xs">+ Add Port</button>
+            <button
+              type="button"
+              onClick={() => {
+                // Suggest a free name so adding a port doesn't invite a duplicate.
+                const taken = new Set(servicePorts.map(p => p.name.trim()))
+                let suggested = 'port-2'
+                for (let n = servicePorts.length + 1; taken.has(suggested); n++) suggested = `port-${n}`
+                setServicePorts([...servicePorts, { name: suggested, port: '', targetPort: '', protocol: 'TCP', nodePort: '' }])
+              }}
+              className="btn-ghost text-xs"
+            >
+              + Add Port
+            </button>
           </>
         )}
       </div>
@@ -1983,11 +2041,14 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         ))}
       </div>
 
-      <div className="flex gap-3 pt-1">
-        <button type="submit" disabled={mutation.isPending} className="btn-primary">
+      <div className="flex items-center gap-3 pt-1">
+        <button type="submit" disabled={mutation.isPending || (useServiceConfig && hasServicePortErrors)} className="btn-primary">
           {mutation.isPending ? 'Saving...' : 'Save Changes'}
         </button>
         <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
+        {useServiceConfig && hasServicePortErrors && (
+          <span className="text-xs text-status-failed">Fix the service port errors above to save.</span>
+        )}
       </div>
       {mutation.isError && (
         <p className="text-status-failed text-xs">{(mutation.error as Error).message}</p>
