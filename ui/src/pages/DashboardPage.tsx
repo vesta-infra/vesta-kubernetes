@@ -2,15 +2,26 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 
-type Phase = 'Running' | 'Pending' | 'Failed' | 'Degraded' | 'Sleeping'
+type Phase = 'Running' | 'Deploying' | 'Pending' | 'Degraded' | 'CrashLoopBackOff' | 'Failed' | 'Sleeping'
 
-const PHASE_ORDER: Phase[] = ['Running', 'Pending', 'Degraded', 'Failed', 'Sleeping']
+// Every phase the operator can report. A phase missing here rendered as "Pending",
+// which quietly mislabelled crash-looping apps as merely starting up.
+const PHASE_ORDER: Phase[] = ['Running', 'Deploying', 'Pending', 'Degraded', 'CrashLoopBackOff', 'Failed', 'Sleeping']
+
+// Short labels keep the legend readable; the phase itself stays the key.
+const PHASE_LABELS: Record<string, string> = {
+  CrashLoopBackOff: 'Crash loop',
+}
 
 // Status colours are reserved (never used as series hues) and always ship with a
 // written label + count in the legend, so state never reads by colour alone.
 const PHASE_TOKENS: Record<string, { fill: string; text: string; badge: string }> = {
   Running: { fill: 'bg-status-running', text: 'text-status-running', badge: 'bg-status-running-bg text-status-running border-status-running/20' },
+  Deploying: { fill: 'bg-status-pending', text: 'text-status-pending', badge: 'bg-status-pending-bg text-status-pending border-status-pending/20' },
+  Building: { fill: 'bg-status-pending', text: 'text-status-pending', badge: 'bg-status-pending-bg text-status-pending border-status-pending/20' },
   Pending: { fill: 'bg-status-pending', text: 'text-status-pending', badge: 'bg-status-pending-bg text-status-pending border-status-pending/20' },
+  CrashLoopBackOff: { fill: 'bg-status-failed', text: 'text-status-failed', badge: 'bg-status-failed-bg text-status-failed border-status-failed/20' },
+  Stopped: { fill: 'bg-status-sleeping', text: 'text-status-sleeping', badge: 'bg-status-sleeping-bg text-status-sleeping border-status-sleeping/20' },
   Degraded: { fill: 'bg-status-degraded', text: 'text-status-degraded', badge: 'bg-status-degraded-bg text-status-degraded border-status-degraded/20' },
   Failed: { fill: 'bg-status-failed', text: 'text-status-failed', badge: 'bg-status-failed-bg text-status-failed border-status-failed/20' },
   Sleeping: { fill: 'bg-status-sleeping', text: 'text-status-sleeping', badge: 'bg-status-sleeping-bg text-status-sleeping border-status-sleeping/20' },
@@ -42,7 +53,7 @@ export default function DashboardPage() {
 
   const totalApps = apps?.total ?? appItems.length
   const running = counts.Running ?? 0
-  const attention = (counts.Failed ?? 0) + (counts.Degraded ?? 0)
+  const attention = (counts.Failed ?? 0) + (counts.Degraded ?? 0) + (counts.CrashLoopBackOff ?? 0)
   const tracked = PHASE_ORDER.reduce((sum, p) => sum + (counts[p] ?? 0), 0)
 
   const readyPods = healthApps.reduce((sum, a) => sum + (a.readyPods ?? 0), 0)
@@ -51,7 +62,7 @@ export default function DashboardPage() {
 
   const attentionApps = appItems
     .map((a) => ({ ...a, phase: a.status?.phase || healthById.get(a.id)?.phase || 'Pending' }))
-    .filter((a) => a.phase === 'Failed' || a.phase === 'Degraded')
+    .filter((a) => a.phase === 'Failed' || a.phase === 'Degraded' || a.phase === 'CrashLoopBackOff')
 
   return (
     <div className="space-y-6">
@@ -190,7 +201,7 @@ function FleetOverview({
                 {segments.map((phase) => (
                   <div
                     key={phase}
-                    title={`${phase}: ${counts[phase]}`}
+                    title={`${PHASE_LABELS[phase] ?? phase}: ${counts[phase]}`}
                     className={`h-full rounded-[2px] ${PHASE_TOKENS[phase].fill} transition-all duration-700 ease-out`}
                     style={{ width: `${((counts[phase] ?? 0) / tracked) * 100}%` }}
                   />
@@ -204,7 +215,7 @@ function FleetOverview({
               {PHASE_ORDER.map((phase) => (
                 <span key={phase} className="flex items-center gap-2">
                   <span className={`w-1.5 h-1.5 rounded-full ${PHASE_TOKENS[phase].fill} ${(counts[phase] ?? 0) === 0 ? 'opacity-30' : ''}`} />
-                  <span className={`text-[11px] ${(counts[phase] ?? 0) === 0 ? 'text-text-quaternary' : 'text-text-secondary'}`}>{phase}</span>
+                  <span className={`text-[11px] ${(counts[phase] ?? 0) === 0 ? 'text-text-quaternary' : 'text-text-secondary'}`}>{PHASE_LABELS[phase] ?? phase}</span>
                   <span className={`text-[11px] font-mono tabular ${(counts[phase] ?? 0) === 0 ? 'text-text-quaternary' : 'text-text-primary'}`}>
                     {counts[phase] ?? 0}
                   </span>
@@ -332,6 +343,9 @@ function StatTile({
 
 function AppRow({ app, health, index }: { app: any; health?: any; index: number }) {
   const phase = (app.status?.phase || health?.phase || 'Pending') as string
+  // A bare "Failed" says nothing; the operator now records why.
+  const reason = app.status?.reason as string | undefined
+  const message = app.status?.message as string | undefined
   const ready = health?.readyPods
   const total = health?.totalPods
   const restarts = health?.restarts ?? 0
@@ -353,6 +367,11 @@ function AppRow({ app, health, index }: { app: any; health?: any; index: number 
         <div className="flex items-center gap-2 mt-1">
           <span className="text-[11px] font-mono text-text-tertiary truncate">{app.projectName || app.project || health?.project || '—'}</span>
           {health?.sleepMode && <span className="chip">sleep</span>}
+          {reason && (
+            <span className="text-[11px] font-mono text-status-failed truncate" title={message || reason}>
+              {reason}
+            </span>
+          )}
         </div>
       </div>
 
@@ -395,9 +414,9 @@ function StatusBadge({ phase }: { phase?: string }) {
   const p = phase && PHASE_TOKENS[phase] ? phase : 'Pending'
   const tokens = PHASE_TOKENS[p]
   return (
-    <span className={`status-badge border shrink-0 w-[86px] justify-center ${tokens.badge}`}>
+    <span className={`status-badge border shrink-0 w-[104px] justify-center whitespace-nowrap ${tokens.badge}`} title={p}>
       <span className={`inline-block w-1.5 h-1.5 rounded-full bg-current ${p === 'Running' ? 'animate-glow-pulse' : ''}`} />
-      {p}
+      {PHASE_LABELS[p] ?? p}
     </span>
   )
 }

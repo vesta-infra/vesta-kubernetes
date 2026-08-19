@@ -489,6 +489,12 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  // Diagnostics -- why an app is not healthy
+  getAppDiagnostics: (appId: string, environment?: string) => {
+    const qs = environment ? `?environment=${encodeURIComponent(environment)}` : ''
+    return request<any>(`/apps/${appId}/diagnostics${qs}`)
+  },
+
   // Health Dashboard
   getHealthDashboard: (params?: { projectId?: string; teamId?: string }) => {
     const qs = new URLSearchParams()

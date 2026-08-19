@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -155,6 +156,39 @@ func (c *Client) ListPods(ctx context.Context, namespace, labelSelector string) 
 	}
 	return list.Items, nil
 }
+
+// ListEvents returns events in a namespace, newest first. Warning events are the
+// cluster's own explanation of why a pod won't start (failed pulls, failed mounts,
+// scheduling failures), which is exactly what a bare "Failed" phase hides.
+func (c *Client) ListEvents(ctx context.Context, namespace string) ([]corev1.Event, error) {
+	list, err := c.Clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	events := list.Items
+	sort.Slice(events, func(i, j int) bool {
+		return eventTime(events[i]).After(eventTime(events[j]))
+	})
+	return events, nil
+}
+
+// eventTime prefers the timestamps that are actually populated: series events set
+// LastObservedTime, older ones LastTimestamp, and some only EventTime.
+func eventTime(e corev1.Event) time.Time {
+	if e.Series != nil && !e.Series.LastObservedTime.IsZero() {
+		return e.Series.LastObservedTime.Time
+	}
+	if !e.LastTimestamp.IsZero() {
+		return e.LastTimestamp.Time
+	}
+	if !e.EventTime.IsZero() {
+		return e.EventTime.Time
+	}
+	return e.CreationTimestamp.Time
+}
+
+// EventTime exposes the resolved timestamp for callers building API responses.
+func EventTime(e corev1.Event) time.Time { return eventTime(e) }
 
 // GetPodLogs returns the log output for a pod/container.
 func (c *Client) GetPodLogs(ctx context.Context, namespace, podName, container string, tailLines int64, previous bool) (string, error) {

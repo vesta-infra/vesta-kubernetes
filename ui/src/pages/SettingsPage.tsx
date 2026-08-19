@@ -27,7 +27,7 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-display italic text-text-primary">Settings</h2>
+      <p className="text-sm text-text-secondary">Manage your profile, teams, access, and integrations.</p>
 
       <div className="flex border-b border-border">
         {tabs.map((tab) => (
@@ -92,6 +92,20 @@ export default function SettingsPage() {
   )
 }
 
+// Settings sections put their heading and a one-line explanation in a left column
+// so the form isn't a narrow ribbon in a very wide card.
+function SettingsSection({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
+  return (
+    <section className="card p-6 grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-5 lg:gap-10">
+      <div>
+        <h3 className="section-title">{title}</h3>
+        {description && <p className="text-xs text-text-tertiary leading-relaxed mt-2">{description}</p>}
+      </div>
+      <div className="min-w-0">{children}</div>
+    </section>
+  )
+}
+
 function ProfileSection() {
   const queryClient = useQueryClient()
   const { data: user, isLoading } = useQuery({
@@ -130,11 +144,10 @@ function ProfileSection() {
   if (isLoading) return <Spinner />
 
   return (
-    <section className="card p-6">
-      <h3 className="section-title mb-5">Profile</h3>
+    <SettingsSection title="Profile" description="How you appear across the platform. Your username can't be changed.">
       <form
         onSubmit={(e) => { e.preventDefault(); mutation.mutate() }}
-        className="space-y-4 max-w-lg"
+        className="space-y-4 max-w-xl"
       >
         <div>
           <label className="label">Username</label>
@@ -168,7 +181,7 @@ function ProfileSection() {
           )}
         </div>
       </form>
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -210,9 +223,8 @@ function ChangePasswordSection() {
   }
 
   return (
-    <section className="card p-6">
-      <h3 className="section-title mb-5">Change Password</h3>
-      <form onSubmit={handleSubmit} className="space-y-4 max-w-lg">
+    <SettingsSection title="Change Password" description="Use at least 8 characters. You'll stay signed in on this device.">
+      <form onSubmit={handleSubmit} className="space-y-4 max-w-xl">
         <div>
           <label className="label">Current Password</label>
           <input
@@ -256,7 +268,7 @@ function ChangePasswordSection() {
           {success && <span className="text-xs text-status-running">Password changed</span>}
         </div>
       </form>
-    </section>
+    </SettingsSection>
   )
 }
 
