@@ -86,14 +86,24 @@ func (h *Handler) StreamLogs(c *gin.Context) {
 		Restarts  int32  `json:"restarts"`
 		Logs      string `json:"logs"`
 		Container string `json:"container"`
+		StartedAt string `json:"startedAt,omitempty"`
+		Age       string `json:"age,omitempty"`
 	}
 
+	now := time.Now()
 	results := make([]podLogEntry, 0, len(pods))
 	for _, pod := range pods {
 		podPhase := string(pod.Status.Phase)
 		restarts := int32(0)
 		if len(pod.Status.ContainerStatuses) > 0 {
 			restarts = pod.Status.ContainerStatuses[0].RestartCount
+		}
+
+		startedAt := ""
+		age := ""
+		if pod.Status.StartTime != nil {
+			startedAt = pod.Status.StartTime.Format("2006-01-02T15:04:05Z")
+			age = formatDuration(now.Sub(pod.Status.StartTime.Time))
 		}
 
 		targetContainer := container
@@ -112,6 +122,8 @@ func (h *Handler) StreamLogs(c *gin.Context) {
 			Restarts:  restarts,
 			Logs:      logs,
 			Container: targetContainer,
+			StartedAt: startedAt,
+			Age:       age,
 		})
 	}
 
