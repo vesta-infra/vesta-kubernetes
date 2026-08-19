@@ -2779,6 +2779,21 @@ function CloneAppModal({ appName, isPending, error, onClone, onClose }: {
 
 const POD_LOG_COLORS = ['#56d4dd', '#e5c07b', '#98c379', '#c678dd', '#d19a66', '#61afef']
 
+function PodAge({ age, startedAt }: { age?: string; startedAt?: string }) {
+  if (!age) return null
+  return (
+    <span
+      className="flex items-center gap-1 text-[11px] text-text-tertiary"
+      title={startedAt ? `Started ${new Date(startedAt).toLocaleString()}` : undefined}
+    >
+      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      <span className="font-mono">{age}</span>
+    </span>
+  )
+}
+
 function AppLogs({ appId, environments, selectedEnv, onEnvChange }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
   const env = selectedEnv || environments[0] || ''
   const setEnv = onEnvChange
@@ -2957,7 +2972,9 @@ function AppLogs({ appId, environments, selectedEnv, onEnvChange }: { appId: str
                   <div key={pod.pod} className="flex items-center gap-1.5">
                     <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: POD_LOG_COLORS[i % POD_LOG_COLORS.length] }} />
                     <span className="text-[11px] font-mono text-text-secondary">{pod.pod.split('-').slice(-2).join('-')}</span>
-                    <span className="text-[10px] text-text-tertiary">({pod.status})</span>
+                    <span className="text-[10px] text-text-tertiary" title={pod.startedAt ? `Started ${new Date(pod.startedAt).toLocaleString()}` : undefined}>
+                      ({pod.status}{pod.age ? ` · ${pod.age}` : ''})
+                    </span>
                   </div>
                 ))}
               </div>
@@ -2989,6 +3006,7 @@ function AppLogs({ appId, environments, selectedEnv, onEnvChange }: { appId: str
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-[11px] text-text-tertiary">{pod.status}</span>
+                  <PodAge age={pod.age} startedAt={pod.startedAt} />
                   {pod.restarts > 0 && (
                     <span className="text-[11px] text-status-failed">{pod.restarts} restart{pod.restarts !== 1 ? 's' : ''}</span>
                   )}

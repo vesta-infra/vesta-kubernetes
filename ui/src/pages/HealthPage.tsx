@@ -14,7 +14,7 @@ export default function HealthPage() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-display italic text-text-primary">Health Dashboard</h2>
+      <h2 className="page-title">Health Dashboard</h2>
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -44,7 +44,7 @@ export default function HealthPage() {
         <div className="card overflow-hidden">
           <table className="w-full">
             <thead>
-              <tr className="border-b border-border bg-surface-1">
+              <tr className="border-b border-border bg-surface-1/60">
                 <th className="text-left px-5 py-3 text-[11px] font-mono text-text-tertiary uppercase tracking-wider">App</th>
                 <th className="text-left px-5 py-3 text-[11px] font-mono text-text-tertiary uppercase tracking-wider">Project</th>
                 <th className="text-left px-5 py-3 text-[11px] font-mono text-text-tertiary uppercase tracking-wider">Status</th>
@@ -95,9 +95,9 @@ export default function HealthPage() {
 
 function SummaryCard({ label, value, color }: { label: string; value: number; color: string }) {
   return (
-    <div className="card px-5 py-4">
-      <p className="text-[10px] font-mono text-text-tertiary uppercase tracking-[0.15em] mb-2">{label}</p>
-      <p className={`text-3xl font-display italic ${color}`}>{value}</p>
+    <div className="card top-sheen px-5 py-5">
+      <p className="kpi-label mb-3">{label}</p>
+      <p className={`text-[28px] leading-none font-semibold tracking-[-0.02em] ${color}`}>{value}</p>
     </div>
   )
 }
@@ -124,14 +124,14 @@ function PodBar({ ready, total }: { ready: number; total: number }) {
   if (total === 0) return <span className="text-xs text-text-tertiary font-mono">0/0</span>
 
   const pct = Math.round((ready / total) * 100)
-  const color = pct === 100 ? 'bg-status-running' : pct > 50 ? 'bg-status-pending' : 'bg-status-failed'
+  const color = pct === 100 ? 'bg-status-running' : ready === 0 ? 'bg-status-failed' : 'bg-status-pending'
 
   return (
     <div className="flex items-center gap-2">
-      <div className="w-16 h-1.5 rounded-full bg-surface-3 overflow-hidden">
+      <div className="w-16 h-1.5 rounded-full bg-surface-4/80 overflow-hidden">
         <div className={`h-full rounded-full ${color} transition-all`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="text-xs font-mono text-text-secondary">{ready}/{total}</span>
+      <span className="text-xs font-mono tabular text-text-secondary">{ready}/{total}</span>
     </div>
   )
 }
