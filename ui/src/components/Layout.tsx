@@ -115,9 +115,9 @@ export default function Layout() {
   )?.label || 'Vesta'
 
   return (
-    <div className="min-h-screen flex bg-surface-0">
+    <div className="h-screen flex bg-surface-0 overflow-hidden">
       {/* Sidebar */}
-      <aside className="w-[228px] bg-surface-1/60 backdrop-blur-xl border-r border-border/70 flex flex-col shrink-0 relative">
+      <aside className="w-[228px] h-full bg-surface-1/60 backdrop-blur-xl border-r border-border/70 flex flex-col shrink-0 relative overflow-y-auto">
         {/* Ambient sidebar glow */}
         <div className="absolute top-0 left-0 w-full h-32 bg-gradient-to-b from-accent/[0.025] to-transparent pointer-events-none" />
 
@@ -135,7 +135,7 @@ export default function Layout() {
         </div>
 
         {/* Main nav */}
-        <nav className="flex-1 px-3 py-5 space-y-0.5 relative">
+        <nav className="flex-1 min-h-0 px-3 py-5 space-y-0.5 relative">
           <p className="px-3 pb-2 text-[9px] font-mono uppercase tracking-[0.2em] text-text-quaternary">Platform</p>
           {mainNavItems.filter(item => !(role === 'viewer' && (item.to === '/secrets'))).map((item) => (
             <NavLink
@@ -224,12 +224,12 @@ export default function Layout() {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto relative">
+      <main className="flex-1 h-full overflow-y-auto relative">
         {/* Ambient background effects */}
         <div className="fixed top-0 right-0 w-[620px] h-[620px] bg-gradient-radial from-accent/[0.025] via-transparent to-transparent pointer-events-none" aria-hidden="true" />
         <div className="fixed bottom-0 left-1/3 w-[520px] h-[420px] bg-gradient-radial from-status-running/[0.015] via-transparent to-transparent pointer-events-none" aria-hidden="true" />
 
-        <header className="sticky top-0 z-10 bg-surface-0/80 backdrop-blur-2xl border-b border-border/60 px-8 py-5">
+        <header className="sticky top-0 z-10 bg-surface-0/90 backdrop-blur-2xl border-b border-border/60 px-8 py-5">
           <div className="flex items-center justify-between max-w-6xl mx-auto">
             <h2 className="page-title">{pageTitle}</h2>
             <div className="flex items-center gap-2">

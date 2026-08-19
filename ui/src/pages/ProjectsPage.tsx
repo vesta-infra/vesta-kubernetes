@@ -49,62 +49,102 @@ export default function ProjectsPage() {
         </div>
       )}
 
-      <div className="space-y-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
         {data?.items?.map((p: any, i: number) => (
-          <Link
+          <ProjectCard
             key={p.id}
-            to={`/projects/${p.id}`}
-            className="card-hover flex items-center justify-between px-5 py-4 group block relative overflow-hidden"
-            style={{ animationDelay: `${i * 0.03}s` }}
-          >
-            <div className="absolute left-0 top-0 bottom-0 w-px bg-gradient-to-b from-transparent via-accent/0 to-transparent group-hover:via-accent/30 transition-all duration-500" />
-            <div className="flex items-center gap-4">
-              <div className="w-10 h-10 rounded-lg bg-accent/[0.06] border border-accent/10 flex items-center justify-center group-hover:border-accent/25 group-hover:bg-accent/10 transition-all duration-300">
-                <svg className="w-4 h-4 text-accent/70 group-hover:text-accent transition-colors duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-text-primary group-hover:text-accent transition-colors duration-200">
-                  {p.displayName || p.name}
-                </p>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="text-[11px] text-text-tertiary font-mono">{p.name}</span>
-                  {p.teamName && (
-                    <span className="text-[10px] font-mono bg-surface-3/80 text-text-tertiary px-2 py-0.5 rounded border border-border/50">
-                      {p.teamName}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center gap-5">
-              <div className="text-right">
-                <span className="text-[11px] font-mono text-text-tertiary block">
-                  {p.environmentCount ?? 0} env{(p.environmentCount ?? 0) !== 1 ? 's' : ''}
-                </span>
-                <span className="text-[11px] font-mono text-text-tertiary block mt-0.5">
-                  {p.appCount ?? 0} app{(p.appCount ?? 0) !== 1 ? 's' : ''}
-                </span>
-              </div>
-              {role !== 'viewer' && (
-              <button
-                onClick={(e) => {
-                  e.preventDefault()
-                  e.stopPropagation()
-                  if (confirm(`Delete project "${p.name}"? This will remove all environments and apps.`))
-                    deleteMutation.mutate(p.id)
-                }}
-                className="text-[11px] text-text-tertiary hover:text-status-failed transition-all duration-200 opacity-0 group-hover:opacity-100"
-              >
-                Delete
-              </button>
-              )}
-            </div>
-          </Link>
+            project={p}
+            index={i}
+            canDelete={role !== 'viewer'}
+            onDelete={() => {
+              if (confirm(`Delete project "${p.name}"? This will remove all environments and apps.`))
+                deleteMutation.mutate(p.id)
+            }}
+          />
         ))}
       </div>
     </div>
+  )
+}
+
+function formatAge(dateStr?: string): string {
+  if (!dateStr) return ''
+  const t = new Date(dateStr).getTime()
+  if (Number.isNaN(t)) return ''
+  const days = Math.floor((Date.now() - t) / 86400000)
+  if (days < 1) return 'today'
+  if (days === 1) return 'yesterday'
+  if (days < 30) return `${days}d ago`
+  const months = Math.floor(days / 30)
+  if (months < 12) return `${months}mo ago`
+  return `${Math.floor(days / 365)}y ago`
+}
+
+function ProjectCard({ project: p, index, canDelete, onDelete }: { project: any; index: number; canDelete: boolean; onDelete: () => void }) {
+  const age = formatAge(p.createdAt)
+
+  return (
+    <Link
+      to={`/projects/${p.id}`}
+      className="card-hover top-sheen group relative flex flex-col p-5 h-full animate-slide-up"
+      style={{ animationDelay: `${index * 0.04}s` }}
+    >
+      <div className="flex items-start gap-3">
+        <div className="w-10 h-10 rounded-lg bg-accent/[0.06] border border-accent/10 flex items-center justify-center shrink-0 group-hover:border-accent/25 group-hover:bg-accent/10 transition-all duration-300">
+          <svg className="w-4 h-4 text-accent/70 group-hover:text-accent transition-colors duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-text-primary truncate group-hover:text-accent transition-colors duration-200">
+            {p.displayName || p.name}
+          </p>
+          {(p.displayName && p.displayName !== p.name) && (
+            <p className="text-[11px] font-mono text-text-tertiary truncate mt-0.5">{p.name}</p>
+          )}
+        </div>
+        {canDelete && (
+          <button
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete() }}
+            title={`Delete ${p.name}`}
+            aria-label={`Delete ${p.name}`}
+            className="shrink-0 p-1.5 -m-1 rounded-md text-text-quaternary opacity-0 group-hover:opacity-100
+                       hover:text-status-failed hover:bg-status-failed/10 transition-all duration-200"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14" />
+            </svg>
+          </button>
+        )}
+      </div>
+
+      {(p.teamName || p.spec?.team) && (
+        <div className="mt-3">
+          <span className="chip">{p.teamName || p.spec.team}</span>
+        </div>
+      )}
+
+      {/* Counts carry the card's weight, so they get figure treatment. */}
+      <div className="mt-auto grid grid-cols-2 gap-3 pt-5 mt-5 border-t border-border/60">
+        <div>
+          <p className="kpi-label mb-1.5">Environments</p>
+          <p className="text-lg font-semibold tabular text-text-primary">{p.environmentCount ?? 0}</p>
+        </div>
+        <div>
+          <p className="kpi-label mb-1.5">Apps</p>
+          <p className="text-lg font-semibold tabular text-text-primary">{p.appCount ?? 0}</p>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between mt-4 pt-3 border-t border-border/40">
+        <span className="text-[10px] font-mono text-text-quaternary" title={p.createdAt ? new Date(p.createdAt).toLocaleString() : undefined}>
+          {age ? `created ${age}` : ''}
+        </span>
+        <svg className="w-3.5 h-3.5 text-text-quaternary group-hover:text-accent group-hover:translate-x-0.5 transition-all duration-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+        </svg>
+      </div>
+    </Link>
   )
 }
 
