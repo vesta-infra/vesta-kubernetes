@@ -413,7 +413,23 @@ export default function AppDetailPage() {
                 {appEnvironments.map((env: string) => {
                   const namespace = `${projectId}-${env}`
                   const svcName = app.name || appId
-                  const port = app.spec?.runtime?.port || app.spec?.service?.ports?.[0]?.port || ''
+                  // Callers reach the Service on its `port`, never the container's
+                  // targetPort: multi-port apps expose spec.service.ports (which an
+                  // environment may override), and legacy single-port apps are always
+                  // published on 80 regardless of runtime.port.
+                  const envCfg = rawEnvs.find((e: any) => typeof e !== 'string' && e.name === env)
+                  const specPorts: any[] = envCfg?.service?.ports?.length
+                    ? envCfg.service.ports
+                    : (app.spec?.service?.ports || [])
+                  const svcPorts: { name?: string; port: number }[] = specPorts.length > 0
+                    ? specPorts
+                        .filter((p: any) => p.port > 0)
+                        .filter((p: any, i: number, arr: any[]) => arr.findIndex((o: any) => o.port === p.port) === i)
+                        .map((p: any) => ({ name: p.name, port: p.port }))
+                    : app.spec?.runtime?.port ? [{ port: 80 }] : []
+                  const dnsRows = svcPorts.length > 0
+                    ? svcPorts.map(p => ({ key: `${p.port}`, name: svcPorts.length > 1 ? p.name : '', value: `${svcName}.${namespace}.svc.cluster.local:${p.port}` }))
+                    : [{ key: 'default', name: '', value: `${svcName}.${namespace}.svc.cluster.local` }]
                   return (
                     <div key={env} className="bg-surface-1 border border-border rounded-lg p-3">
                       <p className="text-xs font-medium text-text-secondary mb-2">{env}</p>
@@ -426,10 +442,13 @@ export default function AppDetailPage() {
                           <span className="text-[11px] text-text-tertiary w-28 flex-shrink-0">Namespace DNS</span>
                           <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all">{svcName}.{namespace}</code>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-[11px] text-text-tertiary w-28 flex-shrink-0">Cluster DNS</span>
-                          <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all">{svcName}.{namespace}.svc.cluster.local{port ? `:${port}` : ''}</code>
-                        </div>
+                        {dnsRows.map((row, i) => (
+                          <div key={row.key} className="flex items-center gap-2">
+                            <span className="text-[11px] text-text-tertiary w-28 flex-shrink-0">{i === 0 ? 'Cluster DNS' : ''}</span>
+                            <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all">{row.value}</code>
+                            {row.name && <span className="text-[11px] text-text-tertiary font-mono">{row.name}</span>}
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )
