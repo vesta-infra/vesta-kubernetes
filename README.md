@@ -101,9 +101,9 @@ helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
    --reuse-values \
-  --set operator.image.tag=0.6.1 \
-  --set api.image.tag=0.6.1 \
-  --set ui.image.tag=0.6.1
+  --set operator.image.tag=0.6.2 \
+  --set api.image.tag=0.6.2 \
+  --set ui.image.tag=0.6.2
 ```
 
 
@@ -159,6 +159,52 @@ curl -X POST https://<api-host>/api/v1/apps/my-app/deploy \
 
 ```bash
 vesta deploy my-app --tag v1.2.3 --env production
+```
+
+## Installing the CLI
+
+### Install script (macOS & Linux)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/install.sh | sh
+```
+
+The script picks the right build for your OS/arch, verifies the SHA-256 checksum, and
+installs to `/usr/local/bin`. Override either with environment variables:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/install.sh \
+  | VESTA_VERSION=0.6.2 VESTA_INSTALL_DIR="$HOME/.local/bin" sh
+```
+
+### Manual download
+
+Grab an archive from the [releases page](https://github.com/vesta-infra/vesta-kubernetes/releases)
+-- `vesta_<version>_<os>_<arch>.tar.gz` for macOS/Linux, `.zip` for Windows -- verify it
+against `checksums.txt`, extract, and put `vesta` on your `PATH`.
+
+### From source
+
+```bash
+make cli-install                          # builds and installs to /usr/local/bin
+make cli-install CLI_INSTALL_DIR=~/.local/bin
+```
+
+Confirm the install:
+
+```bash
+vesta version
+```
+
+### Cutting a CLI release
+
+Pushing a `v*` tag runs [`.github/workflows/release-cli.yaml`](.github/workflows/release-cli.yaml),
+which cross-compiles the CLI for darwin/linux (amd64 + arm64) and windows/amd64 and
+attaches the archives plus `checksums.txt` to the GitHub release. To produce the same
+artifacts locally:
+
+```bash
+make cli-release            # writes dist/cli/
 ```
 
 ## Project Structure
