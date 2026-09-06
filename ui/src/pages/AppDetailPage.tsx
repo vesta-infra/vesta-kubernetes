@@ -5,6 +5,7 @@ import { XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'rec
 import { api } from '../lib/api'
 import { useUserRole, useIsProjectOwner } from '../lib/useRole'
 import { parseEnvContent, secretKeyError, truncateSecretKey } from '../lib/secretKeys'
+import CopyEnvButton from '../components/CopyEnvButton'
 import RevealableInput from '../components/RevealableInput'
 import AppDiagnostics from '../components/AppDiagnostics'
 
@@ -4417,6 +4418,7 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
       <div className="flex items-center justify-between">
         <p className="text-xs text-text-tertiary">{existingKeys.length} variable{existingKeys.length !== 1 ? 's' : ''} in {env}</p>
         <div className="flex items-center gap-3">
+          {existingKeys.length > 0 && <CopyEnvButton values={values} />}
           {existingKeys.length > 0 && (
             <button
               onClick={() => {
@@ -4788,6 +4790,7 @@ function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; pro
         <div className="bg-surface-1 border border-border rounded-lg p-3">
           <div className="flex items-center justify-between mb-2">
             <span className="text-[11px] font-mono text-yellow-500">Values visible (auto-hides in 30s)</span>
+            <CopyEnvButton values={revealed} />
           </div>
           <div className="space-y-1">
             {Object.entries(revealed).map(([k, v]) => (

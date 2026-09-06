@@ -43,7 +43,11 @@ export function parseEnvContent(content: string): {
     if (eqIdx === -1) continue
     const key = trimmed.slice(0, eqIdx).trim()
     let value = trimmed.slice(eqIdx + 1).trim()
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    if (value.startsWith('"') && value.endsWith('"') && value.length >= 2) {
+      // Double quotes are the escaping form formatEnvContent emits, so undo the escapes
+      // here. Without this the two functions disagree and copied output re-imports wrong.
+      value = unescapeEnvValue(value.slice(1, -1))
+    } else if (value.startsWith("'") && value.endsWith("'") && value.length >= 2) {
       value = value.slice(1, -1)
     }
     if (!key) continue
@@ -55,6 +59,48 @@ export function parseEnvContent(content: string): {
   }
 
   return { data, invalidKeys }
+}
+
+/**
+ * A value needing quotes to survive a bare KEY=value line: parseEnvContent trims each
+ * side, treats a leading # as a comment, and splits on newlines, so any of those
+ * characters would come back different from what went out.
+ */
+const NEEDS_QUOTING = /^\s|\s$|[\n\r\t"'#\\]/
+
+function escapeEnvValue(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t')
+}
+
+function unescapeEnvValue(value: string): string {
+  return value.replace(/\\([nrt"'\\])/g, (_, ch) => {
+    switch (ch) {
+      case 'n': return '\n'
+      case 'r': return '\r'
+      case 't': return '\t'
+      default: return ch
+    }
+  })
+}
+
+/**
+ * Serialises key/value pairs to .env text — the inverse of parseEnvContent, so copied
+ * output pastes straight back into an import box. Keys are sorted to make two copies of
+ * the same config diffable; Kubernetes does not preserve map order anyway.
+ */
+export function formatEnvContent(data: Record<string, string>): string {
+  return Object.keys(data)
+    .sort()
+    .map((key) => {
+      const value = data[key] ?? ''
+      return `${key}=${NEEDS_QUOTING.test(value) ? `"${escapeEnvValue(value)}"` : value}`
+    })
+    .join('\n')
 }
 
 /** Truncates a key for display. An over-long key is usually secret material. */

@@ -21,6 +21,7 @@ Vesta consists of four components:
 - **Health checks** -- configurable HTTP, TCP, or exec liveness & readiness probes
 - **Autoscaling** -- CPU, memory, and custom metric-based HPA with configurable behavior
 - **Secrets management** -- Opaque, Docker registry, and TLS secrets with per-app bindings
+- **Project transfer** -- move a whole project to another Vesta instance in an encrypted bundle only that instance can open
 - **Private registries** -- ImagePullSecrets at project, app, and environment levels
 - **Notifications** -- Slack, Discord, Google Chat, webhooks (HMAC-SHA256), and email (SMTP)
 - **Forgot password** -- email-based password reset (when an email channel is configured)
@@ -160,6 +161,62 @@ curl -X POST https://<api-host>/api/v1/apps/my-app/deploy \
 ```bash
 vesta deploy my-app --tag v1.2.3 --env production
 ```
+
+### Copying env vars and secrets
+
+Every env var and revealed-secret panel has a **Copy as .env** button that puts the whole
+set on the clipboard in `KEY=value` form, ready to paste into another app or an `.env`
+file. Values containing spaces, `#` or newlines are quoted and escaped so the output
+pastes back through **Import .env** unchanged.
+
+Secrets expose the button only once values are revealed, so it carries the same
+admin-or-project-owner gate and 30-second auto-hide as the reveal itself.
+
+### Moving a project to another Vesta instance
+
+A project can be exported as an encrypted bundle carrying its apps, configuration, env
+vars, secrets, shared secrets and the registry credentials its images need.
+
+Each Vesta installation holds an X25519 keypair, generated on first use and stored as the
+`vesta-instance-identity` Secret in `vesta-system`. A bundle is sealed to one instance's
+public key, so the file is inert to everyone else -- including whoever carries it. Nothing
+about its contents is readable from the outside: only the recipient fingerprint is
+cleartext, so an instance can tell a misdirected bundle from a corrupted one.
+
+**On the target instance**, copy the public key from Settings -> Instance Identity:
+
+```
+vesta1:pub:MCowBQYDK2VuAyEA9k3...
+```
+
+**On the source instance**, from the project page or the CLI:
+
+```bash
+vesta project export acme \
+  --recipient-key @target.pub \
+  --out acme.bundle.json \
+  --api-url https://vesta.staging.example.com --token "$SOURCE_TOKEN"
+```
+
+**On the target instance:**
+
+```bash
+vesta project import \
+  --file acme.bundle.json \
+  --api-url https://vesta.prod.example.com --token "$TARGET_TOKEN"
+```
+
+Notes:
+
+- Export requires admin or project owner -- the bundle holds every secret in the project,
+  so it is gated exactly like revealing one. Import requires admin, because it can create
+  instance-level registry credentials.
+- An existing project is never overwritten. If the name is taken, import fails and you
+  re-run with `--as <new-name>`; app specs are rewritten to the new project name.
+- Import is not atomic. Kubernetes has no transaction, so a failure partway through
+  reports what was created and leaves it in place rather than deleting more than it made.
+- Losing `vesta-instance-identity` makes every bundle previously sealed for that instance
+  permanently unreadable. Back it up alongside your database.
 
 ## Installing the CLI
 

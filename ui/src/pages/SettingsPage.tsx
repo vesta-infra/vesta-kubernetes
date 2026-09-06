@@ -50,6 +50,7 @@ export default function SettingsPage() {
           <ProfileSection />
           <ChangePasswordSection />
           <APIKeysSection />
+          <InstanceIdentitySection />
         </div>
       )}
 
@@ -602,6 +603,63 @@ function APIKeysSection() {
           </div>
         ))}
       </div>
+    </section>
+  )
+}
+
+// The public half of this instance's transfer keypair. Operators hand it to whoever is
+// exporting a project to them; bundles sealed with it can only be opened here.
+function InstanceIdentitySection() {
+  const [copied, setCopied] = useState(false)
+
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ['instanceIdentity'],
+    queryFn: () => api.getInstanceIdentity(),
+    staleTime: Infinity,
+  })
+
+  const copyKey = () => {
+    if (!data) return
+    navigator.clipboard.writeText(data.publicKey)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <section className="card p-6">
+      <div className="mb-5">
+        <h3 className="section-title">Instance Identity</h3>
+        <p className="text-xs text-text-tertiary mt-1">
+          Send this key to anyone exporting a project to this instance. Only this instance can open a bundle sealed
+          with it.
+        </p>
+      </div>
+
+      {isLoading && <Spinner />}
+      {isError && <p className="text-status-failed text-xs">{(error as Error).message}</p>}
+
+      {data && (
+        <div className="space-y-3">
+          <div>
+            <label className="label">Public Key</label>
+            <div className="flex items-start gap-3">
+              <code className="flex-1 text-xs font-mono text-text-secondary bg-surface-1 border border-border rounded-lg px-3 py-2.5 break-all select-all">
+                {data.publicKey}
+              </code>
+              <button onClick={copyKey} className="btn-outline text-xs whitespace-nowrap">
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="label">Fingerprint</label>
+            <p className="text-xs font-mono text-text-primary tracking-wider">{data.fingerprint}</p>
+            <p className="text-[11px] text-text-tertiary mt-1">
+              Read this aloud to confirm the key arrived intact before a bundle is sealed with it.
+            </p>
+          </div>
+        </div>
+      )}
     </section>
   )
 }
