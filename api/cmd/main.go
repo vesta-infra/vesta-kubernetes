@@ -171,6 +171,13 @@ func main() {
 		auth.GET("/apps/:appId/shared-secrets", h.ListAppSharedSecrets)
 		auth.DELETE("/apps/:appId/shared-secrets/:name", dv, h.UnbindSharedSecret)
 
+		// Project transfer between Vesta instances. Export is gated like a secret
+		// reveal because the bundle contains every secret in the project; import is
+		// admin-only because it creates instance-level registry credentials.
+		auth.GET("/instance/identity", h.GetInstanceIdentity)
+		auth.POST("/projects/import", middleware.RequireRole("admin"), h.ImportProject)
+		auth.POST("/projects/:projectId/export", dv, h.ExportProject)
+
 		// Project Members (owner management)
 		auth.GET("/projects/:projectId/members", h.ListProjectMembers)
 		auth.POST("/projects/:projectId/members", middleware.RequireRole("admin"), h.AddProjectMember)

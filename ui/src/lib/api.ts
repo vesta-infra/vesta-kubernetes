@@ -1,5 +1,15 @@
 const BASE = '/api/v1'
 
+/** A sealed project bundle. Everything but `recipient` is opaque without the target's key. */
+export type VestaBundle = {
+  vestaBundle: number
+  exportedAt: string
+  recipient: string
+  ephemeralPublicKey: string
+  nonce: string
+  ciphertext: string
+}
+
 function getHeaders(): HeadersInit {
   const token = localStorage.getItem('vesta-token')
   const headers: HeadersInit = { 'Content-Type': 'application/json' }
@@ -123,6 +133,22 @@ export const api = {
 
   updateProject: (id: string, data: any) =>
     request<any>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  // Project transfer between Vesta instances
+  getInstanceIdentity: () =>
+    request<{ publicKey: string; fingerprint: string }>('/instance/identity'),
+
+  exportProject: (id: string, recipientPublicKey: string) =>
+    request<VestaBundle>(`/projects/${id}/export`, {
+      method: 'POST',
+      body: JSON.stringify({ recipientPublicKey }),
+    }),
+
+  importProject: (bundle: VestaBundle, as?: string) =>
+    request<{ project: string; importedAs: boolean; created: Record<string, number> }>('/projects/import', {
+      method: 'POST',
+      body: JSON.stringify({ bundle, ...(as ? { as } : {}) }),
+    }),
 
   deleteProject: (id: string) =>
     request<void>(`/projects/${id}`, { method: 'DELETE' }),
