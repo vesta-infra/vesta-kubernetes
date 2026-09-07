@@ -139,19 +139,18 @@ fmt: ## Format Go code
 generate: ## Generate CRD manifests from Go types, then sync them into the chart
 	cd operator && GOFLAGS=-mod=mod go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) \
 		crd paths="./api/..." output:crd:dir=config/crd/bases
-	$(MAKE) sync-crds
+	@echo ""
+	@echo "Generated into operator/config/crd/bases only."
+	@echo "The chart's CRDs are deliberately more permissive: many Go fields lack"
+	@echo "omitempty, so generation marks them required and the API server then rejects"
+	@echo "objects earlier releases stored. Run 'make sync-crds' to copy them across,"
+	@echo "then 'make check-crds' -- and expect to add omitempty until it passes."
 
-sync-crds: ## Copy generated CRDs into the Helm chart
+sync-crds: ## Copy generated CRDs into the chart (then run check-crds)
 	cp operator/config/crd/bases/*.yaml deploy/helm/vesta/crds/
 
-check-crds: ## Fail if the chart's CRDs differ from the generated ones (CI gate)
-	@$(MAKE) --no-print-directory generate >/dev/null
-	@git diff --exit-code -- operator/config/crd/bases deploy/helm/vesta/crds \
-		|| (echo "" >&2; \
-		    echo "Generated CRDs differ from what is committed." >&2; \
-		    echo "If you have just run 'make generate', commit the result." >&2; \
-		    echo "Otherwise types.go changed without the manifests being regenerated." >&2; \
-		    exit 1)
+check-crds: ## Fail if the chart's CRDs would reject data an earlier release accepted
+	./hack/check-crd-compat.sh $(CHART_BASELINE)
 
 helm-lint: ## Lint and render the chart the way CI does
 	helm lint deploy/helm/vesta
