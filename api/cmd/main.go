@@ -2,11 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"kubernetes.getvesta.sh/api/internal/db"
@@ -78,6 +83,21 @@ func registerMFARoutes(auth *gin.RouterGroup, h *handlers.Handler) {
 	auth.PUT("/settings/mfa-policy", middleware.RequireRole("admin"), h.UpdateMFAPolicy)
 }
 
+// registerSystemRoutes wires version reporting and self-update.
+//
+// Reading the version is open to any authenticated user so the UI can display it.
+// Changing it is admin-only and additionally costs a re-authentication grant inside the
+// handler, because pointing Vesta's own deployments at another version is close to
+// handing over cluster-admin.
+func registerSystemRoutes(auth *gin.RouterGroup, h *handlers.Handler) {
+	auth.GET("/system/version", h.GetSystemVersion)
+	auth.GET("/system/update", h.GetUpdateStatus)
+	auth.GET("/system/update/status", h.GetUpdateProgress)
+	auth.POST("/system/update/check", middleware.RequireRole("admin"), h.CheckForUpdates)
+	auth.PUT("/system/update/settings", middleware.RequireRole("admin"), h.UpdateSettings)
+	auth.POST("/system/update", middleware.RequireRole("admin"), h.TriggerUpdate)
+}
+
 // verifyPartialAuthRoutes asserts that every route a half-authenticated token is allowed
 // to reach actually exists on the router.
 //
@@ -140,8 +160,31 @@ func main() {
 		log.Fatalf("Failed to configure trusted proxies: %v", err)
 	}
 
+	// Liveness: is the process up. Deliberately trivial -- a liveness probe that checks
+	// dependencies restarts the pod when the database hiccups, which helps nobody.
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
+	})
+
+	// Readiness: can this process actually serve. This one has to check dependencies,
+	// because it is what makes a bad upgrade fail safely. With a probe that always says
+	// yes, a new image that cannot reach Postgres still goes Ready, the rollout
+	// completes, the old ReplicaSet scales to zero, and the component that would perform
+	// the rollback is the broken one -- an update triggered from the UI could brick the
+	// UI it was triggered from.
+	r.GET("/readyz", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		defer cancel()
+
+		if err := database.PingContext(ctx); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "reason": "database unreachable"})
+			return
+		}
+		if _, err := kc.Clientset.Discovery().ServerVersion(); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "reason": "kubernetes API unreachable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ready"})
 	})
 
 	v1 := r.Group("/api/v1")
@@ -278,6 +321,7 @@ func main() {
 		auth.DELETE("/apps/:appId/shared-secrets/:name", dv, h.UnbindSharedSecret)
 
 		registerMFARoutes(auth, h)
+		registerSystemRoutes(auth, h)
 
 		// Project transfer between Vesta instances. Export is gated like a secret
 		// reveal because the bundle contains every secret in the project; import is
@@ -342,6 +386,15 @@ func main() {
 		// Webhook delivery log (admin only)
 		auth.GET("/webhook-deliveries", middleware.RequireRole("admin"), h.ListWebhookDeliveries)
 
+		// SSL certificate providers (admin only). These create and manage cert-manager
+		// ClusterIssuers, so they are gated on the global admin role rather than a scope.
+		auth.GET("/settings/ssl-providers", middleware.RequireRole("admin"), h.ListSSLProviders)
+		auth.POST("/settings/ssl-providers", middleware.RequireRole("admin"), h.CreateSSLProvider)
+		auth.PUT("/settings/ssl-providers/default", middleware.RequireRole("admin"), h.SetDefaultSSLProvider)
+		auth.GET("/settings/ssl-providers/status", middleware.RequireRole("admin"), h.GetCertManagerStatus)
+		auth.PUT("/settings/ssl-providers/:name", middleware.RequireRole("admin"), h.UpdateSSLProvider)
+		auth.DELETE("/settings/ssl-providers/:name", middleware.RequireRole("admin"), h.DeleteSSLProvider)
+
 		// GitHub App settings (admin only)
 		auth.POST("/github/manifest", middleware.RequireRole("admin"), h.GetGitHubAppManifest)
 		auth.GET("/settings/github-app", middleware.RequireRole("admin"), h.GetGitHubAppStatus)
@@ -359,11 +412,37 @@ func main() {
 
 	log.Printf("Vesta API server starting on :%s", port)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// Start scheduled deployment worker
 	scheduler := &services.ScheduledDeploymentWorker{DB: database, K8s: kc}
-	go scheduler.Start(context.Background())
+	go scheduler.Start(ctx)
 
-	if err := r.Run(":" + port); err != nil {
-		log.Fatal(err)
+	// Keeps the newest published release in the settings table so the UI can compare it
+	// against what is running without reaching the network on every page load.
+	go (&services.UpdateChecker{DB: database}).Start(ctx)
+
+	// An upgrade replaces this pod, so the process that started one is rarely the process
+	// that sees it finish. Close out whatever the previous process left behind, or a
+	// record stuck at "running" blocks every future upgrade.
+	h.Updater.ReconcileOnStartup(context.Background(), handlers.ReleaseNamespace())
+
+	srv := &http.Server{Addr: ":" + port, Handler: r}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	}()
+
+	<-ctx.Done()
+	// Drain in-flight requests rather than cutting them. This matters most during an
+	// upgrade, which SIGTERMs this pod while someone is very likely watching the upgrade
+	// status endpoint.
+	log.Println("shutting down, draining in-flight requests...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown failed: %v", err)
 	}
 }

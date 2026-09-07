@@ -1,0 +1,126 @@
+{{- if .Values.postgres.enabled }}
+{{- /*
+An optional in-cluster database so evaluating Vesta does not require standing up Postgres
+first. Deliberately unglamorous: one replica, one PVC, no HA. Anything that needs failover
+or point-in-time recovery should point api.database at a managed instance instead.
+*/}}
+{{- $secretName := printf "%s-postgres" (include "vesta.fullname" .) }}
+{{- /*
+Reuse the installed password rather than generating a new one on every render, the same
+problem -- and the same fix -- as JWT_SECRET in api-secret.yaml. A regenerated password
+here would not lock anyone out loudly; it would leave the API unable to reach a database
+whose volume still holds all the data, which is a worse kind of broken.
+*/}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName }}
+{{- $password := .Values.postgres.password }}
+{{- if not $password }}
+  {{- if and $existing (index $existing.data "password") }}
+    {{- $password = index $existing.data "password" | b64dec }}
+  {{- else }}
+    {{- $password = randAlphaNum 32 }}
+  {{- end }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+type: Opaque
+stringData:
+  password: {{ $password | quote }}
+  # The API reads DATABASE_URL directly, so assemble it here rather than making the
+  # deployment template concatenate secret values it cannot see.
+  DATABASE_URL: {{ printf "postgres://%s:%s@%s-postgres:5432/%s?sslmode=disable" .Values.postgres.username $password (include "vesta.fullname" .) .Values.postgres.database | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "vesta.fullname" . }}-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: postgres
+      name: postgres
+  selector:
+    {{- include "vesta.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "vesta.fullname" . }}-postgres
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  serviceName: {{ include "vesta.fullname" . }}-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "vesta.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        {{- include "vesta.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres
+    spec:
+      securityContext:
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          imagePullPolicy: {{ .Values.postgres.image.pullPolicy }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.username | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secretName }}
+                  key: password
+            # The image refuses to initialise into a non-empty directory, and a PVC
+            # mounted at /var/lib/postgresql/data arrives holding lost+found.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.username | quote }}, "-d", {{ .Values.postgres.database | quote }}]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", {{ .Values.postgres.username | quote }}, "-d", {{ .Values.postgres.database | quote }}]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with .Values.postgres.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.postgres.storage | quote }}
+{{- end }}

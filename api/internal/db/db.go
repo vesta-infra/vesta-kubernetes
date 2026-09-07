@@ -331,6 +331,23 @@ CREATE TABLE IF NOT EXISTS user_refresh_tokens (
 CREATE INDEX IF NOT EXISTS idx_user_refresh_tokens_family ON user_refresh_tokens(family_id);
 CREATE INDEX IF NOT EXISTS idx_user_refresh_tokens_user ON user_refresh_tokens(user_id);
 
+-- Upgrades of Vesta itself. Kept so the UI can show what happened across the restart
+-- that an upgrade causes: the API process that started the Job is not the one that
+-- reports the outcome, so the record has to outlive it.
+CREATE TABLE IF NOT EXISTS update_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    from_version TEXT NOT NULL DEFAULT '',
+    to_version TEXT NOT NULL,
+    job_name TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'running',
+    message TEXT NOT NULL DEFAULT '',
+    triggered_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_update_history_started ON update_history(started_at DESC);
+
 -- A recent proof of identity, spent on one destructive change to a user's own factors.
 --
 -- Single-use and short-lived on purpose: a session cookie proves who logged in, not who

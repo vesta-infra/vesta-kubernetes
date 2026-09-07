@@ -5,12 +5,16 @@ import { useUserRole, useCurrentUsername } from '../lib/useRole'
 import MFAEnrollment from '../components/MFAEnrollment'
 import ReauthPrompt from '../components/ReauthPrompt'
 import { BackupCodes } from '../components/MFAChallenge'
+import SSLProvidersSection from '../components/SSLProviders'
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'general' | 'teams' | 'users' | 'roles' | 'audit' | 'webhooks' | 'integrations'>(() => {
+  const [activeTab, setActiveTab] = useState<'general' | 'teams' | 'users' | 'roles' | 'audit' | 'webhooks' | 'integrations' | 'ssl' | 'system'>(() => {
     const params = new URLSearchParams(window.location.search)
     const tab = params.get('tab')
     if (tab === 'integrations') return 'integrations'
+    if (tab === 'ssl') return 'ssl'
+    // The update banner links straight here.
+    if (tab === 'system') return 'system'
     return 'general'
   })
   const role = useUserRole()
@@ -22,6 +26,8 @@ export default function SettingsPage() {
     { key: 'users' as const, label: 'Users' },
     { key: 'roles' as const, label: 'Roles' },
     ...(isAdmin ? [
+      { key: 'ssl' as const, label: 'SSL Certificates' },
+      { key: 'system' as const, label: 'System' },
       { key: 'integrations' as const, label: 'Integrations' },
       { key: 'audit' as const, label: 'Audit Log' },
       { key: 'webhooks' as const, label: 'Webhooks' },
@@ -86,6 +92,23 @@ export default function SettingsPage() {
       {activeTab === 'webhooks' && isAdmin && (
         <div className="space-y-8">
           <WebhookDeliveriesSection />
+        </div>
+      )}
+
+      {activeTab === 'ssl' && isAdmin && (
+        <div className="space-y-8">
+          <SettingsSection
+            title="SSL Certificates"
+            description="Certificate providers apps can issue TLS certificates from. Vesta creates these as cert-manager ClusterIssuers; the default is used by any app that does not pick its own."
+          >
+            <SSLProvidersSection />
+          </SettingsSection>
+        </div>
+      )}
+
+      {activeTab === 'system' && isAdmin && (
+        <div className="space-y-8">
+          <SystemVersionSection />
         </div>
       )}
 
@@ -608,6 +631,151 @@ function APIKeysSection() {
           </div>
         ))}
       </div>
+    </section>
+  )
+}
+
+// What is running, whether something newer exists, and the button that applies it.
+function SystemVersionSection() {
+  const queryClient = useQueryClient()
+  const [confirming, setConfirming] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const { data: sys } = useQuery({ queryKey: ['systemVersion'], queryFn: () => api.getSystemVersion() })
+  const { data: status } = useQuery({ queryKey: ['updateStatus'], queryFn: () => api.getUpdateStatus() })
+  const { data: progress } = useQuery({
+    queryKey: ['updateProgress'],
+    queryFn: () => api.getUpdateProgress(),
+    // While an upgrade runs the API is replaced underneath us, so poll rather than wait
+    // on a response that will never arrive.
+    refetchInterval: (q) => (q.state.data?.current?.status === 'running' ? 5000 : false),
+    retry: true,
+  })
+  const { data: mfa } = useQuery({ queryKey: ['mfaStatus'], queryFn: () => api.mfaStatus() })
+
+  const check = useMutation({
+    mutationFn: () => api.checkForUpdates(),
+    onSuccess: () => { setError(''); queryClient.invalidateQueries({ queryKey: ['updateStatus'] }) },
+    onError: (e: Error) => setError(e.message),
+  })
+
+  const toggleChecks = useMutation({
+    mutationFn: (enabled: boolean) => api.setUpdateSettings(enabled),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['updateStatus'] }),
+    onError: (e: Error) => setError(e.message),
+  })
+
+  const start = useMutation({
+    mutationFn: (grantId: string) => api.triggerUpdate(status!.latest, grantId),
+    onSuccess: (res) => {
+      setConfirming(false)
+      setError('')
+      setNotice(res.note)
+      queryClient.invalidateQueries({ queryKey: ['updateProgress'] })
+    },
+    onError: (e: Error) => { setConfirming(false); setError(e.message) },
+  })
+
+  const running = progress?.current?.status === 'running'
+
+  return (
+    <section className="card p-6 space-y-5">
+      <div>
+        <h3 className="section-title">Version</h3>
+        <p className="text-xs text-text-tertiary mt-1">
+          What this installation is running, read from the deployments rather than from the chart.
+        </p>
+      </div>
+
+      <div className="space-y-1">
+        {sys?.components?.map((c) => (
+          <div key={c.component} className="flex items-center justify-between px-3 py-2 bg-surface-1 border border-border rounded-lg">
+            <span className="text-xs text-text-secondary capitalize">{c.component}</span>
+            <span className="flex items-center gap-3">
+              <span className="text-xs font-mono text-text-primary">{c.tag}</span>
+              <span className={`w-1.5 h-1.5 rounded-full ${c.ready ? 'bg-status-running' : 'bg-status-failed'}`}
+                    title={c.ready ? 'ready' : 'not ready'} />
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="pt-4 border-t border-border space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-text-primary">
+              {running ? `Upgrading to ${progress?.current?.toVersion}...`
+                : status?.updateAvailable ? `Version ${status.latest} is available`
+                : 'Up to date'}
+            </p>
+            <p className="text-[11px] text-text-tertiary mt-0.5">
+              {status?.checkedAt ? `Last checked ${new Date(status.checkedAt).toLocaleString()}` : 'Never checked'}
+              {!status?.isRelease && ' · development build, updates are not offered'}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={() => check.mutate()} disabled={check.isPending || !status?.checkEnabled}
+                    className="text-xs text-accent hover:text-accent-glow font-mono disabled:opacity-40">
+              {check.isPending ? 'Checking...' : 'Check now'}
+            </button>
+            {status?.updateAvailable && !running && (
+              <button onClick={() => { setError(''); setNotice(''); setConfirming(true) }} className="btn-primary text-xs">
+                Update to {status.latest}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {running && (
+          <p className="text-[11px] text-text-tertiary">
+            The API restarts partway through, so this page may briefly fail to load. It will reconnect on its own.
+          </p>
+        )}
+
+        {confirming && (
+          <ReauthPrompt
+            action={`Upgrading Vesta from ${status?.current} to ${status?.latest}. All three components restart, and the API will drop this connection partway through.`}
+            hasPasskey={(mfa?.methods ?? []).includes('webauthn')}
+            onConfirmed={(grantId) => start.mutate(grantId)}
+            onCancel={() => setConfirming(false)}
+          />
+        )}
+
+        <label className="flex items-center gap-2 text-xs text-text-tertiary cursor-pointer">
+          <input
+            type="checkbox"
+            checked={status?.checkEnabled ?? true}
+            onChange={(e) => toggleChecks.mutate(e.target.checked)}
+          />
+          Check for new releases automatically (turn off for an air-gapped cluster)
+        </label>
+      </div>
+
+      {progress?.history && progress.history.length > 0 && (
+        <div className="pt-4 border-t border-border">
+          <p className="label mb-2">Recent upgrades</p>
+          <div className="space-y-1">
+            {progress.history.slice(0, 5).map((h) => (
+              <div key={h.id} className="flex items-center justify-between text-[11px] font-mono">
+                <span className="text-text-tertiary">
+                  {h.fromVersion || '?'} → {h.toVersion}
+                </span>
+                <span className={
+                  h.status === 'succeeded' ? 'text-status-running'
+                  : h.status === 'failed' ? 'text-status-failed'
+                  : 'text-text-tertiary'
+                }>
+                  {h.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {notice && <p className="text-xs text-accent">{notice}</p>}
+      {error && <p className="text-xs text-status-failed">{error}</p>}
     </section>
   )
 }

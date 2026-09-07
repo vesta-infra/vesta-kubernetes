@@ -1,4 +1,5 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
+import UpdateBanner from './UpdateBanner'
 import { useEffect, useState } from 'react'
 import { useUserRole } from '../lib/useRole'
 import { api } from '../lib/api'
@@ -244,6 +245,7 @@ export default function Layout() {
           </div>
         </header>
         <div className="max-w-6xl mx-auto px-8 py-8 animate-fade-in">
+          <UpdateBanner />
           <Outlet />
         </div>
       </main>
