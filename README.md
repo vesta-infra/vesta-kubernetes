@@ -22,6 +22,7 @@ Vesta consists of four components:
 - **Autoscaling** -- CPU, memory, and custom metric-based HPA with configurable behavior
 - **Secrets management** -- Opaque, Docker registry, and TLS secrets with per-app bindings
 - **Project transfer** -- move a whole project to another Vesta instance in an encrypted bundle only that instance can open
+- **One-command install and upgrade** -- installer script, `vesta install`, or a single `helm install`; CRDs upgrade themselves
 - **Two-factor authentication** -- passkeys and authenticator apps, single-use recovery codes, and an optional policy requiring 2FA for admins
 - **Private registries** -- ImagePullSecrets at project, app, and environment levels
 - **Notifications** -- Slack, Discord, Google Chat, webhooks (HMAC-SHA256), and email (SMTP)
@@ -57,6 +58,19 @@ VESTA_DATABASE_URL="postgres://user:pass@db:5432/vesta?sslmode=disable" \
 ```
 
 Set `VESTA_DRY_RUN=1` to print the helm command it would run and exit.
+
+### 1b. With the CLI
+
+If you already have the CLI (see [Installing the CLI](#installing-the-cli)):
+
+```bash
+vesta install --postgres
+vesta install --database-url "postgres://user:pass@db:5432/vesta?sslmode=disable"
+```
+
+It wraps the same helm command shown below — there is nothing it does that you could not
+do by hand; it just removes the flags you would otherwise have to remember. Add
+`--dry-run` to print the command instead of running it.
 
 ### 2. Helm, with a bundled database
 
@@ -194,6 +208,18 @@ operator starts reconciling against them.
 `--reset-then-reuse-values` rather than `--reuse-values`: the latter carries old values
 forward wholesale and silently drops new chart defaults, which is how an upgrade ends up
 running new images against the previous release's configuration.
+
+### With the CLI
+
+```bash
+vesta upgrade                      # to the latest release
+vesta upgrade --chart-version 0.7.0
+vesta status                       # what is running, and whether an update exists
+```
+
+`vesta upgrade` deliberately takes no configuration flags. The installed values are
+carried forward, and re-specifying them on upgrade is how a setting nobody meant to touch
+quietly changes.
 
 ### From the web UI
 
@@ -412,6 +438,40 @@ artifacts locally:
 ```bash
 make cli-release            # writes dist/cli/
 ```
+
+### Updating the CLI
+
+```bash
+vesta self-update                    # to the latest release
+vesta self-update --version 0.7.0    # to a specific one
+vesta self-update --dry-run          # show what would be downloaded and replaced
+```
+
+Downloads the release archive for your platform, verifies it against the release's
+published `checksums.txt`, and replaces the running binary. The replacement is a rename,
+so an interrupted update leaves the working binary in place rather than a half-written
+one. Re-running `install.sh` does the same job.
+
+Refuses to replace a development build without `--force`, and refuses to go backwards
+without it either. If the binary lives somewhere unwritable it will tell you to re-run
+with sudo rather than failing obscurely. Windows is not supported yet — download the
+`.zip` from the releases page.
+
+### CLI command reference
+
+| Command | Purpose |
+|---|---|
+| `vesta install` | Install the platform with Helm |
+| `vesta upgrade` | Upgrade the platform; CRDs come with it |
+| `vesta status` | Running versions, and whether an update is available |
+| `vesta self-update` | Replace this binary with the latest release |
+| `vesta apps` / `vesta deploy` | Manage and deploy applications |
+| `vesta builds` / `vesta build` | Trigger and inspect builds |
+| `vesta project export/import` | Move a project between instances |
+| `vesta secrets` | Manage secrets (values are write-only) |
+| `vesta version` | Print the CLI version |
+
+All commands accept `--api-url` and `--token`, so one CLI can address several instances.
 
 ## Project Structure
 
