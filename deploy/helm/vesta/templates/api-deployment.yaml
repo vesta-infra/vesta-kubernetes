@@ -1,3 +1,17 @@
+{{- /*
+/readyz only exists in API images from 0.7.0 onward. Pinning an older api.image.tag while
+readinessPath points at it produces a pod that serves fine but never reports Ready, and a
+rollout that hangs with no error anywhere -- the probe just 404s in a loop. Catch it at
+render time instead, where the message can say what to do.
+*/}}
+{{- $pinned := .Values.api.image.tag | default "" }}
+{{- if and $pinned (eq .Values.api.readinessPath "/readyz") }}
+  {{- $major := regexFind "^[0-9]+" $pinned }}
+  {{- $minor := regexFind "^[0-9]+\\.[0-9]+" $pinned }}
+  {{- if and $major (eq $major "0") (lt $minor "0.7") }}
+    {{- fail (printf "api.image.tag=%s does not serve /readyz (added in 0.7.0), but api.readinessPath=/readyz. The pod would never become Ready. Either unpin api.image.tag, or set api.readinessPath=/healthz." $pinned) }}
+  {{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
