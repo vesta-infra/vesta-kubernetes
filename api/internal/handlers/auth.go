@@ -5,15 +5,70 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
+	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"kubernetes.getvesta.sh/api/internal/db"
+	"kubernetes.getvesta.sh/api/internal/mfa"
 	"kubernetes.getvesta.sh/api/internal/middleware"
 	"kubernetes.getvesta.sh/api/internal/models"
 )
+
+// publicBaseURL returns the externally reachable base URL of this Vesta instance, with
+// any trailing slash removed. Links in outbound email must be built from this rather
+// than from request headers, which the caller controls.
+func publicBaseURL() string {
+	return strings.TrimRight(strings.TrimSpace(os.Getenv("VESTA_PUBLIC_URL")), "/")
+}
+
+// validAPITokenScopes is the complete set an API token may carry.
+var validAPITokenScopes = []string{"read", "write", "deploy", "admin"}
+
+// defaultAPITokenScopes is what a token gets when the caller asks for nothing specific.
+var defaultAPITokenScopes = []string{"deploy", "read"}
+
+// validateTokenScopes checks requested scopes against the allowlist and refuses to mint a
+// token more powerful than the requesting user's own role.
+//
+// This previously took req.Scopes verbatim, and middleware.RequireScope treats the
+// "admin" scope as satisfying every scope check - so any developer could mint themselves
+// a 90-day admin-scoped key. Scopes are normalised and de-duplicated so that "Admin" or a
+// repeated entry cannot slip past the comparison.
+func validateTokenScopes(requested []string, userRole string) ([]string, error) {
+	out := make([]string, 0, len(requested))
+	for _, s := range requested {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "" {
+			continue
+		}
+		if !slices.Contains(validAPITokenScopes, s) {
+			return nil, fmt.Errorf("unknown scope %q: valid scopes are %s", s, strings.Join(validAPITokenScopes, ", "))
+		}
+		switch {
+		case s == "admin" && userRole != "admin":
+			return nil, fmt.Errorf("scope %q requires the admin role", s)
+		case (s == "write" || s == "deploy") && userRole == "viewer":
+			return nil, fmt.Errorf("scope %q is not available to the viewer role", s)
+		}
+		if !slices.Contains(out, s) {
+			out = append(out, s)
+		}
+	}
+
+	if len(out) == 0 {
+		if userRole == "viewer" {
+			return []string{"read"}, nil
+		}
+		return slices.Clone(defaultAPITokenScopes), nil
+	}
+	return out, nil
+}
 
 func (h *Handler) SetupStatus(c *gin.Context) {
 	count, err := h.DB.UserCount(c.Request.Context())
@@ -108,6 +163,12 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 
+	// A correct password is only the first factor. Anyone holding one already stops here
+	// if the account carries a second, or if policy says it must.
+	if h.issuePartialTokenIfNeeded(c, user) {
+		return
+	}
+
 	tokenString, expiresAt, err := h.generateJWT(user)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to generate token"})
@@ -125,6 +186,64 @@ func (h *Handler) Login(c *gin.Context) {
 			Role:        user.Role,
 		},
 	})
+}
+
+// issuePartialTokenIfNeeded interrupts login when a second factor is owed, and reports
+// whether it has already written a response.
+//
+// Two distinct interruptions share this path. A user who holds a factor gets an
+// mfa_challenge token, which reaches only the verification endpoints. A user who holds
+// none but whose role requires one gets an mfa_enroll token, which reaches only the
+// enrollment endpoints -- that is what makes a policy change take effect for people who
+// were already registered, without locking them out.
+//
+// Neither token carries a role or team list, and neither is accepted anywhere else: see
+// middleware.RequireFullSession.
+func (h *Handler) issuePartialTokenIfNeeded(c *gin.Context, user *db.User) bool {
+	ctx := c.Request.Context()
+
+	enrollments, err := h.DB.ListEnrollments(ctx, user.ID)
+	if err != nil {
+		// Failing open here would let a database blip skip the second factor entirely.
+		c.JSON(http.StatusServiceUnavailable, models.ErrorResponse{
+			Code:    503,
+			Message: "cannot verify two-factor status, try again",
+		})
+		return true
+	}
+
+	if len(enrollments) > 0 {
+		token, expiresAt, err := h.generateScopedJWT(user, middleware.TokenTypeMFAChallenge, mfaChallengeTTL, []string{"pwd"})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to generate token"})
+			return true
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"mfaRequired": true,
+			"token":       token,
+			"expiresAt":   expiresAt.Format(time.RFC3339),
+			"methods":     mfa.Methods(enrollments),
+		})
+		return true
+	}
+
+	if mfa.RequiredFor(user.Role, h.mfaPolicy(ctx)) {
+		token, expiresAt, err := h.generateScopedJWT(user, middleware.TokenTypeMFAEnroll, mfaEnrollTTL, []string{"pwd"})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to generate token"})
+			return true
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"mfaEnrollmentRequired": true,
+			"token":                 token,
+			"expiresAt":             expiresAt.Format(time.RFC3339),
+			"reason":                fmt.Sprintf("two-factor authentication is required for the %s role", user.Role),
+			"totpAvailable":         totpCipher() != nil,
+		})
+		return true
+	}
+
+	return false
 }
 
 func (h *Handler) Register(c *gin.Context) {
@@ -193,13 +312,15 @@ func (h *Handler) Register(c *gin.Context) {
 	}
 	c.JSON(http.StatusCreated, resp)
 
-	// Send invite email asynchronously if an email channel is configured
+	// Send invite email asynchronously if an email channel is configured.
+	//
+	// The base URL comes from configuration, never from the request. This used to read
+	// the Origin header, so an admin induced to call this endpoint from a page an
+	// attacker controlled would send an invite email pointing at the attacker's host,
+	// phishing the invitee's password.
 	loginURL := ""
-	if origin := c.Request.Header.Get("Origin"); origin != "" {
-		loginURL = origin
-		if inviteToken != "" {
-			loginURL = origin + "/accept-invite?token=" + inviteToken
-		}
+	if base := publicBaseURL(); base != "" && inviteToken != "" {
+		loginURL = base + "/accept-invite?token=" + inviteToken
 	}
 	go func() {
 		if err := h.Notifier.SendInviteEmail(user.Email, user.Username, user.Role, loginURL); err != nil {
@@ -224,7 +345,10 @@ func (h *Handler) AcceptInvite(c *gin.Context) {
 		return
 	}
 
-	user, err := h.DB.GetUserByInviteToken(c.Request.Context(), db.HashToken(req.Token))
+	// Consume the token before setting the password: this both validates it and marks it
+	// used in one statement, so it cannot be replayed. Previously those were two steps
+	// and the mark's error was discarded, leaving the token usable for its full life.
+	user, err := h.DB.ConsumeInviteToken(c.Request.Context(), db.HashToken(req.Token))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "invalid or expired invite token"})
 		return
@@ -233,11 +357,6 @@ func (h *Handler) AcceptInvite(c *gin.Context) {
 	if err := h.DB.UpdateUserPassword(c.Request.Context(), user.ID, req.Password); err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to set password"})
 		return
-	}
-
-	if err := h.DB.MarkInviteTokenUsed(c.Request.Context(), db.HashToken(req.Token)); err != nil {
-		// Password was set, token just wasn't marked — non-critical
-		_ = err
 	}
 
 	// Generate JWT so user is logged in immediately
@@ -343,13 +462,14 @@ func (h *Handler) CreateAPIToken(c *gin.Context) {
 		return
 	}
 
+	scopes, err := validateTokenScopes(req.Scopes, c.GetString("role"))
+	if err != nil {
+		c.JSON(http.StatusForbidden, models.ErrorResponse{Code: 403, Message: err.Error()})
+		return
+	}
+
 	rawToken := generateRandomToken()
 	tokenHash := db.HashToken(rawToken)
-
-	scopes := req.Scopes
-	if scopes == nil {
-		scopes = []string{"deploy", "read"}
-	}
 
 	var expiresAt *time.Time
 	if req.ExpiresIn != "" {
@@ -433,20 +553,69 @@ func (h *Handler) OAuthRedirect(c *gin.Context) {
 	})
 }
 
+// Token lifetimes.
+const (
+	// sessionTTL is how long a fully authenticated session lasts.
+	sessionTTL = 24 * time.Hour
+	// mfaChallengeTTL bounds the gap between a correct password and a second factor.
+	mfaChallengeTTL = 5 * time.Minute
+	// mfaEnrollTTL is longer because enrolling means scanning a QR code, typing a code,
+	// and saving recovery codes.
+	mfaEnrollTTL = 15 * time.Minute
+)
+
+// generateJWT issues a fully authenticated session token.
 func (h *Handler) generateJWT(user *db.User) (string, time.Time, error) {
-	teamIDs, _ := h.DB.GetUserTeamIDs(context.Background(), user.ID)
-	expiresAt := time.Now().Add(24 * time.Hour)
+	return h.generateScopedJWT(user, middleware.TokenTypeSession, sessionTTL, []string{"pwd"})
+}
 
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub":     user.ID,
-		"role":    user.Role,
-		"teamIds": teamIDs,
-		"exp":     expiresAt.Unix(),
-		"iat":     time.Now().Unix(),
-	})
+// generateScopedJWT issues a token of a specific type.
+//
+// Only session tokens carry role and teamIds. Omitting them from partial tokens is
+// defence in depth rather than the control itself - RequireRole and RequireProjectRole
+// read the role from the context and so fail closed without it, but DenyRole is
+// allow-by-default and RequireScope waves JWTs straight through, so neither can be
+// relied on. The token-type gate in AuthRequired is the actual control.
+//
+// amr records how the user authenticated ("pwd", "otp", "webauthn", "backup"), which is
+// what lets a later step-up check tell a password-only session from a two-factor one.
+func (h *Handler) generateScopedJWT(user *db.User, typ middleware.TokenType, ttl time.Duration, amr []string) (string, time.Time, error) {
+	now := time.Now()
+	expiresAt := now.Add(ttl)
 
+	jti, err := generateJTI()
+	if err != nil {
+		return "", time.Time{}, err
+	}
+
+	claims := jwt.MapClaims{
+		"sub": user.ID,
+		"typ": string(typ),
+		"amr": amr,
+		"jti": jti,
+		"exp": expiresAt.Unix(),
+		"iat": now.Unix(),
+	}
+
+	if typ == middleware.TokenTypeSession {
+		teamIDs, _ := h.DB.GetUserTeamIDs(context.Background(), user.ID)
+		claims["role"] = user.Role
+		claims["teamIds"] = teamIDs
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	tokenString, err := token.SignedString(middleware.GetJWTSecret())
 	return tokenString, expiresAt, err
+}
+
+// generateJTI returns a unique token identifier, so individual tokens can be named in
+// audit entries and denied later.
+func generateJTI() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("generating token id: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func generateRandomToken() string {

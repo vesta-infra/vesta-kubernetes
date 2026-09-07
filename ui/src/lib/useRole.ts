@@ -39,3 +39,17 @@ export function useIsProjectOwner(projectId: string | undefined): boolean {
   if (!me || !members) return false
   return members.items.some((m: any) => m.userId === me.id && m.role === 'owner')
 }
+
+/**
+ * The signed-in user's username, from the profile cached at login.
+ *
+ * Only ever used to hide UI that would not work anyway -- the server independently
+ * refuses the actions this gates -- so a stale or missing cache is harmless.
+ */
+export function useCurrentUsername(): string {
+  try {
+    const stored = localStorage.getItem('vesta-user')
+    if (stored) return JSON.parse(stored).username || ''
+  } catch { /* ignore */ }
+  return ''
+}

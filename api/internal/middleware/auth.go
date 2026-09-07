@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -11,12 +12,37 @@ import (
 	"kubernetes.getvesta.sh/api/internal/db"
 )
 
-func GetJWTSecret() []byte {
+// MinJWTSecretLen is the shortest signing key we accept. HS256 keys shorter than the
+// hash output add no security over a 32-byte one and are usually a sign someone typed
+// a password in.
+const MinJWTSecretLen = 32
+
+var jwtSecret []byte
+
+// InitJWTSecret loads the signing key once at startup. It deliberately has no default:
+// this used to fall back to the literal "vesta-jwt-secret", which is published in a
+// public repo, so every deployment that did not set the variable signed sessions with a
+// key anyone could look up and forge an admin token with.
+func InitJWTSecret() error {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
-		secret = "vesta-jwt-secret"
+		return fmt.Errorf("JWT_SECRET environment variable is required")
 	}
-	return []byte(secret)
+	if len(secret) < MinJWTSecretLen {
+		return fmt.Errorf("JWT_SECRET must be at least %d bytes, got %d", MinJWTSecretLen, len(secret))
+	}
+	jwtSecret = []byte(secret)
+	return nil
+}
+
+// GetJWTSecret returns the signing key loaded by InitJWTSecret. It panics rather than
+// returning an empty key, so a missing InitJWTSecret call fails loudly instead of
+// silently signing every token with nothing.
+func GetJWTSecret() []byte {
+	if len(jwtSecret) == 0 {
+		panic("middleware: JWT secret not initialised - call InitJWTSecret at startup")
+	}
+	return jwtSecret
 }
 
 func AuthRequired(database *db.DB) gin.HandlerFunc {
@@ -73,17 +99,55 @@ func AuthRequired(database *db.DB) gin.HandlerFunc {
 			return
 		}
 
-		if claims, ok := token.Claims.(jwt.MapClaims); ok {
-			c.Set("userId", claims["sub"])
-			c.Set("role", claims["role"])
-			c.Set("authType", "jwt")
-			if teamIds, ok := claims["teamIds"].([]interface{}); ok {
-				ids := make([]string, len(teamIds))
-				for i, v := range teamIds {
-					ids[i], _ = v.(string)
-				}
-				c.Set("teamIds", ids)
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"code":    401,
+				"message": "invalid or expired token",
+			})
+			return
+		}
+
+		// Fail closed on a missing or unknown typ. Tokens minted before this claim
+		// existed are already invalid, because rotating JWT_SECRET invalidated them.
+		tokenType, err := ClassifyToken(claims)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"code":    401,
+				"message": "invalid or expired token",
+			})
+			return
+		}
+
+		c.Set("userId", claims["sub"])
+		c.Set("role", claims["role"])
+		c.Set("authType", "jwt")
+		c.Set(ContextTokenType, tokenType)
+		if teamIds, ok := claims["teamIds"].([]interface{}); ok {
+			ids := make([]string, len(teamIds))
+			for i, v := range teamIds {
+				ids[i], _ = v.(string)
 			}
+			c.Set("teamIds", ids)
+		}
+		if amr, ok := claims["amr"].([]interface{}); ok {
+			methods := make([]string, len(amr))
+			for i, v := range amr {
+				methods[i], _ = v.(string)
+			}
+			c.Set("amr", methods)
+		}
+
+		// Second gate, independent of RequireFullSession: a partial token must not reach
+		// a route outside its allowlist even if it is registered outside the guarded
+		// group. Matches on the resolved route pattern, never the raw path.
+		if !AllowedForChallenge(c.Request.Method, c.FullPath(), tokenType) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code":    403,
+				"message": "two-factor authentication must be completed first",
+				"reason":  string(tokenType),
+			})
+			return
 		}
 
 		c.Next()
@@ -125,6 +189,10 @@ func authenticateAPIKey(c *gin.Context, database *db.DB, rawToken string) {
 	c.Set("authType", "apikey")
 	c.Set("tokenScopes", apiToken.Scopes)
 	c.Set("tokenId", apiToken.ID)
+	// vst_ keys short-circuit before the JWT claim path, so their token type has to be
+	// set here. Without it RequireFullSession would reject every CLI and CI request.
+	// API keys are exempt from 2FA by design: the key itself is the credential.
+	c.Set(ContextTokenType, TokenTypeSession)
 
 	// Update last used timestamp
 	go database.TouchAPIToken(c.Request.Context(), apiToken.ID)

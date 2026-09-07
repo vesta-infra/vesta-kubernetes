@@ -1,5 +1,57 @@
 const BASE = '/api/v1'
 
+
+/** A second factor registered to the current user. */
+export type MFAEnrollment = {
+  method: 'totp' | 'webauthn' | 'backup'
+  id?: string
+  name?: string
+  createdAt: string
+  lastUsedAt?: string | null
+}
+
+export type MFAStatus = {
+  enrollments: MFAEnrollment[]
+  methods: ('totp' | 'webauthn' | 'backup')[]
+  enabled: boolean
+  required: boolean
+  backupCodesLeft: number
+  totpAvailable: boolean
+  requireAdminPolicy: boolean
+}
+
+export type ReauthGrant = {
+  grantId: string
+  method: 'password' | 'webauthn'
+  expiresAt: string
+}
+
+export type Passkey = {
+  id: string
+  name: string
+  createdAt: string
+  lastUsedAt?: string | null
+  transports?: string[]
+}
+
+/**
+ * What POST /auth/login and the verify endpoints return.
+ *
+ * Login is no longer guaranteed to hand back a session: it may instead return a
+ * short-lived token that reaches only the 2FA endpoints. Callers must branch on
+ * mfaRequired / mfaEnrollmentRequired before treating `token` as a session.
+ */
+export type AuthResult = {
+  token: string
+  expiresAt: string
+  user?: { id: string; username: string; email: string; displayName: string; role: string }
+  mfaRequired?: boolean
+  mfaEnrollmentRequired?: boolean
+  methods?: ('totp' | 'webauthn' | 'backup')[]
+  reason?: string
+  totpAvailable?: boolean
+}
+
 /** A sealed project bundle. Everything but `recipient` is opaque without the target's key. */
 export type VestaBundle = {
   vestaBundle: number
@@ -17,13 +69,28 @@ function getHeaders(): HeadersInit {
   return headers
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+/**
+ * Calls that change a user's own factors carry a single-use re-authentication grant.
+ *
+ * The grant is spent server-side on success, so it is never reused: each destructive
+ * action needs its own confirmation.
+ */
+async function request<T>(path: string, options?: RequestInit & { reauthGrant?: string }): Promise<T> {
+  const { reauthGrant, ...init } = options || {}
+  const headers: Record<string, string> = { ...(getHeaders() as Record<string, string>) }
+  if (reauthGrant) headers['X-Vesta-Reauth'] = reauthGrant
+
   const res = await fetch(`${BASE}${path}`, {
-    headers: getHeaders(),
-    ...options,
+    headers,
+    ...init,
   })
   if (!res.ok) {
-    if (res.status === 401) {
+    // A 401 normally means the session is gone, so clear it and start over. The 2FA
+    // endpoints are the exception: there a 401 means "that code was wrong", and the
+    // caller is mid-challenge holding a token that is still perfectly valid. Redirecting
+    // would throw away the challenge and send the user back to the password screen for a
+    // single mistyped digit, so those screens render their own errors instead.
+    if (res.status === 401 && !path.startsWith('/auth/mfa/')) {
       localStorage.removeItem('vesta-token')
       localStorage.removeItem('vesta-user')
       window.location.href = '/login'
@@ -48,7 +115,7 @@ export const api = {
 
   // Auth
   login: (username: string, password: string) =>
-    request<{ token: string }>('/auth/login', {
+    request<AuthResult>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
@@ -133,6 +200,79 @@ export const api = {
 
   updateProject: (id: string, data: any) =>
     request<any>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  // Two-factor authentication
+  mfaStatus: () =>
+    request<MFAStatus>('/auth/mfa/status'),
+
+  mfaVerify: (code: string) =>
+    request<AuthResult>('/auth/mfa/verify', { method: 'POST', body: JSON.stringify({ code }) }),
+
+  // reauthGrant is required only when the account already holds a factor; the first one
+  // is exempt, which is what keeps mandatory enrollment at login possible.
+  totpEnroll: (reauthGrant?: string) =>
+    request<{ secret: string; otpauthUrl: string; qrDataUri: string; expiresAt: string }>(
+      '/auth/mfa/totp/enroll', { method: 'POST', reauthGrant }),
+
+  totpConfirm: (code: string) =>
+    request<{ confirmed: boolean; backupCodes: string[] }>(
+      '/auth/mfa/totp/confirm', { method: 'POST', body: JSON.stringify({ code }) }),
+
+  totpDisable: (reauthGrant: string) =>
+    request<void>('/auth/mfa/totp', { method: 'DELETE', reauthGrant }),
+
+  listPasskeys: () =>
+    request<{ items: Passkey[]; total: number }>('/auth/mfa/webauthn/credentials'),
+
+  renamePasskey: (id: string, name: string) =>
+    request<void>(`/auth/mfa/webauthn/credentials/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }),
+
+  deletePasskey: (id: string, reauthGrant: string) =>
+    request<void>(`/auth/mfa/webauthn/credentials/${id}`, { method: 'DELETE', reauthGrant }),
+
+  passkeyRegisterBegin: (reauthGrant?: string) =>
+    request<{ sessionId: string; publicKey: any }>('/auth/mfa/webauthn/register/begin', { method: 'POST', reauthGrant }),
+
+  passkeyRegisterFinish: (sessionId: string, name: string, credential: any) =>
+    request<{ id: string; name: string; backupCodes: string[] | null }>(
+      `/auth/mfa/webauthn/register/finish?sessionId=${encodeURIComponent(sessionId)}&name=${encodeURIComponent(name)}`,
+      { method: 'POST', body: JSON.stringify(credential) }),
+
+  passkeyAuthBegin: () =>
+    request<{ sessionId: string; publicKey: any }>('/auth/mfa/webauthn/authenticate/begin', { method: 'POST' }),
+
+  passkeyAuthFinish: (sessionId: string, credential: any) =>
+    request<AuthResult>(
+      `/auth/mfa/webauthn/authenticate/finish?sessionId=${encodeURIComponent(sessionId)}`,
+      { method: 'POST', body: JSON.stringify(credential) }),
+
+  regenerateBackupCodes: (reauthGrant: string) =>
+    request<{ backupCodes: string[] }>('/auth/mfa/backup-codes', { method: 'POST', reauthGrant }),
+
+  // Re-authentication: proving it is still you before a change that weakens your account.
+  reauthPassword: (password: string) =>
+    request<ReauthGrant>('/auth/reauth/password', { method: 'POST', body: JSON.stringify({ password }) }),
+
+  reauthPasskeyBegin: () =>
+    request<{ sessionId: string; publicKey: any }>('/auth/reauth/webauthn/begin', { method: 'POST' }),
+
+  reauthPasskeyFinish: (sessionId: string, credential: any) =>
+    request<ReauthGrant>(`/auth/reauth/webauthn/finish?sessionId=${encodeURIComponent(sessionId)}`, {
+      method: 'POST', body: JSON.stringify(credential),
+    }),
+
+  resetUserMFA: (userId: string, reauthGrant: string) =>
+    request<{ reset: boolean; user: string; mustReenroll: boolean }>(`/users/${userId}/mfa`, {
+      method: 'DELETE', reauthGrant,
+    }),
+
+  getMFAPolicy: () =>
+    request<{ requireAdmin: boolean }>('/settings/mfa-policy'),
+
+  updateMFAPolicy: (requireAdmin: boolean) =>
+    request<{ requireAdmin: boolean }>('/settings/mfa-policy', {
+      method: 'PUT', body: JSON.stringify({ requireAdmin }),
+    }),
 
   // Project transfer between Vesta instances
   getInstanceIdentity: () =>

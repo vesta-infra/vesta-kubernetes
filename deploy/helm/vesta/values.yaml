@@ -47,6 +47,39 @@ api:
     existingSecret: ""
     # -- Key in the existing secret that contains the DATABASE_URL
     secretKey: "DATABASE_URL"
+  # -- JWT session signing key. REQUIRED: the API refuses to start without one.
+  # Must be at least 32 characters. Changing it signs every user out.
+  jwt:
+    # -- Signing key. Generate with: openssl rand -base64 48
+    secret: ""
+    # -- Use an existing secret instead of creating one (set to secret name)
+    existingSecret: ""
+    # -- Key in the existing secret that contains the JWT_SECRET
+    secretKey: "JWT_SECRET"
+  # -- Key encrypting reversible secrets at rest, currently TOTP shared secrets.
+  # Generated automatically and reused across upgrades if left empty.
+  # Losing or rotating it does not sign anyone out, but it does make every enrolled
+  # authenticator app unverifiable -- those users fall back to their recovery codes.
+  # Passkeys are unaffected; they need no key.
+  encryption:
+    # -- 32 raw bytes, base64-encoded. Generate with: openssl rand -base64 32
+    key: ""
+    # -- Use an existing secret instead of creating one (set to secret name)
+    existingSecret: ""
+    # -- Key in the existing secret that contains VESTA_ENCRYPTION_KEY
+    secretKey: "VESTA_ENCRYPTION_KEY"
+  # -- Security and session settings
+  security:
+    # -- Externally reachable base URL, used to build links in outbound email.
+    # Never derived from request headers, which the caller controls.
+    publicUrl: ""
+    # -- Comma-separated CIDRs of proxies whose X-Forwarded-For may be trusted
+    # (typically the ingress controller range). Empty trusts none, so client IPs
+    # recorded in the audit log are the direct peer and cannot be forged.
+    trustedProxies: ""
+    # -- Comma-separated origins permitted to open log/exec WebSockets, in addition
+    # to same-origin requests. Needed only when the UI and API are on different hosts.
+    allowedOrigins: ""
   # -- GitHub App integration (optional, created via manifest flow in UI)
   github:
     # -- Pre-existing K8s Secret with GitHub App credentials (app-id, private-key, webhook-secret)

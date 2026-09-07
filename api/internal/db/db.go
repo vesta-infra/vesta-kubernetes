@@ -244,4 +244,115 @@ CREATE TABLE IF NOT EXISTS scheduled_deployments (
 
 CREATE INDEX IF NOT EXISTS idx_scheduled_deployments_project ON scheduled_deployments(project_id);
 CREATE INDEX IF NOT EXISTS idx_scheduled_deployments_status ON scheduled_deployments(status, scheduled_at);
+
+-- Two-factor authentication.
+--
+-- All 2FA state lives in tables keyed by user_id rather than in columns on users.
+-- migrate() is a single Exec of this whole string with no ALTER TABLE anywhere, so
+-- CREATE TABLE IF NOT EXISTS is a no-op against an existing database: adding a column to
+-- users here would silently never appear. New tables are the only shape that migrates.
+
+CREATE TABLE IF NOT EXISTS user_mfa_totp (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    secret_ciphertext TEXT NOT NULL,
+    digits SMALLINT NOT NULL DEFAULT 6,
+    period_seconds SMALLINT NOT NULL DEFAULT 30,
+    algorithm TEXT NOT NULL DEFAULT 'SHA1',
+    last_counter BIGINT NOT NULL DEFAULT 0,
+    confirmed_at TIMESTAMPTZ,
+    pending_expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS user_webauthn_credentials (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    credential_id TEXT UNIQUE NOT NULL,
+    public_key BYTEA NOT NULL,
+    aaguid BYTEA NOT NULL DEFAULT ''::bytea,
+    sign_count BIGINT NOT NULL DEFAULT 0,
+    transports TEXT[] NOT NULL DEFAULT '{}',
+    attestation_type TEXT NOT NULL DEFAULT '',
+    backup_eligible BOOLEAN NOT NULL DEFAULT false,
+    backup_state BOOLEAN NOT NULL DEFAULT false,
+    user_verified BOOLEAN NOT NULL DEFAULT false,
+    rp_id TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    last_used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_webauthn_credentials_user ON user_webauthn_credentials(user_id);
+
+CREATE TABLE IF NOT EXISTS user_mfa_backup_codes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code_hash TEXT UNIQUE NOT NULL,
+    used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_mfa_backup_codes_user ON user_mfa_backup_codes(user_id);
+
+CREATE TABLE IF NOT EXISTS webauthn_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    purpose TEXT NOT NULL CHECK (purpose IN ('register', 'authenticate')),
+    session_data JSONB NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_webauthn_sessions_expires ON webauthn_sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS mfa_lockouts (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    failed_count INT NOT NULL DEFAULT 0,
+    window_started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    locked_until TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS user_refresh_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT UNIQUE NOT NULL,
+    family_id UUID NOT NULL,
+    amr TEXT[] NOT NULL DEFAULT '{}',
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    ip_address TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_refresh_tokens_family ON user_refresh_tokens(family_id);
+CREATE INDEX IF NOT EXISTS idx_user_refresh_tokens_user ON user_refresh_tokens(user_id);
+
+-- A recent proof of identity, spent on one destructive change to a user's own factors.
+--
+-- Single-use and short-lived on purpose: a session cookie proves who logged in, not who
+-- is at the keyboard now. Without this, anyone who finds an unlocked laptop can strip
+-- 2FA off the account, and the second factor protects nothing after the first login.
+CREATE TABLE IF NOT EXISTS mfa_reauth_grants (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    method TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_mfa_reauth_grants_expires ON mfa_reauth_grants(expires_at);
+
+-- Instance-wide settings an admin can change without a redeploy. A key/value table
+-- rather than columns because the alternative -- adding a column to an existing table --
+-- silently never migrates here, as the comment above user_mfa_totp explains.
+CREATE TABLE IF NOT EXISTS instance_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by UUID REFERENCES users(id) ON DELETE SET NULL
+);
 `

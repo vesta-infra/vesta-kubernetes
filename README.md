@@ -22,6 +22,7 @@ Vesta consists of four components:
 - **Autoscaling** -- CPU, memory, and custom metric-based HPA with configurable behavior
 - **Secrets management** -- Opaque, Docker registry, and TLS secrets with per-app bindings
 - **Project transfer** -- move a whole project to another Vesta instance in an encrypted bundle only that instance can open
+- **Two-factor authentication** -- passkeys and authenticator apps, single-use recovery codes, and an optional policy requiring 2FA for admins
 - **Private registries** -- ImagePullSecrets at project, app, and environment levels
 - **Notifications** -- Slack, Discord, Google Chat, webhooks (HMAC-SHA256), and email (SMTP)
 - **Forgot password** -- email-based password reset (when an email channel is configured)
@@ -102,9 +103,9 @@ helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
   -n vesta-system \
    --reuse-values \
-  --set operator.image.tag=0.6.2 \
-  --set api.image.tag=0.6.2 \
-  --set ui.image.tag=0.6.2
+  --set operator.image.tag=0.6.3 \
+  --set api.image.tag=0.6.3 \
+  --set ui.image.tag=0.6.3
 ```
 
 
@@ -161,6 +162,78 @@ curl -X POST https://<api-host>/api/v1/apps/my-app/deploy \
 ```bash
 vesta deploy my-app --tag v1.2.3 --env production
 ```
+
+### Two-factor authentication
+
+Users enrol under Settings -> General -> Two-Factor Authentication. Two factor types are
+supported and either satisfies a login:
+
+- **Passkeys** (WebAuthn) -- Touch ID, Windows Hello, or a hardware security key. Requires
+  the UI to be served over HTTPS; browsers refuse the API outside a secure context, with
+  `localhost` the one exception.
+- **Authenticator apps** (TOTP) -- a six-digit code from 1Password, Authy, Google
+  Authenticator and the like. Requires `VESTA_ENCRYPTION_KEY`; see below.
+
+Enrolling the first factor of either kind also issues ten single-use recovery codes, shown
+once. Adding a second factor later does not reissue them, so codes already written down
+stay valid. They can be regenerated from Settings, which invalidates the previous set.
+
+**Requiring 2FA for admins.** An admin can turn this on under Settings -> Roles -> Two-Factor
+Policy; it takes effect without a redeploy. Admins who already exist and hold no factor are
+not locked out -- their next sign-in stops at an enrollment screen instead, reachable only
+by the enrollment endpoints. While the policy is on, an admin cannot remove their last
+factor, and recovery codes do not count as one.
+
+**Changing your factors takes a fresh confirmation.** A session proves who signed in, not
+who is at the keyboard now, so anything that could weaken the account asks for a password
+or a passkey again first: removing an authenticator app, removing a passkey, regenerating
+recovery codes, and adding a factor to an account that already has one. Regeneration is
+included because codes lifted from a stolen session would otherwise outlive the password
+change the victim makes afterwards, and addition because someone who cannot take your
+factor away can otherwise register their own beside it and keep access indefinitely.
+
+Enrolling the *first* factor is exempt. There is nothing to prove possession of yet, and
+requiring it would make mandatory enrollment at login impossible -- that user has no factor
+by definition, which is why they are being asked for one.
+
+The confirmation produces a single-use grant that expires in five minutes and is sent in
+an `X-Vesta-Reauth` header. One grant authorises exactly one change. Anti-lockout is
+checked before the grant is spent, so a removal the policy forbids does not cost a
+confirmation that would have to be repeated.
+
+**Locked-out users.** An admin can clear another user's factors from Settings -> Users ->
+Reset 2FA. This is the escape hatch for someone who has lost both their device and their
+recovery codes; without it such an account is unreachable. The reset is atomic, clears the
+lockout timer along with the factors, is audit-logged as `mfa_admin_reset`, and requires
+the admin to confirm their own identity first. Admins cannot reset themselves this way --
+that would sidestep the anti-lockout rule -- and under a mandatory policy the reset user is
+asked to enrol again at their next sign-in rather than being let through without a factor.
+
+**Login becomes a two-step exchange.** `POST /auth/login` no longer always returns a
+session. When the account holds a factor it returns `{"mfaRequired": true, "token": ...}`,
+where the token reaches only the verification endpoints and expires in five minutes.
+Exchange it at `POST /auth/mfa/verify` (which accepts either a TOTP code or a recovery
+code -- it tells them apart by shape) or through the WebAuthn assertion endpoints. Scripts
+using API keys (`vst_...`) are unaffected: they are separate credentials and never carry a
+second factor.
+
+Failed verifications are rate-limited per user in Postgres -- five failures in fifteen
+minutes locks the account for fifteen, ten locks it for an hour -- so the counter holds
+across API replicas and restarts.
+
+**`VESTA_ENCRYPTION_KEY`.** TOTP secrets have to be readable to generate a comparison code,
+so they are stored encrypted with AES-256-GCM rather than hashed. The Helm chart generates
+the key on first install and reuses it across upgrades. Rotating or losing it does not sign
+anyone out, but it does make every enrolled authenticator app unverifiable -- those users
+fall back to recovery codes and re-enrol. Passkeys need no key and are unaffected. If the
+key is absent the API still starts and passkeys still work; authenticator-app enrollment
+reports itself unavailable.
+
+**Passkeys behind a proxy.** The relying party is derived from the browser's `Origin`
+header, not the API's own `Host`, because the UI and API sit on different hostnames in the
+default chart and the dev proxy rewrites `Host`. Set `VESTA_ALLOWED_ORIGINS` to pin which
+browser origins may complete a ceremony; left unset, any syntactically valid domain is
+accepted.
 
 ### Copying env vars and secrets
 
