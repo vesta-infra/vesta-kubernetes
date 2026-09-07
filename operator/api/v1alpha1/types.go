@@ -105,7 +105,12 @@ type BuildConfig struct {
 }
 
 type ImageConfig struct {
-	Repository       string                        `json:"repository"`
+	// Repository is optional because this struct is reused for per-environment overrides,
+	// where setting only a tag and inheriting the repository is the normal case. Without
+	// omitempty, controller-gen marks it required and the API server rejects every such
+	// override -- which the hand-maintained CRDs never did, so existing VestaApps in the
+	// wild depend on it staying optional.
+	Repository       string                        `json:"repository,omitempty"`
 	Tag              string                        `json:"tag,omitempty"`
 	PullPolicy       corev1.PullPolicy             `json:"pullPolicy,omitempty"`
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`

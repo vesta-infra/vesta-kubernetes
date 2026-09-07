@@ -122,6 +122,12 @@ jobs:
       - name: Check the chart drops no resource an earlier release owned
         run: ./hack/check-no-dropped-resources.sh 0.6.3
 
+      # Tightening a CRD is a data migration. 0.7.0 regenerated the CRDs from types.go
+      # and made 26 groups of fields newly required, which made existing VestaApps
+      # unappliable -- an app in Sleeping state has spec.sleep with no `enabled`.
+      - name: Check the CRDs still accept data an earlier release stored
+        run: ./hack/check-crd-compat.sh 0.6.3
+
       - name: Package Helm chart
         run: helm package deploy/helm/vesta
 
