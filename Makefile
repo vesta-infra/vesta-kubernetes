@@ -1,6 +1,11 @@
-.PHONY: all build operator api cli cli-release cli-install ui install crds run-operator run-api run-ui docker-build docker-push help
+.PHONY: all build operator api cli sync-crds check-crds helm-lint cli-release cli-install ui install crds run-operator run-api run-ui docker-build docker-push help
 
-REGISTRY ?= ghcr.io/vesta-kubernetes
+# Must match .github/workflows/release.yaml and the image repositories in
+# deploy/helm/vesta/values.yaml. These disagreed for a long time -- the Makefile pushed to
+# ghcr.io/vesta-kubernetes/{operator,api,ui} while everything else read
+# ghcr.io/vesta-infra/kubernetes-{operator,api,ui} -- so local pushes went nowhere useful.
+REGISTRY ?= ghcr.io/vesta-infra
+IMAGE_PREFIX ?= kubernetes-
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 # ── CLI release ──────────────────────────────────────────────────────────
@@ -15,6 +20,7 @@ CLI_LDFLAGS := -s -w \
 	-X $(CLI_PKG).version=$(CLI_VERSION) \
 	-X $(CLI_PKG).commit=$(CLI_COMMIT) \
 	-X $(CLI_PKG).date=$(CLI_DATE)
+CONTROLLER_GEN_VERSION ?= v0.19.0
 CLI_PLATFORMS ?= darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64
 
 help: ## Show this help
@@ -65,8 +71,8 @@ ui: ## Build the UI
 run-operator: ## Run the operator locally (requires kubeconfig)
 	cd operator && go run . --metrics-bind-address=:8080 --health-probe-bind-address=:8081
 
-run-api: ## Run the API server locally
-	cd api && go run ./cmd/main.go
+run-api: ## Run the API server locally (sources api/.env when present)
+	cd api && set -a && . ./.env 2>/dev/null; set +a; go run ./cmd/main.go
 
 run-ui: ## Run the UI dev server
 	cd ui && npm run dev
@@ -90,13 +96,14 @@ uninstall: ## Remove CRDs from the cluster
 # ── Docker ───────────────────────────────────────────────────────────────
 
 docker-build: ## Build all Docker images
-	docker build -t $(REGISTRY)/operator:$(VERSION) operator/
-	docker build -t $(REGISTRY)/api:$(VERSION) api/
-	docker build -t $(REGISTRY)/ui:$(VERSION) --build-arg APP_VERSION=$(VERSION) ui/
+	docker build -t $(REGISTRY)/$(IMAGE_PREFIX)operator:$(VERSION) --build-arg APP_VERSION=$(VERSION) operator/
+	docker build -t $(REGISTRY)/$(IMAGE_PREFIX)api:$(VERSION) --build-arg APP_VERSION=$(VERSION) api/
+	docker build -t $(REGISTRY)/$(IMAGE_PREFIX)ui:$(VERSION) --build-arg APP_VERSION=$(VERSION) ui/
 
 docker-push: docker-build ## Push all Docker images
-	docker push $(REGISTRY)/operator:$(VERSION)
-	docker push $(REGISTRY)/api:$(VERSION)
+	docker push $(REGISTRY)/$(IMAGE_PREFIX)operator:$(VERSION)
+	docker push $(REGISTRY)/$(IMAGE_PREFIX)api:$(VERSION)
+	docker push $(REGISTRY)/$(IMAGE_PREFIX)ui:$(VERSION)
 
 # ── Helm ─────────────────────────────────────────────────────────────────
 
@@ -129,8 +136,27 @@ fmt: ## Format Go code
 	cd api && go fmt ./...
 	cd cli && go fmt ./...
 
-generate: ## Generate CRD manifests from Go types
-	cd operator && controller-gen crd paths="./api/..." output:crd:dir=config/crd/bases
+generate: ## Generate CRD manifests from Go types, then sync them into the chart
+	cd operator && GOFLAGS=-mod=mod go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) \
+		crd paths="./api/..." output:crd:dir=config/crd/bases
+	$(MAKE) sync-crds
+
+sync-crds: ## Copy generated CRDs into the Helm chart
+	cp operator/config/crd/bases/*.yaml deploy/helm/vesta/crds/
+
+check-crds: ## Fail if the chart's CRDs differ from the generated ones (CI gate)
+	@$(MAKE) --no-print-directory generate >/dev/null
+	@git diff --exit-code -- operator/config/crd/bases deploy/helm/vesta/crds \
+		|| (echo "" >&2; \
+		    echo "Generated CRDs differ from what is committed." >&2; \
+		    echo "If you have just run 'make generate', commit the result." >&2; \
+		    echo "Otherwise types.go changed without the manifests being regenerated." >&2; \
+		    exit 1)
+
+helm-lint: ## Lint and render the chart the way CI does
+	helm lint deploy/helm/vesta
+	helm template vesta deploy/helm/vesta -n vesta-system >/dev/null
+	helm template vesta deploy/helm/vesta -n vesta-system --set postgres.enabled=true >/dev/null
 
 clean: ## Clean build artifacts
 	rm -rf operator/bin api/bin cli/bin ui/dist dist

@@ -1147,6 +1147,108 @@ func (r *VestaAppReconciler) resolveIngressClassName(ctx context.Context, app *v
 	return ""
 }
 
+// clusterIssuerAnnotation is the cert-manager annotation naming the issuer for an Ingress.
+const clusterIssuerAnnotation = "cert-manager.io/cluster-issuer"
+
+// TLS modes for IngressConfig.TLSMode / IngressOverride.TLSMode.
+const (
+	// tlsModeManual uses a certificate the user supplied via TLSSecretName.
+	tlsModeManual = "manual"
+	// tlsModeCustomAnnotations hands TLS entirely to the user's raw ingress annotations.
+	tlsModeCustomAnnotations = "custom-annotations"
+)
+
+// certConfig is the resolved certificate strategy for one app-environment.
+type certConfig struct {
+	// ClusterIssuer is stamped as the cert-manager annotation. Empty when the certificate
+	// is user-supplied, when the mode is Unmanaged, or when nothing is configured anywhere.
+	ClusterIssuer string
+	// SecretName is the Ingress' TLS secret — either a certificate the user supplied or
+	// the generated "<app>-<env>-tls" that cert-manager writes into.
+	SecretName string
+	// Unmanaged means the user asked to drive TLS through raw ingress annotations. The
+	// operator stamps neither the issuer annotation nor spec.tls and leaves their
+	// annotations in sole charge.
+	Unmanaged bool
+	// AdoptedFromAnnotation records that the issuer came from a legacy
+	// cert-manager.io/cluster-issuer annotation rather than a field, which is how installs
+	// predating the provider selector keep working until the app is next saved.
+	AdoptedFromAnnotation bool
+}
+
+// resolveCertConfig decides how one app-environment gets its certificate.
+//
+// Precedence, highest first:
+//
+//	env  tlsMode / app tlsMode == custom-annotations  → Unmanaged, stamp nothing
+//	env  tlsSecretName → app tlsSecretName            → user-supplied cert, no issuer
+//	env  clusterIssuer → app clusterIssuer            → the provider selector
+//	env  annotations[cert-manager.io/cluster-issuer]  → legacy, adopted
+//	app  annotations[cert-manager.io/cluster-issuer]  → legacy, adopted
+//	VestaConfig.spec.clusterIssuer                    → the instance default
+//
+// The two legacy annotation tiers exist because before the provider selector shipped, a
+// hand-written annotation was the *only* way to choose an issuer per environment, and it
+// won by virtue of being merged after the operator's own annotations. Ranking it below the
+// fields but above the instance default keeps every such install resolving to the same
+// issuer, while letting an explicit selection win from now on.
+func resolveCertConfig(app *vestav1alpha1.VestaApp, envIngress *vestav1alpha1.IngressOverride,
+	globalIssuer, defaultSecretName string) certConfig {
+
+	appIngress := app.Spec.Ingress
+
+	mode := ""
+	if appIngress != nil {
+		mode = appIngress.TLSMode
+	}
+	if envIngress != nil && envIngress.TLSMode != "" {
+		mode = envIngress.TLSMode
+	}
+	if mode == tlsModeCustomAnnotations {
+		return certConfig{Unmanaged: true, SecretName: defaultSecretName}
+	}
+
+	// A user-supplied certificate settles it: there is nothing for cert-manager to issue.
+	if envIngress != nil && envIngress.TLSSecretName != "" {
+		return certConfig{SecretName: envIngress.TLSSecretName}
+	}
+	if appIngress != nil && appIngress.TLSSecretName != "" {
+		return certConfig{SecretName: appIngress.TLSSecretName}
+	}
+	// Manual mode with no secret named yet — the user is mid-way through supplying one.
+	// Stamp no issuer rather than silently falling back to ACME and issuing a certificate
+	// they did not ask for.
+	if mode == tlsModeManual {
+		return certConfig{SecretName: defaultSecretName}
+	}
+
+	cfg := certConfig{SecretName: defaultSecretName}
+
+	switch {
+	case envIngress != nil && envIngress.ClusterIssuer != "":
+		cfg.ClusterIssuer = envIngress.ClusterIssuer
+	case appIngress != nil && appIngress.ClusterIssuer != "":
+		cfg.ClusterIssuer = appIngress.ClusterIssuer
+	default:
+		// Legacy: an issuer typed into the raw annotation map.
+		if envIngress != nil {
+			if v := envIngress.Annotations[clusterIssuerAnnotation]; v != "" {
+				cfg.ClusterIssuer, cfg.AdoptedFromAnnotation = v, true
+			}
+		}
+		if cfg.ClusterIssuer == "" && appIngress != nil {
+			if v := appIngress.Annotations[clusterIssuerAnnotation]; v != "" {
+				cfg.ClusterIssuer, cfg.AdoptedFromAnnotation = v, true
+			}
+		}
+		if cfg.ClusterIssuer == "" {
+			cfg.ClusterIssuer = globalIssuer
+		}
+	}
+
+	return cfg
+}
+
 func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
 	labels := r.labelsForApp(app)
 	pathType := networkingv1.PathTypePrefix
@@ -1208,6 +1310,7 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 	if target.Config.Name != "" {
 		tlsSecretName = fmt.Sprintf("%s-%s-tls", app.Name, target.Config.Name)
 	}
+	cert := resolveCertConfig(app, target.Config.Ingress, r.ConfigResolver.GetClusterIssuer(), tlsSecretName)
 
 	ingressClassName := r.resolveIngressClassName(ctx, app)
 
@@ -1223,17 +1326,6 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			ing.Labels = labels
 			ing.Annotations = map[string]string{}
 
-			var clusterIssuer string
-			if app.Spec.Ingress != nil {
-				clusterIssuer = app.Spec.Ingress.ClusterIssuer
-			}
-			if clusterIssuer == "" {
-				clusterIssuer = r.ConfigResolver.GetClusterIssuer()
-			}
-			if clusterIssuer != "" {
-				ing.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuer
-			}
-
 			if ingressClassName != "" {
 				ing.Annotations["kubernetes.io/ingress.class"] = ingressClassName
 			}
@@ -1248,6 +1340,16 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				for k, v := range target.Config.Ingress.Annotations {
 					ing.Annotations[k] = v
 				}
+			}
+
+			// Stamp the resolved issuer *after* the user's annotations, so a stale
+			// cert-manager.io/cluster-issuer left in the map cannot silently override the
+			// provider selection. Users who genuinely want to drive TLS by annotation ask
+			// for it explicitly with tlsMode: custom-annotations, which lands in Unmanaged
+			// above and never reaches here.
+			delete(ing.Annotations, clusterIssuerAnnotation)
+			if tlsEnabled && !cert.Unmanaged && cert.ClusterIssuer != "" {
+				ing.Annotations[clusterIssuerAnnotation] = cert.ClusterIssuer
 			}
 
 			rules := make([]networkingv1.IngressRule, 0, len(domains))
@@ -1303,11 +1405,15 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 						ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = middlewareRef
 					}
 				}
-				ing.Spec.TLS = []networkingv1.IngressTLS{
-					{
-						Hosts:      domains,
-						SecretName: tlsSecretName,
-					},
+				// Unmanaged leaves spec.tls alone too — the user's annotations decide
+				// whether and how this ingress terminates TLS.
+				if !cert.Unmanaged {
+					ing.Spec.TLS = []networkingv1.IngressTLS{
+						{
+							Hosts:      domains,
+							SecretName: cert.SecretName,
+						},
+					}
 				}
 			}
 
@@ -1393,11 +1499,15 @@ func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *
 		}
 	}
 
-	// Resolve TLS config for redirect domains
+	// Resolve TLS config for redirect domains. The redirect ingress gets its own
+	// certificate because it serves different hostnames than the primary one — except
+	// under a user-supplied certificate, where resolveCertConfig returns their secret and
+	// the same cert is expected to cover both sets of names.
 	tlsSecretName := fmt.Sprintf("%s-redirect-tls", app.Name)
 	if target.Config.Name != "" {
 		tlsSecretName = fmt.Sprintf("%s-%s-redirect-tls", app.Name, target.Config.Name)
 	}
+	cert := resolveCertConfig(app, target.Config.Ingress, r.ConfigResolver.GetClusterIssuer(), tlsSecretName)
 
 	// For Traefik: create a Middleware CRD
 	if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
@@ -1437,16 +1547,11 @@ func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *
 				ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = middlewareRef
 			}
 
-			// Cert-manager annotation for TLS on redirect domains
-			var clusterIssuer string
-			if app.Spec.Ingress != nil {
-				clusterIssuer = app.Spec.Ingress.ClusterIssuer
-			}
-			if clusterIssuer == "" {
-				clusterIssuer = r.ConfigResolver.GetClusterIssuer()
-			}
-			if clusterIssuer != "" && tlsEnabled {
-				ing.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuer
+			// Cert-manager annotation for TLS on redirect domains. This ingress does not
+			// merge user annotations, so ordering is not load-bearing here the way it is
+			// on the primary ingress.
+			if tlsEnabled && !cert.Unmanaged && cert.ClusterIssuer != "" {
+				ing.Annotations[clusterIssuerAnnotation] = cert.ClusterIssuer
 			}
 
 			// Build ingress rules for redirect domains
@@ -1491,11 +1596,11 @@ func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *
 				ing.Spec.IngressClassName = existingClass
 			}
 
-			if tlsEnabled {
+			if tlsEnabled && !cert.Unmanaged {
 				ing.Spec.TLS = []networkingv1.IngressTLS{
 					{
 						Hosts:      redirectDomains,
-						SecretName: tlsSecretName,
+						SecretName: cert.SecretName,
 					},
 				}
 			}

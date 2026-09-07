@@ -4,11 +4,21 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 )
 
 // SettingMFARequireAdmin is the key holding "true"/"false" for whether admins must carry
 // a second factor.
 const SettingMFARequireAdmin = "mfa.require_admin"
+
+// Update-check settings. The latest version and the time it was seen are cached here
+// rather than re-fetched per request, so the UI reads a row instead of the network and a
+// restart does not immediately hit GitHub again.
+const (
+	SettingUpdateCheckEnabled  = "update.check_enabled"
+	SettingUpdateLatestVersion = "update.latest_version"
+	SettingUpdateCheckedAt     = "update.checked_at"
+)
 
 // GetSetting reads an instance setting. A missing key returns ErrNotFound so callers can
 // tell "never configured" from "explicitly set to empty" and apply their own default.
@@ -44,4 +54,12 @@ func (d *DB) SetSetting(ctx context.Context, key, value, updatedBy string) error
 		ON CONFLICT (key) DO UPDATE SET value = $2, updated_by = $3, updated_at = now()`,
 		key, value, by)
 	return err
+}
+
+// RecordUpdateCheck stores the newest known release and when it was observed.
+func (d *DB) RecordUpdateCheck(ctx context.Context, latest string) error {
+	if err := d.SetSetting(ctx, SettingUpdateLatestVersion, latest, ""); err != nil {
+		return err
+	}
+	return d.SetSetting(ctx, SettingUpdateCheckedAt, time.Now().UTC().Format(time.RFC3339), "")
 }

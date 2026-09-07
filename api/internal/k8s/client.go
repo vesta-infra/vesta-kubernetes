@@ -67,6 +67,19 @@ var (
 	IngressGVR = schema.GroupVersionResource{
 		Group: "networking.k8s.io", Version: "v1", Resource: "ingresses",
 	}
+
+	// cert-manager resources backing the SSL providers settings. These are only present
+	// when the cluster admin has installed cert-manager, so every call against them must
+	// treat NotFound on the resource type itself as "not installed" rather than an error.
+	ClusterIssuerGVR = schema.GroupVersionResource{
+		Group: "cert-manager.io", Version: "v1", Resource: "clusterissuers",
+	}
+	CertificateGVR = schema.GroupVersionResource{
+		Group: "cert-manager.io", Version: "v1", Resource: "certificates",
+	}
+	CRDGVR = schema.GroupVersionResource{
+		Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions",
+	}
 )
 
 type Client struct {
@@ -137,6 +150,27 @@ func (c *Client) PatchResource(ctx context.Context, gvr schema.GroupVersionResou
 
 func (c *Client) GetClusterResource(ctx context.Context, gvr schema.GroupVersionResource, name string) (*unstructured.Unstructured, error) {
 	return c.Dynamic.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+}
+
+// Cluster-scoped writes. ClusterIssuer and VestaConfig are cluster-scoped, and the
+// namespaced helpers above cannot address them — .Namespace() on a cluster-scoped
+// resource yields a request the API server rejects.
+
+func (c *Client) CreateClusterResource(ctx context.Context, gvr schema.GroupVersionResource, obj map[string]interface{}) (*unstructured.Unstructured, error) {
+	u := &unstructured.Unstructured{Object: obj}
+	return c.Dynamic.Resource(gvr).Create(ctx, u, metav1.CreateOptions{})
+}
+
+func (c *Client) UpdateClusterResource(ctx context.Context, gvr schema.GroupVersionResource, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	return c.Dynamic.Resource(gvr).Update(ctx, obj, metav1.UpdateOptions{})
+}
+
+func (c *Client) DeleteClusterResource(ctx context.Context, gvr schema.GroupVersionResource, name string) error {
+	return c.Dynamic.Resource(gvr).Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+func (c *Client) PatchClusterResource(ctx context.Context, gvr schema.GroupVersionResource, name string, patchData []byte) (*unstructured.Unstructured, error) {
+	return c.Dynamic.Resource(gvr).Patch(ctx, name, types.MergePatchType, patchData, metav1.PatchOptions{})
 }
 
 func ToJSON(v interface{}) []byte {

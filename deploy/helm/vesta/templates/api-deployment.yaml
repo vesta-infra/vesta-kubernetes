@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "vesta.fullname" . }}-api
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "vesta.labels" . | nindent 4 }}
     app.kubernetes.io/component: api
@@ -14,6 +14,10 @@ spec:
       app.kubernetes.io/component: api
   template:
     metadata:
+      annotations:
+        # Changing a secret value rewrites the Secret but rolls nothing; this makes the
+        # pod template change with it so the new value is actually picked up.
+        checksum/secrets: {{ include (print $.Template.BasePath "/api-secret.yaml") . | sha256sum }}
       labels:
         {{- include "vesta.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
@@ -34,11 +38,29 @@ spec:
           env:
             - name: PORT
               value: "{{ .Values.api.port }}"
+            # Self-update needs to know which release and namespace it belongs to.
+            # Deployment names are "<release>-api", so an install named anything other
+            # than "vesta" would otherwise be upgraded under the wrong release name and
+            # quietly create a second one.
+            - name: VESTA_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: VESTA_RELEASE_NAME
+              value: {{ .Release.Name | quote }}
+            {{- if .Values.selfUpdate.enabled }}
+            - name: VESTA_HELM_IMAGE
+              value: {{ .Values.selfUpdate.helmImage | quote }}
+            {{- end }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
+                  {{- if .Values.postgres.enabled }}
+                  {{- /* The bundled database owns the URL, so api.database is ignored. */}}
+                  name: {{ include "vesta.fullname" . }}-postgres
+                  key: DATABASE_URL
+                  {{- else }}
                   name: {{ .Values.api.database.existingSecret | default (printf "%s-api-db" (include "vesta.fullname" .)) }}
                   key: {{ .Values.api.database.secretKey | default "DATABASE_URL" }}
+                  {{- end }}
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
@@ -49,6 +71,10 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.api.encryption.existingSecret | default (printf "%s-api-encryption" (include "vesta.fullname" .)) }}
                   key: {{ .Values.api.encryption.secretKey | default "VESTA_ENCRYPTION_KEY" }}
+            # cert-manager resolves a ClusterIssuer's secretRefs against its own controller
+            # namespace, so SSL provider credentials must be written there, not here.
+            - name: CERT_MANAGER_NAMESPACE
+              value: {{ .Values.certManager.namespace | quote }}
             {{- with .Values.api.security.publicUrl }}
             - name: VESTA_PUBLIC_URL
               value: {{ . | quote }}
@@ -73,7 +99,7 @@ spec:
             periodSeconds: 15
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: {{ .Values.api.readinessPath }}
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -84,7 +110,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "vesta.fullname" . }}-api
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "vesta.labels" . | nindent 4 }}
     app.kubernetes.io/component: api

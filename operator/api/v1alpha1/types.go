@@ -18,6 +18,7 @@ import (
 // +kubebuilder:printcolumn:name="Image",type=string,JSONPath=`.status.currentImage`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
+// +kubebuilder:resource:shortName=va;vapp
 type VestaApp struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -61,9 +62,23 @@ type AppEnvironmentConfig struct {
 
 // IngressOverride allows per-environment domain and TLS configuration.
 type IngressOverride struct {
-	Domain          string            `json:"domain,omitempty"`
-	Domains         []string          `json:"domains,omitempty"`
-	TLS             *bool             `json:"tls,omitempty"`
+	Domain  string   `json:"domain,omitempty"`
+	Domains []string `json:"domains,omitempty"`
+	TLS     *bool    `json:"tls,omitempty"`
+
+	// ClusterIssuer selects the certificate provider for this environment only, so
+	// staging can issue from a staging ACME endpoint while production does not.
+	// Empty inherits the app-level issuer.
+	ClusterIssuer string `json:"clusterIssuer,omitempty"`
+
+	// TLSSecretName points the Ingress at a certificate the user supplied rather than
+	// one cert-manager issues. Empty uses the generated "<app>-<env>-tls" name.
+	TLSSecretName string `json:"tlsSecretName,omitempty"`
+
+	// TLSMode is empty for normal issuer resolution. See IngressConfig.TLSMode.
+	// +kubebuilder:validation:Enum=manual;custom-annotations
+	TLSMode string `json:"tlsMode,omitempty"`
+
 	Annotations     map[string]string `json:"annotations,omitempty"`
 	RedirectDomains []string          `json:"redirectDomains,omitempty"`
 	RedirectTarget  string            `json:"redirectTarget,omitempty"`
@@ -175,9 +190,25 @@ type ResourceConfig struct {
 }
 
 type IngressConfig struct {
-	Domain           string            `json:"domain"`
-	TLS              bool              `json:"tls,omitempty"`
-	ClusterIssuer    string            `json:"clusterIssuer,omitempty"`
+	Domain string `json:"domain"`
+	TLS    bool   `json:"tls,omitempty"`
+
+	// ClusterIssuer names the cert-manager ClusterIssuer to issue this app's certificate.
+	// Empty falls back to VestaConfig.spec.clusterIssuer.
+	ClusterIssuer string `json:"clusterIssuer,omitempty"`
+
+	// TLSSecretName points the Ingress at a certificate the user supplied rather than one
+	// cert-manager issues. Empty uses the generated "<app>-<env>-tls" name.
+	TLSSecretName string `json:"tlsSecretName,omitempty"`
+
+	// TLSMode selects how the certificate is obtained. Empty resolves a ClusterIssuer
+	// normally. "manual" uses TLSSecretName and stamps no cert-manager annotation.
+	// "custom-annotations" is the escape hatch: the operator stamps nothing at all and
+	// whatever the user put in Annotations is left in sole charge — which is what makes it
+	// safe for an explicit issuer selection to win over a stale annotation everywhere else.
+	// +kubebuilder:validation:Enum=manual;custom-annotations
+	TLSMode string `json:"tlsMode,omitempty"`
+
 	IngressClassName string            `json:"ingressClassName,omitempty"`
 	BasicAuth        bool              `json:"basicAuth,omitempty"`
 	Annotations      map[string]string `json:"annotations,omitempty"`
@@ -321,6 +352,7 @@ type VestaAppList struct {
 // +kubebuilder:printcolumn:name="Repository",type=string,JSONPath=`.spec.defaultGit.repository`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
+// +kubebuilder:resource:shortName=vprj;vproj
 type VestaProject struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -397,6 +429,7 @@ type VestaProjectList struct {
 // +kubebuilder:printcolumn:name="Branch",type=string,JSONPath=`.spec.branch`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
+// +kubebuilder:resource:shortName=ve;venv
 type VestaEnvironment struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -432,7 +465,7 @@ type VestaEnvironmentList struct {
 // ============================================================================
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Cluster,shortName=vc;vcfg
 
 type VestaConfig struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -557,6 +590,7 @@ type VestaConfigList struct {
 // +kubebuilder:printcolumn:name="Synced",type=boolean,JSONPath=`.status.synced`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
+// +kubebuilder:resource:shortName=vs;vsec
 type VestaSecret struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

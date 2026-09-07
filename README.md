@@ -26,126 +26,202 @@ Vesta consists of four components:
 - **Private registries** -- ImagePullSecrets at project, app, and environment levels
 - **Notifications** -- Slack, Discord, Google Chat, webhooks (HMAC-SHA256), and email (SMTP)
 - **Forgot password** -- email-based password reset (when an email channel is configured)
-- **Ingress** -- automatic ingress with optional TLS via cert-manager
+- **Ingress** -- automatic ingress with optional TLS, from certificate providers you manage in the UI
+- **SSL providers** -- create Let's Encrypt, ZeroSSL, Buypass, Google Trust Services, custom ACME, private-CA or self-signed issuers from Settings, with HTTP-01 or DNS-01 validation, and pick one per app or per environment
 
 ## Installation
 
+Four ways in, in rough order of how quickly they get you to a running Vesta.
+
+### 1. One command
+
+```bash
+curl -fsSL https://get.vesta.sh | sh
+```
+
+(or, until that domain is live:)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/install-vesta.sh | sh
+```
+
+Checks prerequisites, installs Vesta with a bundled PostgreSQL, waits for rollout, and
+prints the URL. Re-running it is also the upgrade path. Configure it with the environment
+variables in [Installer variables](#installer-variables):
+
+```bash
+VESTA_VERSION=0.7.0 \
+VESTA_NAMESPACE=vesta-system \
+VESTA_DATABASE_URL="postgres://user:pass@db:5432/vesta?sslmode=disable" \
+  sh -c "$(curl -fsSL https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/install-vesta.sh)"
+```
+
+Set `VESTA_DRY_RUN=1` to print the helm command it would run and exit.
+
+### 2. Helm, with a bundled database
+
+```bash
+helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --create-namespace \
+  --set postgres.enabled=true
+```
+
+That is the whole command — CRDs are applied by the chart, image tags come from the chart
+version, and the namespace is created for you. Pin the release with `--version 0.7.0`.
+
+The bundled database is a single-replica StatefulSet with a PVC. Fine for evaluation and
+small installs; it is still a database you have to back up.
+
+### 3. Helm, with your own database
+
+```bash
+kubectl create secret generic vesta-db-secret -n vesta-system \
+  --from-literal=DATABASE_URL="postgres://user:pass@db-host:5432/vesta?sslmode=disable"
+
+helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --create-namespace \
+  --set api.database.existingSecret=vesta-db-secret
+```
+
+Or pass the URL directly with `--set-string api.database.url=...`, which the chart puts
+into a Secret it manages.
+
+### 4. From a checkout
+
+```bash
+git clone https://github.com/vesta-infra/vesta-kubernetes
+cd vesta-kubernetes
+helm install vesta deploy/helm/vesta -n vesta-system --create-namespace \
+  --set postgres.enabled=true \
+  --set api.image.tag=0.7.0 --set ui.image.tag=0.7.0 --set operator.image.tag=0.7.0
+```
+
+Image tags are needed here and only here: the in-repo `Chart.yaml` carries a placeholder
+`appVersion`, which CI replaces at package time. Charts pulled from the registry do not
+need them.
+
+Once installed, open the UI and create the first admin account at `/setup`:
+
+```bash
+kubectl port-forward -n vesta-system svc/vesta-ui 8080:80
+```
+
 ### Prerequisites
 
-- Kubernetes cluster (v1.27+)
-- Helm 3
-- PostgreSQL database (for the API server)
-- (Optional) cert-manager for TLS
-- (Optional) metrics-server for autoscaling
+| | |
+|---|---|
+| Kubernetes | 1.27 or newer |
+| Helm | 3 |
+| PostgreSQL | unless using `postgres.enabled=true` |
+| cert-manager | optional, for TLS |
+| metrics-server | optional, for autoscaling |
 
-### 1. Install / Update CRDs
+### Installer variables
 
-> **Important:** Helm does not update CRDs on `helm upgrade`. You must re-apply CRDs manually when upgrading to pick up schema changes (e.g., healthCheck, per-environment resources).
+Read by `install-vesta.sh`.
 
-```bash
-kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaapps.yaml
-kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaprojects.yaml
-kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaconfigs.yaml
-kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaenvironments.yaml
-kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestasecrets.yaml
-```
+| Variable | Default | Meaning |
+|---|---|---|
+| `VESTA_VERSION` | latest published | Chart version to install |
+| `VESTA_NAMESPACE` | `vesta-system` | Namespace to install into |
+| `VESTA_RELEASE` | `vesta` | Helm release name |
+| `VESTA_DATABASE_URL` | *unset* | External Postgres. Unset deploys the bundled one |
+| `VESTA_INGRESS_CLASS` | *unset* | Ingress class for app routing |
+| `VESTA_DRY_RUN` | *unset* | `1` prints the helm command and exits |
 
+The CLI installer (`install.sh`) is a different script and reads `VESTA_VERSION` and
+`VESTA_INSTALL_DIR`. See [Installing the CLI](#installing-the-cli).
 
-```bash
-helm install -n vesta-system  vesta oci://ghcr.io/vesta-infra/charts/vesta --create-namespace \
-  -n vesta-system   
-```
+### Chart values
 
-### 2. Create the database secret
+The ones worth knowing. `helm show values oci://ghcr.io/vesta-infra/charts/vesta` lists
+them all.
 
-```bash
-kubectl create namespace vesta-system
+| Value | Default | Meaning |
+|---|---|---|
+| `postgres.enabled` | `false` | Deploy a bundled PostgreSQL and wire `DATABASE_URL` |
+| `postgres.storage` | `10Gi` | PVC size for the bundled database |
+| `api.database.existingSecret` | `""` | Secret holding `DATABASE_URL` |
+| `api.database.url` | `""` | Connection string, if not using a secret |
+| `api.jwt.secret` | generated | Session signing key, ≥32 chars. Reused across upgrades |
+| `api.encryption.key` | generated | Encrypts TOTP secrets at rest. Reused across upgrades |
+| `api.readinessPath` | `/readyz` | Set to `/healthz` if pinning an image older than 0.7.0 |
+| `crdManagement.enabled` | `true` | Apply CRDs from a pre-install/pre-upgrade hook |
+| `crdManagement.image` | `registry.k8s.io/kubectl` | Image the CRD hook runs |
+| `selfUpdate.enabled` | `true` | Allow upgrading Vesta from the web UI |
+| `selfUpdate.helmImage` | `alpine/helm:3.16.3` | Image the upgrade Job runs helm from |
+| `config.ingressClassName` | `""` | Ingress class for deployed apps |
+| `certManager.enabled` | `false` | Issue TLS certificates via cert-manager |
+| `config.domain` | `apps.getvesta.sh` | Default domain for app ingresses |
+| `config.clusterIssuer` | `""` | Default ClusterIssuer for apps. Managed from Settings → SSL Certificates; set here only to seed it |
+| `certManager.namespace` | `cert-manager` | Where cert-manager runs. Issuer credentials are written there, since that is where a ClusterIssuer's secretRefs resolve |
+| `api.ingress.enabled` | `false` | Expose the API through an Ingress |
+| `api.ingress.host` | `kubernetes.getvesta.sh` | API ingress hostname |
+| `ui.enabled` | `true` | Deploy the web UI |
+| `ui.ingress.enabled` | `false` | Expose the UI through an Ingress |
+| `ui.ingress.host` | `ui.getvesta.sh` | UI ingress hostname |
+| `operator.image.tag` / `api.image.tag` / `ui.image.tag` | chart appVersion | Pin component images. Not normally needed |
 
-kubectl create secret generic vesta-db-secret \
-  -n vesta-system \
-  --from-literal=DATABASE_URL="postgres://user:password@db-host:5432/vesta?sslmode=disable"
-```
+### API environment variables
 
-### 3. Install with Helm
+Set by the chart; listed for anyone running the API outside Kubernetes.
 
-```bash
-helm install -n vesta-system vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system   \
-  --set api.database.existingSecret=vesta-db-secret \
-  --set config.ingressClassName=traefik
-```
+| Variable | Required | Meaning |
+|---|---|---|
+| `DATABASE_URL` | yes | PostgreSQL connection string |
+| `JWT_SECRET` | yes | Session signing key, ≥32 bytes. Changing it signs everyone out |
+| `PORT` | no | Listen port, default `8090` |
+| `VESTA_ENCRYPTION_KEY` | no | base64 32 bytes. Without it, authenticator-app 2FA is unavailable; passkeys still work |
+| `VESTA_NAMESPACE` | no | Namespace Vesta is installed in, for version reporting and self-update |
+| `VESTA_RELEASE_NAME` | no | Helm release name, for self-update |
+| `VESTA_HELM_IMAGE` | no | Image the upgrade Job runs helm from |
+| `VESTA_PUBLIC_URL` | no | Externally reachable base URL, used to build links in email |
+| `VESTA_TRUSTED_PROXIES` | no | CIDRs whose `X-Forwarded-For` may be trusted. Unset trusts none |
+| `VESTA_ALLOWED_ORIGINS` | no | Browser origins allowed for WebSockets and passkeys |
+| `CERT_MANAGER_NAMESPACE` | no | Where cert-manager runs, for issuer credentials |
 
-### 4. Upgrade
-
-```bash
-helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system \
-   --reuse-values \
-   --set ui.ingress.tls=false
-  # --set ui.ingress.host=k8.getvesta.sh \
-  # --set ui.ingress.enabled=true \
-  # --set ui.ingress.clusterIssuer=letsencrypt-prod
-```
-
-To pin specific image versions:
-
-```bash
-helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system \
-   --reuse-values \
-    --set config.ingressClassName=traefik \
-  --set operator.image.tag=0.3.44 \
-  --set api.image.tag=0.3.44 \
-  --set ui.image.tag=0.3.44
-```
-
-```bash
-helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system \
-   --reuse-values \
-  --set operator.image.tag=0.6.3 \
-  --set api.image.tag=0.6.3 \
-  --set ui.image.tag=0.6.3
-```
-
-
-```bash
-  kubectl apply -f https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/deploy/helm/vesta/crds/kubernetes.getvesta.sh_vestaapps.yaml
-```
+## Upgrading
 
 ```bash
 helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system \
-  --set api.database.existingSecret=vesta-db-secret \
-  --set operator.image.tag=0.5.22 \
-  --set api.image.tag=0.5.22 \
-  --set ui.image.tag=0.5.22 
+  -n vesta-system --reset-then-reuse-values
 ```
-  
-  
-  
-### Optional: Metrics Server (for autoscaling)
+
+CRDs are applied automatically by a pre-upgrade hook, so the manual `kubectl apply` of
+five CRD URLs that earlier versions required is gone. Schema changes land before the new
+operator starts reconciling against them.
+
+`--reset-then-reuse-values` rather than `--reuse-values`: the latter carries old values
+forward wholesale and silently drops new chart defaults, which is how an upgrade ends up
+running new images against the previous release's configuration.
+
+### From the web UI
+
+An admin can upgrade under **Settings → System**. Vesta checks for new releases daily,
+shows a banner when one exists, and applies it by running `helm upgrade` in a Job — so
+Helm stays the source of truth and a later manual upgrade will not revert it.
+
+The API restarts partway through, so the page briefly loses its connection and reconnects
+on its own. Turn the outbound check off with the toggle on that page for an air-gapped
+cluster, or disable the feature entirely with `--set selfUpdate.enabled=false`.
+
+### Upgrading from 0.6.x
+
+Nothing to do beyond the usual `helm upgrade`. The CRD hook adopts CRDs that earlier
+versions installed by hand, so the manual applies can simply stop.
+
+One caveat: 0.7.0 moves the API's readiness probe to `/readyz`, which earlier images do
+not serve. If you pin `api.image.tag` to something older than 0.7.0, also set
+`api.readinessPath=/healthz` or the pod will never become Ready.
+
+### Rolling back
 
 ```bash
-kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+helm rollback vesta -n vesta-system
 ```
 
-## Helm Configuration
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `operator.image.tag` | Operator image tag | Chart appVersion |
-| `api.image.tag` | API server image tag | Chart appVersion |
-| `ui.image.tag` | UI image tag | Chart appVersion |
-| `api.database.existingSecret` | Name of secret containing `DATABASE_URL` | `""` |
-| `api.database.url` | Inline database URL (if not using a secret) | `""` |
-| `api.ingress.enabled` | Enable API ingress | `false` |
-| `api.ingress.host` | API ingress hostname | `kubernetes.getvesta.sh` |
-| `config.domain` | Default domain for app ingresses | `apps.getvesta.sh` |
-| `config.clusterIssuer` | cert-manager ClusterIssuer for TLS | `letsencrypt-prod` |
-| `ui.enabled` | Deploy the web UI | `true` |
-| `ui.ingress.enabled` | Enable UI ingress | `false` |
-| `ui.ingress.host` | UI ingress hostname | `ui.getvesta.sh` |
+CRDs are deliberately not rolled back. Removing fields from a CRD would prune them from
+resources already using them, which loses data rather than restoring it.
 
 ## Usage
 

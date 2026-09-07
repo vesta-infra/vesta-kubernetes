@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	stderrors "errors"
 	"fmt"
 	"net/http"
 
@@ -69,6 +70,12 @@ func (h *Handler) CreateApp(c *gin.Context) {
 	projectID := c.Param("projectId")
 	var req models.CreateAppRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
+
+	// A new app has nothing to grandfather, so the issuer annotation is always a mistake.
+	if err := checkIssuerAnnotation(req.Ingress, nil, "ingress"); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
 		return
 	}
@@ -332,6 +339,10 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 			spec = make(map[string]interface{})
 		}
 
+		if err := validateIngressCertAnnotations(patch, spec); err != nil {
+			return errInvalidIngress{err}
+		}
+
 		// Capture existing runtime BEFORE applying patch so deep-merge uses the original values
 		var existingRuntime map[string]interface{}
 		if r, _, _ := unstructuredNestedMap(spec, "runtime"); r != nil {
@@ -346,6 +357,10 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 
 		existingImage, _, _ := unstructuredNestedMap(spec, "image")
 		existingTag := getNestedString(existingImage, "tag")
+
+		// Same reasoning as the image overrides: the certificate selection lives inside
+		// spec.ingress, which the shallow merge below replaces wholesale.
+		existingCertFields := collectIngressCertFields(spec)
 
 		for k, v := range patch {
 			if v == nil {
@@ -374,6 +389,9 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 			spec["environments"] = restoreEnvImages(patchEnvs, existingEnvImages)
 		}
 
+		// Restore the certificate selection the patch left out, app level and per env.
+		restoreIngressCertFields(spec, existingCertFields)
+
 		// Same for the app-level tag: a config update that only sets the repository
 		// keeps the deployed tag rather than resetting the app to "latest".
 		if patchImage, ok := patch["image"].(map[string]interface{}); ok && existingTag != "" {
@@ -397,6 +415,13 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 			c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
 			return
 		}
+		// A rejected ingress is the caller's mistake, not a server fault. It is raised
+		// inside the retry closure because it compares the patch against the stored spec.
+		var invalid errInvalidIngress
+		if stderrors.As(err, &invalid) {
+			c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: invalid.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
 	}
@@ -405,6 +430,13 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 
 	h.auditLog(c, "update_app", "app", appID, appID, "", "", nil)
 }
+
+// errInvalidIngress marks a validation failure raised inside the update retry closure so
+// it can be reported as a 400 rather than being flattened into a 500.
+type errInvalidIngress struct{ err error }
+
+func (e errInvalidIngress) Error() string { return e.err.Error() }
+func (e errInvalidIngress) Unwrap() error { return e.err }
 
 func (h *Handler) DeleteApp(c *gin.Context) {
 	appID := c.Param("appId")
@@ -496,6 +528,82 @@ func (h *Handler) CloneApp(c *gin.Context) {
 
 	h.auditLog(c, "clone_app", "app", result.GetName(), result.GetName(), project, "",
 		map[string]interface{}{"clonedFrom": appID})
+}
+
+// certFields are the ingress keys that select a certificate. They are preserved across a
+// patch that omits them because the update path replaces spec.ingress wholesale: a client
+// that PUTs {"ingress":{"domain":..,"tls":true}} — the CLI, an API token, any integration
+// that does not first read the app back — would otherwise silently drop the app's SSL
+// provider and quietly re-issue its certificate from the instance default.
+var certFields = []string{"clusterIssuer", "tlsSecretName", "tlsMode"}
+
+// collectIngressCertFields snapshots the certificate selection at app level and for each
+// environment, keyed by environment name ("" for the app level).
+func collectIngressCertFields(spec map[string]interface{}) map[string]map[string]interface{} {
+	out := map[string]map[string]interface{}{}
+
+	if ing, _, _ := unstructuredNestedMap(spec, "ingress"); ing != nil {
+		out[""] = pickCertFields(ing)
+	}
+
+	envs, _, _ := unstructuredNestedSlice(spec, "environments")
+	for _, raw := range envs {
+		envMap, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if ing, ok := envMap["ingress"].(map[string]interface{}); ok {
+			out[getNestedString(envMap, "name")] = pickCertFields(ing)
+		}
+	}
+	return out
+}
+
+func pickCertFields(ingress map[string]interface{}) map[string]interface{} {
+	kept := map[string]interface{}{}
+	for _, f := range certFields {
+		if v, ok := ingress[f]; ok && v != nil && v != "" {
+			kept[f] = v
+		}
+	}
+	return kept
+}
+
+// restoreIngressCertFields carries the previous certificate selection onto an incoming
+// patch. A patch that names a field — including an explicit null, which clears it — wins.
+func restoreIngressCertFields(spec map[string]interface{}, existing map[string]map[string]interface{}) {
+	if ing, _, _ := unstructuredNestedMap(spec, "ingress"); ing != nil {
+		mergeCertFields(ing, existing[""])
+		spec["ingress"] = ing
+	}
+
+	envs, _, _ := unstructuredNestedSlice(spec, "environments")
+	for _, raw := range envs {
+		envMap, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		ing, ok := envMap["ingress"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		mergeCertFields(ing, existing[getNestedString(envMap, "name")])
+	}
+}
+
+func mergeCertFields(ingress map[string]interface{}, previous map[string]interface{}) {
+	for _, f := range certFields {
+		if v, ok := ingress[f]; ok {
+			// An explicit null is a deliberate clear, not an omission.
+			if v == nil {
+				delete(ingress, f)
+			}
+			continue
+		}
+		if v, ok := previous[f]; ok {
+			ingress[f] = v
+		}
+	}
 }
 
 // collectEnvImages indexes the image override of each environment by environment
