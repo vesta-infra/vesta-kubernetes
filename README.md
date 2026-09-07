@@ -231,6 +231,36 @@ The API restarts partway through, so the page briefly loses its connection and r
 on its own. Turn the outbound check off with the toggle on that page for an air-gapped
 cluster, or disable the feature entirely with `--set selfUpdate.enabled=false`.
 
+### If you are on 0.7.0
+
+**Do not upgrade to 0.7.0, and if you are already on it, read this.**
+
+Chart 0.7.0 stopped rendering the `Namespace` object that 0.6.x rendered. Helm deletes
+resources that disappear between chart versions, so upgrading from 0.6.x to 0.7.0 deleted
+the `vesta-system` namespace and everything inside it: the API, operator and UI, the JWT
+and encryption secrets, the Helm release itself, and any VestaProjects. VestaApps survived
+only because their finalizer blocked deletion, which also left the namespace stuck
+`Terminating`.
+
+Workloads in `{project}-{env}` namespaces are not affected and keep serving.
+
+If it has happened to you:
+
+1. **Do not reinstall Vesta yet.** Every VestaApp now carries a deletion timestamp, and
+   the operator deletes their Deployments, Services and Ingresses on startup.
+2. Back up the CRs while the finalizers still hold them:
+   `kubectl get vestaapps -n vesta-system -o yaml > vestaapps.yaml`, and the same for
+   `vestasecrets -A`.
+3. Strip the finalizers **with the operator still down**, so the cleanup never runs:
+   `kubectl get vestaapps -n vesta-system -o name | xargs -I{} kubectl patch {} -n vesta-system --type=merge -p '{"metadata":{"finalizers":null}}'`
+4. Let the namespace finish terminating, then install 0.7.1 pointing at your existing
+   database, and re-apply the backed-up CRs with `deletionTimestamp`, `finalizers`,
+   `resourceVersion` and `uid` removed.
+
+0.7.1 restores the namespace template with `helm.sh/resource-policy: keep`, so Helm will
+not delete it even if the template is dropped again, and CI now fails any chart that stops
+rendering a resource an earlier release rendered.
+
 ### Upgrading from 0.6.x
 
 Nothing to do beyond the usual `helm upgrade`. The CRD hook adopts CRDs that earlier
