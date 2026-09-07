@@ -1,4 +1,4 @@
-.PHONY: all build operator api cli sync-crds check-crds helm-lint cli-release cli-install ui install crds run-operator run-api run-ui docker-build docker-push help
+.PHONY: all build operator api cli sync-crds check-crds helm-lint helm-upgrade-safety cli-release cli-install ui install crds run-operator run-api run-ui docker-build docker-push help
 
 # Must match .github/workflows/release.yaml and the image repositories in
 # deploy/helm/vesta/values.yaml. These disagreed for a long time -- the Makefile pushed to
@@ -157,6 +157,13 @@ helm-lint: ## Lint and render the chart the way CI does
 	helm lint deploy/helm/vesta
 	helm template vesta deploy/helm/vesta -n vesta-system >/dev/null
 	helm template vesta deploy/helm/vesta -n vesta-system --set postgres.enabled=true >/dev/null
+
+# CHART_BASELINE is the last release whose rendered resources this chart must still
+# cover. Bump it only when you have confirmed the upgrade path from that version.
+CHART_BASELINE ?= 0.6.3
+
+helm-upgrade-safety: ## Fail if this chart drops a resource an earlier release rendered
+	./hack/check-no-dropped-resources.sh $(CHART_BASELINE)
 
 clean: ## Clean build artifacts
 	rm -rf operator/bin api/bin cli/bin ui/dist dist

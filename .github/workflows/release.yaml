@@ -116,6 +116,12 @@ jobs:
           helm template vesta deploy/helm/vesta -n vesta-system >/dev/null
           helm template vesta deploy/helm/vesta -n vesta-system --set postgres.enabled=true >/dev/null
 
+      # Publishing a chart that stops rendering a resource an earlier release rendered
+      # makes `helm upgrade` delete it. That is how 0.7.0 deleted the vesta-system
+      # namespace, and every secret and volume inside it, on upgrade from 0.6.x.
+      - name: Check the chart drops no resource an earlier release owned
+        run: ./hack/check-no-dropped-resources.sh 0.6.3
+
       - name: Package Helm chart
         run: helm package deploy/helm/vesta
 

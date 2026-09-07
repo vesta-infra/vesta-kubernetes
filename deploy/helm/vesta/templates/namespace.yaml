@@ -1,0 +1,25 @@
+{{- /*
+The release namespace, rendered as part of the chart.
+
+This template must not be removed, and that is not a style preference. Helm deletes
+resources that disappear between chart versions, so dropping it from a chart that
+previously had it makes `helm upgrade` delete the namespace -- and with it every pod,
+Secret, ConfigMap and PVC inside, including the JWT and encryption keys. That is exactly
+what happened between 0.6.3 and 0.7.0. Version 0.7.1 restores it.
+
+resource-policy: keep is the belt to that braces: even if this file is deleted again, or
+the release is uninstalled, Helm leaves the namespace alone. Uninstalling and taking the
+whole namespace with it is never the behaviour anyone wants from `helm uninstall`.
+
+It coexists with `--create-namespace`: that flag creates the namespace before manifests
+are applied, and Helm then adopts the existing object rather than failing, because the
+ownership metadata below matches what it would have written itself.
+*/}}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
