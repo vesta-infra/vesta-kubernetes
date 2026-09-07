@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"kubernetes.getvesta.sh/api/internal/db"
@@ -12,6 +15,94 @@ import (
 	"kubernetes.getvesta.sh/api/internal/middleware"
 	"kubernetes.getvesta.sh/api/internal/services"
 )
+
+// configureTrustedProxies restricts which hops gin will believe X-Forwarded-For from.
+// gin trusts every proxy by default, which makes c.ClientIP() - and so every audit log
+// entry and any IP-keyed throttle - attacker-controlled. VESTA_TRUSTED_PROXIES takes a
+// comma-separated list of CIDRs or IPs (typically the ingress controller's range).
+// Unset means trust nothing, so c.ClientIP() reports the direct peer: less useful behind
+// an ingress, but never forgeable.
+func configureTrustedProxies(r *gin.Engine) error {
+	raw := strings.TrimSpace(os.Getenv("VESTA_TRUSTED_PROXIES"))
+	if raw == "" {
+		log.Println("VESTA_TRUSTED_PROXIES is unset: trusting no proxies, client IPs will be the direct peer address")
+		return r.SetTrustedProxies(nil)
+	}
+
+	var proxies []string
+	for _, p := range strings.Split(raw, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			proxies = append(proxies, p)
+		}
+	}
+	return r.SetTrustedProxies(proxies)
+}
+
+// registerMFARoutes wires the two-factor endpoints.
+//
+// Extracted from main so a test can register exactly what production does and check it
+// against the allowlist, rather than a second copy of the same paths that could agree
+// with the test while disagreeing with the server.
+//
+// The paths must match middleware.challengeRoutes and enrollRoutes exactly: those
+// allowlists are what a partially-authenticated token is measured against, and a path
+// missing from them is unreachable during the login it exists to complete.
+func registerMFARoutes(auth *gin.RouterGroup, h *handlers.Handler) {
+	auth.GET("/auth/mfa/status", h.GetMFAStatus)
+	auth.POST("/auth/mfa/verify", h.VerifyMFA)
+	auth.POST("/auth/mfa/totp/enroll", h.EnrollTOTP)
+	auth.POST("/auth/mfa/totp/confirm", h.ConfirmTOTP)
+	auth.DELETE("/auth/mfa/totp", h.DisableTOTP)
+	auth.GET("/auth/mfa/webauthn/credentials", h.ListWebAuthnCredentials)
+	auth.POST("/auth/mfa/webauthn/register/begin", h.BeginWebAuthnRegistration)
+	auth.POST("/auth/mfa/webauthn/register/finish", h.FinishWebAuthnRegistration)
+	auth.POST("/auth/mfa/webauthn/authenticate/begin", h.BeginWebAuthnAuthentication)
+	auth.POST("/auth/mfa/webauthn/authenticate/finish", h.FinishWebAuthnAuthentication)
+	auth.PUT("/auth/mfa/webauthn/credentials/:id", h.RenameWebAuthnCredential)
+	auth.DELETE("/auth/mfa/webauthn/credentials/:id", h.DeleteWebAuthnCredential)
+	auth.POST("/auth/mfa/backup-codes", h.RegenerateBackupCodes)
+
+	// Proving it is still you, before a change that could remove your own protection.
+	// Not on the partial-token allowlist: these are only reachable with a real session.
+	auth.POST("/auth/reauth/password", h.ReauthWithPassword)
+	auth.POST("/auth/reauth/webauthn/begin", h.BeginReauthWebAuthn)
+	auth.POST("/auth/reauth/webauthn/finish", h.FinishReauthWebAuthn)
+
+	// Clearing a user's factors when they have lost every way of producing one.
+	auth.DELETE("/users/:userId/mfa", middleware.RequireRole("admin"), h.ResetUserMFA)
+
+	// Who must carry a second factor. Admin-configurable so a policy change needs no
+	// redeploy; readable by anyone, because the enrollment screen has to explain why it
+	// is being shown.
+	auth.GET("/settings/mfa-policy", h.GetMFAPolicy)
+	auth.PUT("/settings/mfa-policy", middleware.RequireRole("admin"), h.UpdateMFAPolicy)
+}
+
+// verifyPartialAuthRoutes asserts that every route a half-authenticated token is allowed
+// to reach actually exists on the router.
+//
+// The allowlist in middleware and the route registrations here live in different files
+// and are edited independently. A typo in either produces no error at all -- it produces
+// a login that gets as far as "enter your code" and then 404s -- so the two are compared
+// once at startup, where the failure is loud and immediate.
+func verifyPartialAuthRoutes(r *gin.Engine) error {
+	registered := make(map[string]bool)
+	for _, route := range r.Routes() {
+		registered[route.Method+" "+route.Path] = true
+	}
+
+	var missing []string
+	for _, spec := range middleware.PartialAuthRoutes() {
+		if !registered[spec.Method+" "+spec.Pattern] {
+			missing = append(missing, spec.Method+" "+spec.Pattern)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return fmt.Errorf("two-factor allowlist names routes that are not registered: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
 
 func main() {
 	port := os.Getenv("PORT")
@@ -22,6 +113,10 @@ func main() {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL environment variable is required")
+	}
+
+	if err := middleware.InitJWTSecret(); err != nil {
+		log.Fatalf("Failed to load JWT signing key: %v", err)
 	}
 
 	database, err := db.New(databaseURL)
@@ -40,6 +135,10 @@ func main() {
 	h := handlers.New(kc, database, notifier)
 
 	r := gin.Default()
+
+	if err := configureTrustedProxies(r); err != nil {
+		log.Fatalf("Failed to configure trusted proxies: %v", err)
+	}
 
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -65,9 +164,16 @@ func main() {
 	// GitHub App manifest flow (callback is unauthenticated, state-verified)
 	v1.GET("/github/callback", h.GitHubAppCallback)
 
-	// Authenticated routes
+	// Authenticated routes.
+	//
+	// RequireFullSession must be registered here, before any route is added to the group:
+	// gin only propagates Use() to routes registered afterwards. Applied once it covers
+	// every endpoint below, including the WebSocket routes that take their token from a
+	// query parameter, and any route added later is protected without anyone having to
+	// remember. It rejects tokens issued mid-authentication - after a password but before
+	// a second factor - which would otherwise be honoured as full sessions.
 	auth := v1.Group("")
-	auth.Use(middleware.AuthRequired(database))
+	auth.Use(middleware.AuthRequired(database), middleware.RequireFullSession())
 	dv := middleware.DenyRole("viewer") // deny viewer access to write endpoints
 	{
 		// User profile
@@ -171,6 +277,8 @@ func main() {
 		auth.GET("/apps/:appId/shared-secrets", h.ListAppSharedSecrets)
 		auth.DELETE("/apps/:appId/shared-secrets/:name", dv, h.UnbindSharedSecret)
 
+		registerMFARoutes(auth, h)
+
 		// Project transfer between Vesta instances. Export is gated like a secret
 		// reveal because the bundle contains every secret in the project; import is
 		// admin-only because it creates instance-level registry credentials.
@@ -226,8 +334,9 @@ func main() {
 		auth.POST("/auth/tokens", h.CreateAPIToken)
 		auth.DELETE("/auth/tokens/:id", h.RevokeAPIToken)
 
-		// Audit log
-		auth.GET("/audit-logs", h.ListAuditLogs)
+		// Audit log (admin only - it spans every project and records auth events).
+		// /activity stays open to all roles but scopes its results per caller.
+		auth.GET("/audit-logs", middleware.RequireRole("admin"), h.ListAuditLogs)
 		auth.GET("/activity", h.GetActivityFeed)
 
 		// Webhook delivery log (admin only)
@@ -242,6 +351,10 @@ func main() {
 		// Git helpers
 		auth.GET("/git/branches", dv, h.ListRepoBranches)
 		auth.GET("/git/repos", dv, h.ListAccessibleRepos)
+	}
+
+	if err := verifyPartialAuthRoutes(r); err != nil {
+		log.Fatal(err)
 	}
 
 	log.Printf("Vesta API server starting on :%s", port)

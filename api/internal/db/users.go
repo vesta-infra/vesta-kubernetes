@@ -154,6 +154,27 @@ func (d *DB) MarkInviteTokenUsed(ctx context.Context, tokenHash string) error {
 	return err
 }
 
+// ConsumeInviteToken atomically marks an unused, unexpired invite token as used and
+// returns the user it belongs to. Validating the token and marking it used were two
+// separate statements, so two concurrent requests could both pass validation, and if the
+// mark failed the token stayed replayable for its full seven-day life. The UPDATE ...
+// RETURNING makes exactly one caller win.
+func (d *DB) ConsumeInviteToken(ctx context.Context, tokenHash string) (*User, error) {
+	var userID string
+	err := d.QueryRowContext(ctx,
+		`UPDATE invite_tokens SET used_at = now()
+		 WHERE token_hash = $1 AND expires_at > now() AND used_at IS NULL
+		 RETURNING user_id`, tokenHash,
+	).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return d.GetUserByID(ctx, userID)
+}
+
 func (d *DB) GetUserTeamIDs(ctx context.Context, userID string) ([]string, error) {
 	rows, err := d.QueryContext(ctx,
 		`SELECT team_id FROM team_members WHERE user_id = $1`, userID)

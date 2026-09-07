@@ -39,6 +39,28 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.api.database.existingSecret | default (printf "%s-api-db" (include "vesta.fullname" .)) }}
                   key: {{ .Values.api.database.secretKey | default "DATABASE_URL" }}
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.jwt.existingSecret | default (printf "%s-api-jwt" (include "vesta.fullname" .)) }}
+                  key: {{ .Values.api.jwt.secretKey | default "JWT_SECRET" }}
+            - name: VESTA_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.encryption.existingSecret | default (printf "%s-api-encryption" (include "vesta.fullname" .)) }}
+                  key: {{ .Values.api.encryption.secretKey | default "VESTA_ENCRYPTION_KEY" }}
+            {{- with .Values.api.security.publicUrl }}
+            - name: VESTA_PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.api.security.trustedProxies }}
+            - name: VESTA_TRUSTED_PROXIES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.api.security.allowedOrigins }}
+            - name: VESTA_ALLOWED_ORIGINS
+              value: {{ . | quote }}
+            {{- end }}
             {{- if .Values.api.github.existingSecret }}
             - name: GITHUB_APP_SECRET
               value: {{ .Values.api.github.existingSecret | quote }}
