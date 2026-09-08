@@ -1,0 +1,155 @@
+{{- if .Values.crdManagement.enabled }}
+{{- /*
+Helm installs the files in a chart's crds/ directory exactly once and then ignores them
+forever, which is why upgrading Vesta has always required a manual `kubectl apply` of
+five URLs. This hook applies them on every install and upgrade instead.
+
+The files stay in crds/ and are not duplicated: Helm applies that directory itself on a
+first install -- which it must, because it happens before manifests are rendered and the
+chart's own VestaConfig cannot even be validated until its CRD exists -- and this hook
+reads the very same files through .Files.Glob to cover every upgrade after that.
+
+Applying them imperatively rather than moving them into templates/ is deliberate. CRDs
+created by Helm's crds/ mechanism are not tracked in the release, so rendering the same
+objects as templates makes Helm try to create resources it does not own and the upgrade
+fails with "invalid ownership metadata" -- on every cluster that already exists. A hook
+behaves identically on a fresh cluster and on one installed a year ago.
+
+Because it is a hook it also fires for anything that runs `helm upgrade`, including the
+in-cluster upgrade Job the UI triggers, so no upgrade path can forget CRDs.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "vesta.fullname" . }}-crds
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: crd-upgrade
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/hook-delete-policy: before-hook-creation
+data:
+  {{- range $path, $_ := .Files.Glob "crds/*.yaml" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "vesta.fullname" . }}-crd-upgrade
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: crd-upgrade
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/hook-delete-policy: before-hook-creation
+---
+{{- /*
+Narrower than the ClusterRole the API and operator share: this identity can touch
+CustomResourceDefinitions and nothing else. It cannot delete them either, so a broken
+chart cannot take every VestaApp in the cluster with it.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "vesta.fullname" . }}-crd-upgrade
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: crd-upgrade
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/hook-delete-policy: before-hook-creation
+rules:
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get", "list", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "vesta.fullname" . }}-crd-upgrade
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: crd-upgrade
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-20"
+    helm.sh/hook-delete-policy: before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "vesta.fullname" . }}-crd-upgrade
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "vesta.fullname" . }}-crd-upgrade
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "vesta.fullname" . }}-crd-upgrade
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: crd-upgrade
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    # Runs after the ConfigMap and RBAC above, and before every other manifest -- the
+    # operator must not start reconciling against a schema that has not landed yet.
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  # Helm waits for the hook, so a hung apply must not hold the release open forever.
+  activeDeadlineSeconds: {{ .Values.crdManagement.timeoutSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "vesta.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: crd-upgrade
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "vesta.fullname" . }}-crd-upgrade
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: kubectl
+          image: "{{ .Values.crdManagement.image.repository }}:{{ .Values.crdManagement.image.tag }}"
+          imagePullPolicy: {{ .Values.crdManagement.image.pullPolicy }}
+          # No shell wrapper: registry.k8s.io/kubectl is distroless and has no /bin/sh,
+          # so a `sh -c` command fails to start the container at all rather than failing
+          # the apply. The image's entrypoint is kubectl, so these are its arguments.
+          #
+          # --server-side because these manifests are large: a client-side apply stores
+          # the whole schema in a last-applied-configuration annotation and CRDs this size
+          # overflow the 256 KB annotation limit. --force-conflicts takes ownership of
+          # fields last applied by kubectl or by Helm's crds/ mechanism, which is what
+          # makes this work on clusters that installed Vesta before this hook existed.
+          args:
+            - apply
+            - --server-side
+            - --force-conflicts
+            - -f
+            - /crds/
+          volumeMounts:
+            - name: crds
+              mountPath: /crds
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 128Mi
+      volumes:
+        - name: crds
+          configMap:
+            name: {{ include "vesta.fullname" . }}-crds
+{{- end }}

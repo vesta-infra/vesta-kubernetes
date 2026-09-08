@@ -2,7 +2,9 @@ name: Build and Push Images
 
 on:
   push:
-    branches: [main]
+    # develop is where work lands, so building only main meant ordinary pushes produced
+    # no images at all and only tag builds were ever coherent.
+    branches: [main, develop]
     tags: ["v*"]
 
 env:
@@ -67,6 +69,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             APP_VERSION=${{ github.ref_name }}
+            APP_COMMIT=${{ github.sha }}
+            APP_DATE=${{ github.event.repository.updated_at }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -86,13 +90,49 @@ jobs:
 
       - name: Set chart version
         run: |
-          VERSION="${GITHUB_REF_NAME}"
-          if [[ "$VERSION" == "main" ]]; then
-            VERSION="0.0.0-$(echo ${GITHUB_SHA} | cut -c1-7)"
+          # Two different things, and conflating them is what broke non-tag builds.
+          #
+          # CHART_VERSION must be valid semver for Helm to accept the package.
+          # APP_VERSION is what the deployments default their image tags to, so it MUST
+          # name a tag the build job above actually pushed. On a branch build the images
+          # are tagged with the short SHA, so that is what appVersion has to be -- the old
+          # code wrote "0.0.0-<sha>" into both, producing a chart that pulled image tags
+          # which had never existed.
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            CHART_VERSION="${GITHUB_REF_NAME#v}"
+            APP_VERSION="${CHART_VERSION}"
+          else
+            SHORT_SHA="$(echo ${GITHUB_SHA} | cut -c1-7)"
+            CHART_VERSION="0.0.0-${GITHUB_REF_NAME//[^a-zA-Z0-9]/-}.${SHORT_SHA}"
+            APP_VERSION="${SHORT_SHA}"
           fi
-          VERSION="${VERSION#v}"
-          sed -i "s/^version:.*/version: ${VERSION}/" deploy/helm/vesta/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" deploy/helm/vesta/Chart.yaml
+          echo "chart=${CHART_VERSION} app=${APP_VERSION}"
+          sed -i "s|^version:.*|version: ${CHART_VERSION}|" deploy/helm/vesta/Chart.yaml
+          sed -i "s|^appVersion:.*|appVersion: \"${APP_VERSION}\"|" deploy/helm/vesta/Chart.yaml
+
+      - name: Lint and render the chart
+        run: |
+          helm lint deploy/helm/vesta
+          helm template vesta deploy/helm/vesta -n vesta-system >/dev/null
+          helm template vesta deploy/helm/vesta -n vesta-system --set postgres.enabled=true >/dev/null
+
+      # Publishing a chart that stops rendering a resource an earlier release rendered
+      # makes `helm upgrade` delete it. That is how 0.7.0 deleted the vesta-system
+      # namespace, and every secret and volume inside it, on upgrade from 0.6.x.
+      - name: Check the chart drops no resource an earlier release owned
+        run: ./hack/check-no-dropped-resources.sh 0.6.3
+
+      # Tightening a CRD is a data migration. 0.7.0 regenerated the CRDs from types.go
+      # and made 26 groups of fields newly required, which made existing VestaApps
+      # unappliable -- an app in Sleeping state has spec.sleep with no `enabled`.
+      - name: Check the CRDs still accept data an earlier release stored
+        run: ./hack/check-crd-compat.sh 0.6.3
+
+      # The upgrade Job runs helm as vesta-upgrader, so that account needs every verb the
+      # chart's own resources require. 0.7.3 shipped without delete on RBAC resources and
+      # the pre-upgrade hook failed with a forbidden error.
+      - name: Check self-update can apply everything the chart renders
+        run: ./hack/check-upgrader-rbac.sh
 
       - name: Package Helm chart
         run: helm package deploy/helm/vesta

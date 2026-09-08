@@ -16,6 +16,7 @@ var rootCmd = &cobra.Command{
 	Use:   "vesta",
 	Short: "Vesta CLI -- manage Kubernetes app deployments",
 	Long:  `Vesta is a Heroku-like PaaS for Kubernetes. This CLI manages pipelines, apps, secrets, and deployments.`,
+	// Set in init() so `vesta --version` reports the ldflags-injected version.
 }
 
 func Execute() {
@@ -26,6 +27,8 @@ func Execute() {
 }
 
 func init() {
+	rootCmd.Version = version
+	rootCmd.SetVersionTemplate("vesta {{.Version}}\n")
 	rootCmd.PersistentFlags().StringVar(&apiURL, "api-url", "http://localhost:8090", "Vesta API server URL")
 	rootCmd.PersistentFlags().StringVar(&apiToken, "token", "", "API token for authentication")
 }

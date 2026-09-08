@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -51,6 +52,7 @@ type targetEnv struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=ingressclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
@@ -605,6 +607,133 @@ func resolveImage(app *vestav1alpha1.VestaApp, envImage *vestav1alpha1.ImageConf
 	return "placeholder:latest"
 }
 
+// Kubernetes requires port names to be unique within a container and within a
+// Service, at most 15 characters, lowercase alphanumeric or '-', and to contain
+// at least one letter. A spec that violates this is rejected on every reconcile,
+// so the app can never converge -- the helpers below repair what they can instead
+// of letting one bad field wedge the whole object. The API rejects these specs at
+// the door; this is for specs already stored from before that check existed.
+
+var portNameInvalidChars = regexp.MustCompile(`[^a-z0-9-]`)
+
+// sanitizePortName coerces a name into a legal port name, falling back to one
+// derived from the port number when nothing usable is left.
+func sanitizePortName(name string, port int32) string {
+	n := portNameInvalidChars.ReplaceAllString(strings.ToLower(name), "-")
+	n = strings.Trim(n, "-")
+	if len(n) > 15 {
+		n = strings.Trim(n[:15], "-")
+	}
+	// Must contain at least one letter, so a purely numeric name is not legal.
+	if n == "" || !strings.ContainsAny(n, "abcdefghijklmnopqrstuvwxyz") {
+		n = fmt.Sprintf("p-%d", port)
+		if len(n) > 15 {
+			n = n[:15]
+		}
+	}
+	return n
+}
+
+// uniquePortName returns a legal name not already in used, suffixing -2, -3, ...
+// until it finds one. The returned name is recorded in used.
+func uniquePortName(name string, port int32, used map[string]bool) string {
+	base := sanitizePortName(name, port)
+	candidate := base
+	for i := 2; used[candidate]; i++ {
+		suffix := fmt.Sprintf("-%d", i)
+		trimmed := base
+		if len(trimmed)+len(suffix) > 15 {
+			trimmed = strings.Trim(base[:15-len(suffix)], "-")
+			if trimmed == "" {
+				trimmed = "p"
+			}
+		}
+		candidate = trimmed + suffix
+	}
+	used[candidate] = true
+	return candidate
+}
+
+// buildContainerPorts maps service ports onto container ports, collapsing entries
+// that resolve to the same container port and protocol (listing one twice adds
+// nothing) and forcing names to be unique. Container port names are informational
+// here -- probes and Service targets both address ports numerically -- so renaming
+// a duplicate changes no behaviour.
+func buildContainerPorts(ports []vestav1alpha1.ServicePort) []corev1.ContainerPort {
+	var out []corev1.ContainerPort
+	seen := map[string]bool{}
+	usedNames := map[string]bool{}
+
+	for _, p := range ports {
+		protocol := corev1.ProtocolTCP
+		if p.Protocol != "" {
+			protocol = corev1.Protocol(p.Protocol)
+		}
+		targetPort := p.TargetPort
+		if targetPort == 0 {
+			targetPort = p.Port
+		}
+		if targetPort <= 0 {
+			continue
+		}
+
+		key := fmt.Sprintf("%d/%s", targetPort, protocol)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		out = append(out, corev1.ContainerPort{
+			Name:          uniquePortName(p.Name, targetPort, usedNames),
+			ContainerPort: targetPort,
+			Protocol:      protocol,
+		})
+	}
+	return out
+}
+
+// buildServicePorts maps spec ports onto Service ports, dropping entries that
+// repeat a port/protocol pair (a Service cannot expose the same port twice) and
+// forcing names to be unique.
+func buildServicePorts(ports []vestav1alpha1.ServicePort) []corev1.ServicePort {
+	var out []corev1.ServicePort
+	seen := map[string]bool{}
+	usedNames := map[string]bool{}
+
+	for _, p := range ports {
+		if p.Port <= 0 {
+			continue
+		}
+		protocol := corev1.ProtocolTCP
+		if p.Protocol != "" {
+			protocol = corev1.Protocol(p.Protocol)
+		}
+
+		key := fmt.Sprintf("%d/%s", p.Port, protocol)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		targetPort := p.TargetPort
+		if targetPort == 0 {
+			targetPort = p.Port
+		}
+
+		sp := corev1.ServicePort{
+			Name:       uniquePortName(p.Name, p.Port, usedNames),
+			Port:       p.Port,
+			TargetPort: intstr.FromInt32(targetPort),
+			Protocol:   protocol,
+		}
+		if p.NodePort > 0 {
+			sp.NodePort = p.NodePort
+		}
+		out = append(out, sp)
+	}
+	return out
+}
+
 func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envResources *vestav1alpha1.ResourceConfig, envName string, envImage *vestav1alpha1.ImageConfig) corev1.Container {
 	image := resolveImage(app, envImage)
 
@@ -624,23 +753,7 @@ func (r *VestaAppReconciler) buildContainer(app *vestav1alpha1.VestaApp, envReso
 	}
 
 	if app.Spec.Service != nil && len(app.Spec.Service.Ports) > 0 {
-		var containerPorts []corev1.ContainerPort
-		for _, p := range app.Spec.Service.Ports {
-			protocol := corev1.ProtocolTCP
-			if p.Protocol != "" {
-				protocol = corev1.Protocol(p.Protocol)
-			}
-			targetPort := p.TargetPort
-			if targetPort == 0 {
-				targetPort = p.Port
-			}
-			containerPorts = append(containerPorts, corev1.ContainerPort{
-				Name:          p.Name,
-				ContainerPort: targetPort,
-				Protocol:      protocol,
-			})
-		}
-		container.Ports = containerPorts
+		container.Ports = buildContainerPorts(app.Spec.Service.Ports)
 	} else if app.Spec.Runtime.Port > 0 {
 		container.Ports = []corev1.ContainerPort{
 			{
@@ -960,26 +1073,7 @@ func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1a
 	var svcType corev1.ServiceType
 
 	if svcCfg != nil && len(svcCfg.Ports) > 0 {
-		for _, p := range svcCfg.Ports {
-			protocol := corev1.ProtocolTCP
-			if p.Protocol != "" {
-				protocol = corev1.Protocol(p.Protocol)
-			}
-			targetPort := p.TargetPort
-			if targetPort == 0 {
-				targetPort = p.Port
-			}
-			sp := corev1.ServicePort{
-				Name:       p.Name,
-				Port:       p.Port,
-				TargetPort: intstr.FromInt32(targetPort),
-				Protocol:   protocol,
-			}
-			if p.NodePort > 0 {
-				sp.NodePort = p.NodePort
-			}
-			svcPorts = append(svcPorts, sp)
-		}
+		svcPorts = buildServicePorts(svcCfg.Ports)
 		switch svcCfg.Type {
 		case "NodePort":
 			svcType = corev1.ServiceTypeNodePort
@@ -1022,6 +1116,137 @@ func (r *VestaAppReconciler) reconcileService(ctx context.Context, app *vestav1a
 		})
 		return err
 	})
+}
+
+// defaultIngressClassAnnotation marks the cluster-wide default IngressClass.
+const defaultIngressClassAnnotation = "ingressclass.kubernetes.io/is-default-class"
+
+// resolveIngressClassName resolves which IngressClass an app's ingresses belong to:
+// app-level override → platform default (VestaConfig) → the cluster's default IngressClass.
+// The last fallback matters because controllers such as Traefik only load an ingress'
+// TLS secret for ingresses they own — an unclassed ingress is served with the
+// controller's default self-signed certificate instead. Returns "" if none is found.
+func (r *VestaAppReconciler) resolveIngressClassName(ctx context.Context, app *vestav1alpha1.VestaApp) string {
+	if app.Spec.Ingress != nil && app.Spec.Ingress.IngressClassName != "" {
+		return app.Spec.Ingress.IngressClassName
+	}
+	if name := r.ConfigResolver.GetIngressClassName(); name != "" {
+		return name
+	}
+
+	classes := &networkingv1.IngressClassList{}
+	if err := r.Client.List(ctx, classes); err != nil {
+		log.FromContext(ctx).V(1).Info("unable to list IngressClasses to resolve the default", "error", err.Error())
+		return ""
+	}
+	for i := range classes.Items {
+		if classes.Items[i].Annotations[defaultIngressClassAnnotation] == "true" {
+			return classes.Items[i].Name
+		}
+	}
+	return ""
+}
+
+// clusterIssuerAnnotation is the cert-manager annotation naming the issuer for an Ingress.
+const clusterIssuerAnnotation = "cert-manager.io/cluster-issuer"
+
+// TLS modes for IngressConfig.TLSMode / IngressOverride.TLSMode.
+const (
+	// tlsModeManual uses a certificate the user supplied via TLSSecretName.
+	tlsModeManual = "manual"
+	// tlsModeCustomAnnotations hands TLS entirely to the user's raw ingress annotations.
+	tlsModeCustomAnnotations = "custom-annotations"
+)
+
+// certConfig is the resolved certificate strategy for one app-environment.
+type certConfig struct {
+	// ClusterIssuer is stamped as the cert-manager annotation. Empty when the certificate
+	// is user-supplied, when the mode is Unmanaged, or when nothing is configured anywhere.
+	ClusterIssuer string
+	// SecretName is the Ingress' TLS secret — either a certificate the user supplied or
+	// the generated "<app>-<env>-tls" that cert-manager writes into.
+	SecretName string
+	// Unmanaged means the user asked to drive TLS through raw ingress annotations. The
+	// operator stamps neither the issuer annotation nor spec.tls and leaves their
+	// annotations in sole charge.
+	Unmanaged bool
+	// AdoptedFromAnnotation records that the issuer came from a legacy
+	// cert-manager.io/cluster-issuer annotation rather than a field, which is how installs
+	// predating the provider selector keep working until the app is next saved.
+	AdoptedFromAnnotation bool
+}
+
+// resolveCertConfig decides how one app-environment gets its certificate.
+//
+// Precedence, highest first:
+//
+//	env  tlsMode / app tlsMode == custom-annotations  → Unmanaged, stamp nothing
+//	env  tlsSecretName → app tlsSecretName            → user-supplied cert, no issuer
+//	env  clusterIssuer → app clusterIssuer            → the provider selector
+//	env  annotations[cert-manager.io/cluster-issuer]  → legacy, adopted
+//	app  annotations[cert-manager.io/cluster-issuer]  → legacy, adopted
+//	VestaConfig.spec.clusterIssuer                    → the instance default
+//
+// The two legacy annotation tiers exist because before the provider selector shipped, a
+// hand-written annotation was the *only* way to choose an issuer per environment, and it
+// won by virtue of being merged after the operator's own annotations. Ranking it below the
+// fields but above the instance default keeps every such install resolving to the same
+// issuer, while letting an explicit selection win from now on.
+func resolveCertConfig(app *vestav1alpha1.VestaApp, envIngress *vestav1alpha1.IngressOverride,
+	globalIssuer, defaultSecretName string) certConfig {
+
+	appIngress := app.Spec.Ingress
+
+	mode := ""
+	if appIngress != nil {
+		mode = appIngress.TLSMode
+	}
+	if envIngress != nil && envIngress.TLSMode != "" {
+		mode = envIngress.TLSMode
+	}
+	if mode == tlsModeCustomAnnotations {
+		return certConfig{Unmanaged: true, SecretName: defaultSecretName}
+	}
+
+	// A user-supplied certificate settles it: there is nothing for cert-manager to issue.
+	if envIngress != nil && envIngress.TLSSecretName != "" {
+		return certConfig{SecretName: envIngress.TLSSecretName}
+	}
+	if appIngress != nil && appIngress.TLSSecretName != "" {
+		return certConfig{SecretName: appIngress.TLSSecretName}
+	}
+	// Manual mode with no secret named yet — the user is mid-way through supplying one.
+	// Stamp no issuer rather than silently falling back to ACME and issuing a certificate
+	// they did not ask for.
+	if mode == tlsModeManual {
+		return certConfig{SecretName: defaultSecretName}
+	}
+
+	cfg := certConfig{SecretName: defaultSecretName}
+
+	switch {
+	case envIngress != nil && envIngress.ClusterIssuer != "":
+		cfg.ClusterIssuer = envIngress.ClusterIssuer
+	case appIngress != nil && appIngress.ClusterIssuer != "":
+		cfg.ClusterIssuer = appIngress.ClusterIssuer
+	default:
+		// Legacy: an issuer typed into the raw annotation map.
+		if envIngress != nil {
+			if v := envIngress.Annotations[clusterIssuerAnnotation]; v != "" {
+				cfg.ClusterIssuer, cfg.AdoptedFromAnnotation = v, true
+			}
+		}
+		if cfg.ClusterIssuer == "" && appIngress != nil {
+			if v := appIngress.Annotations[clusterIssuerAnnotation]; v != "" {
+				cfg.ClusterIssuer, cfg.AdoptedFromAnnotation = v, true
+			}
+		}
+		if cfg.ClusterIssuer == "" {
+			cfg.ClusterIssuer = globalIssuer
+		}
+	}
+
+	return cfg
 }
 
 func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
@@ -1085,6 +1310,9 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 	if target.Config.Name != "" {
 		tlsSecretName = fmt.Sprintf("%s-%s-tls", app.Name, target.Config.Name)
 	}
+	cert := resolveCertConfig(app, target.Config.Ingress, r.ConfigResolver.GetClusterIssuer(), tlsSecretName)
+
+	ingressClassName := r.resolveIngressClassName(ctx, app)
 
 	return retry.OnError(retry.DefaultRetry, isRetriable, func() error {
 		ing := &networkingv1.Ingress{
@@ -1098,21 +1326,6 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			ing.Labels = labels
 			ing.Annotations = map[string]string{}
 
-			var clusterIssuer, ingressClassName string
-			if app.Spec.Ingress != nil {
-				clusterIssuer = app.Spec.Ingress.ClusterIssuer
-				ingressClassName = app.Spec.Ingress.IngressClassName
-			}
-			if clusterIssuer == "" {
-				clusterIssuer = r.ConfigResolver.GetClusterIssuer()
-			}
-			if clusterIssuer != "" {
-				ing.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuer
-			}
-
-			if ingressClassName == "" {
-				ingressClassName = r.ConfigResolver.GetIngressClassName()
-			}
 			if ingressClassName != "" {
 				ing.Annotations["kubernetes.io/ingress.class"] = ingressClassName
 			}
@@ -1127,6 +1340,16 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				for k, v := range target.Config.Ingress.Annotations {
 					ing.Annotations[k] = v
 				}
+			}
+
+			// Stamp the resolved issuer *after* the user's annotations, so a stale
+			// cert-manager.io/cluster-issuer left in the map cannot silently override the
+			// provider selection. Users who genuinely want to drive TLS by annotation ask
+			// for it explicitly with tlsMode: custom-annotations, which lands in Unmanaged
+			// above and never reaches here.
+			delete(ing.Annotations, clusterIssuerAnnotation)
+			if tlsEnabled && !cert.Unmanaged && cert.ClusterIssuer != "" {
+				ing.Annotations[clusterIssuerAnnotation] = cert.ClusterIssuer
 			}
 
 			rules := make([]networkingv1.IngressRule, 0, len(domains))
@@ -1154,12 +1377,19 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				})
 			}
 
+			// Keep any class already on the object (e.g. defaulted by the API server
+			// at creation) — the wholesale Spec assignment below would drop it.
+			existingClass := ing.Spec.IngressClassName
+
 			ing.Spec = networkingv1.IngressSpec{
 				Rules: rules,
 			}
 
-			if ingressClassName != "" {
+			switch {
+			case ingressClassName != "":
 				ing.Spec.IngressClassName = &ingressClassName
+			case existingClass != nil:
+				ing.Spec.IngressClassName = existingClass
 			}
 
 			if tlsEnabled {
@@ -1175,11 +1405,15 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 						ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = middlewareRef
 					}
 				}
-				ing.Spec.TLS = []networkingv1.IngressTLS{
-					{
-						Hosts:      domains,
-						SecretName: tlsSecretName,
-					},
+				// Unmanaged leaves spec.tls alone too — the user's annotations decide
+				// whether and how this ingress terminates TLS.
+				if !cert.Unmanaged {
+					ing.Spec.TLS = []networkingv1.IngressTLS{
+						{
+							Hosts:      domains,
+							SecretName: cert.SecretName,
+						},
+					}
 				}
 			}
 
@@ -1247,13 +1481,7 @@ func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *
 	redirectTarget := fmt.Sprintf("%s://%s", scheme, primaryDomain)
 
 	// Resolve ingress class
-	var ingressClassName string
-	if app.Spec.Ingress != nil && app.Spec.Ingress.IngressClassName != "" {
-		ingressClassName = app.Spec.Ingress.IngressClassName
-	}
-	if ingressClassName == "" {
-		ingressClassName = r.ConfigResolver.GetIngressClassName()
-	}
+	ingressClassName := r.resolveIngressClassName(ctx, app)
 
 	labels := r.labelsForApp(app)
 	labels["vesta.sh/redirect"] = "true"
@@ -1271,11 +1499,15 @@ func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *
 		}
 	}
 
-	// Resolve TLS config for redirect domains
+	// Resolve TLS config for redirect domains. The redirect ingress gets its own
+	// certificate because it serves different hostnames than the primary one — except
+	// under a user-supplied certificate, where resolveCertConfig returns their secret and
+	// the same cert is expected to cover both sets of names.
 	tlsSecretName := fmt.Sprintf("%s-redirect-tls", app.Name)
 	if target.Config.Name != "" {
 		tlsSecretName = fmt.Sprintf("%s-%s-redirect-tls", app.Name, target.Config.Name)
 	}
+	cert := resolveCertConfig(app, target.Config.Ingress, r.ConfigResolver.GetClusterIssuer(), tlsSecretName)
 
 	// For Traefik: create a Middleware CRD
 	if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
@@ -1315,16 +1547,11 @@ func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *
 				ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = middlewareRef
 			}
 
-			// Cert-manager annotation for TLS on redirect domains
-			var clusterIssuer string
-			if app.Spec.Ingress != nil {
-				clusterIssuer = app.Spec.Ingress.ClusterIssuer
-			}
-			if clusterIssuer == "" {
-				clusterIssuer = r.ConfigResolver.GetClusterIssuer()
-			}
-			if clusterIssuer != "" && tlsEnabled {
-				ing.Annotations["cert-manager.io/cluster-issuer"] = clusterIssuer
+			// Cert-manager annotation for TLS on redirect domains. This ingress does not
+			// merge user annotations, so ordering is not load-bearing here the way it is
+			// on the primary ingress.
+			if tlsEnabled && !cert.Unmanaged && cert.ClusterIssuer != "" {
+				ing.Annotations[clusterIssuerAnnotation] = cert.ClusterIssuer
 			}
 
 			// Build ingress rules for redirect domains
@@ -1356,19 +1583,24 @@ func (r *VestaAppReconciler) reconcileRedirectIngress(ctx context.Context, app *
 				})
 			}
 
+			existingClass := ing.Spec.IngressClassName
+
 			ing.Spec = networkingv1.IngressSpec{
 				Rules: rules,
 			}
 
-			if ingressClassName != "" {
+			switch {
+			case ingressClassName != "":
 				ing.Spec.IngressClassName = &ingressClassName
+			case existingClass != nil:
+				ing.Spec.IngressClassName = existingClass
 			}
 
-			if tlsEnabled {
+			if tlsEnabled && !cert.Unmanaged {
 				ing.Spec.TLS = []networkingv1.IngressTLS{
 					{
 						Hosts:      redirectDomains,
-						SecretName: tlsSecretName,
+						SecretName: cert.SecretName,
 					},
 				}
 			}
@@ -1456,13 +1688,7 @@ func (r *VestaAppReconciler) reconcileHTTPSRedirectMiddleware(ctx context.Contex
 	}
 
 	// Determine ingress class
-	ingressClassName := ""
-	if app.Spec.Ingress != nil {
-		ingressClassName = app.Spec.Ingress.IngressClassName
-	}
-	if ingressClassName == "" {
-		ingressClassName = r.ConfigResolver.GetIngressClassName()
-	}
+	ingressClassName := r.resolveIngressClassName(ctx, app)
 	isTraefik := strings.Contains(strings.ToLower(ingressClassName), "traefik")
 
 	if tlsEnabled && isTraefik {
@@ -1823,6 +2049,7 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 		hasCrashLoop := false
 		hasImagePullErr := false
 		autoscaleActive := false
+		var issues []appIssue
 
 		for _, target := range targetNamespaces {
 			// Check if any environment has autoscale
@@ -1836,6 +2063,7 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 			if err := r.Get(ctx, deployKey, &deploy); err != nil {
 				continue // Deployment may not exist yet
 			}
+			issues = append(issues, diagnoseDeployment(target.Config.Name, &deploy)...)
 
 			if deploy.Spec.Replicas != nil {
 				totalDesired += *deploy.Spec.Replicas
@@ -1852,6 +2080,8 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 			); err != nil {
 				continue
 			}
+
+			issues = append(issues, diagnosePods(target.Config.Name, podList.Items)...)
 
 			for _, pod := range podList.Items {
 				// Skip pods that belong to cron jobs
@@ -1899,6 +2129,19 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 		default:
 			app.Status.Phase = "Pending"
 		}
+
+		// Record why, not just what. A healthy app carries no reason; anything else
+		// names the specific pod, container, and underlying error.
+		reason, message := summarizeIssues(issues)
+		switch app.Status.Phase {
+		case "Running", "Sleeping":
+			app.Status.Reason = ""
+			app.Status.Message = ""
+		default:
+			app.Status.Reason = reason
+			app.Status.Message = message
+		}
+		r.setReadyCondition(&app, reason, message)
 
 		// Populate scaling status
 		app.Status.Scaling = &vestav1alpha1.ScalingStatus{
@@ -1956,15 +2199,59 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 }
 
 func (r *VestaAppReconciler) updateStatusFailed(ctx context.Context, app *vestav1alpha1.VestaApp, reconcileErr error) (ctrl.Result, error) {
+	reason, message := classifyReconcileError(reconcileErr)
+
 	_ = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var latest vestav1alpha1.VestaApp
 		if err := r.Get(ctx, client.ObjectKeyFromObject(app), &latest); err != nil {
 			return err
 		}
 		latest.Status.Phase = "Failed"
+		// The reconcile error used to be dropped here, leaving the bare word
+		// "Failed" with the cause only in the operator's logs.
+		latest.Status.Reason = reason
+		latest.Status.Message = truncateMessage(message)
+		r.setReadyCondition(&latest, reason, message)
 		return r.Status().Update(ctx, &latest)
 	})
 	return ctrl.Result{}, reconcileErr
+}
+
+// setReadyCondition mirrors the reason onto a standard Ready condition so
+// kubectl wait, kubectl describe, and controller-runtime tooling can read it.
+func (r *VestaAppReconciler) setReadyCondition(app *vestav1alpha1.VestaApp, reason, message string) {
+	ready := metav1.ConditionTrue
+	condReason := "AppReady"
+	condMessage := "All environments are running"
+
+	if reason != "" {
+		ready = metav1.ConditionFalse
+		condReason = reason
+		condMessage = truncateMessage(message)
+	}
+
+	condition := metav1.Condition{
+		Type:               "Ready",
+		Status:             ready,
+		Reason:             condReason,
+		Message:            condMessage,
+		LastTransitionTime: metav1.Now(),
+		ObservedGeneration: app.Generation,
+	}
+
+	for i, existing := range app.Status.Conditions {
+		if existing.Type != condition.Type {
+			continue
+		}
+		// Keep the original transition time when the state itself hasn't changed,
+		// otherwise every reconcile looks like a fresh transition.
+		if existing.Status == condition.Status {
+			condition.LastTransitionTime = existing.LastTransitionTime
+		}
+		app.Status.Conditions[i] = condition
+		return
+	}
+	app.Status.Conditions = append(app.Status.Conditions, condition)
 }
 
 // isRetriable returns true for errors that are safe to retry (conflicts and already-exists)

@@ -3,6 +3,9 @@ operator/bin/
 api/bin/
 cli/bin/
 
+# Release artifacts
+dist/
+
 # Node
 ui/node_modules/
 ui/dist/

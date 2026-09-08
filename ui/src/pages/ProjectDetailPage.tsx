@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { useUserRole } from '../lib/useRole'
+import type { VestaBundle } from '../lib/api'
+import { useUserRole, useIsProjectOwner } from '../lib/useRole'
 import RevealableInput from '../components/RevealableInput'
 
 export default function ProjectDetailPage() {
@@ -234,6 +235,7 @@ export default function ProjectDetailPage() {
       <NotificationsSection projectId={projectId!} />
       <AlertRulesSection projectId={projectId!} />
       <DependencyGraphSection projectId={projectId!} />
+      <ProjectTransferSection projectId={projectId!} />
     </div>
   )
 }
@@ -999,6 +1001,186 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
         <p className="text-status-failed text-xs">{(mutation.error as Error).message}</p>
       )}
     </form>
+  )
+}
+
+// Moves a whole project to a different Vesta install. The bundle is sealed to one
+// instance's public key, so the file is inert to everyone else, including whoever carries
+// it. Export is owner-or-admin because the bundle holds every secret in the project.
+function ProjectTransferSection({ projectId }: { projectId: string }) {
+  const role = useUserRole()
+  const isAdmin = role === 'admin'
+  const isOwner = useIsProjectOwner(projectId)
+
+  if (!isAdmin && !isOwner) return null
+
+  return (
+    <section className="card p-6 space-y-6">
+      <div>
+        <h3 className="section-title">Transfer</h3>
+        <p className="text-xs text-text-tertiary mt-1">
+          Move this project — apps, configuration and secrets — to another Vesta instance.
+        </p>
+      </div>
+      <ExportProjectPanel projectId={projectId} />
+      {isAdmin && (
+        <div className="pt-6 border-t border-border">
+          <ImportProjectPanel />
+        </div>
+      )}
+    </section>
+  )
+}
+
+function ExportProjectPanel({ projectId }: { projectId: string }) {
+  const [recipientKey, setRecipientKey] = useState('')
+  const [error, setError] = useState('')
+  const [done, setDone] = useState('')
+
+  const exportMutation = useMutation({
+    mutationFn: () => api.exportProject(projectId, recipientKey.trim()),
+    onSuccess: (bundle) => {
+      // The download is the deliverable; nothing is kept server-side.
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `vesta-${projectId}.bundle.json`
+      link.click()
+      URL.revokeObjectURL(url)
+      setError('')
+      setDone(`Sealed for ${bundle.recipient}`)
+      setRecipientKey('')
+    },
+    onError: (e: Error) => { setError(e.message); setDone('') },
+  })
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="label">Export</label>
+        <p className="text-[11px] text-text-tertiary mb-2">
+          Paste the target instance&apos;s public key, found under Settings → Instance Identity there. Referenced
+          registry credentials travel with the bundle.
+        </p>
+        <textarea
+          value={recipientKey}
+          onChange={(e) => { setRecipientKey(e.target.value); setError(''); setDone('') }}
+          placeholder="vesta1:pub:..."
+          rows={2}
+          spellCheck={false}
+          className="input-field font-mono text-xs w-full"
+        />
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => exportMutation.mutate()}
+          disabled={exportMutation.isPending || !recipientKey.trim()}
+          className="btn-primary text-xs"
+        >
+          {exportMutation.isPending ? 'Sealing...' : 'Export Bundle'}
+        </button>
+        {done && <span className="text-xs font-mono text-accent">{done}</span>}
+      </div>
+      {error && <p className="text-status-failed text-xs">{error}</p>}
+    </div>
+  )
+}
+
+function ImportProjectPanel() {
+  const queryClient = useQueryClient()
+  const [bundle, setBundle] = useState<VestaBundle | null>(null)
+  const [filename, setFilename] = useState('')
+  const [importAs, setImportAs] = useState('')
+  const [needsRename, setNeedsRename] = useState(false)
+  const [error, setError] = useState('')
+  const [result, setResult] = useState('')
+
+  const importMutation = useMutation({
+    mutationFn: () => api.importProject(bundle!, importAs.trim() || undefined),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+      const counts = Object.entries(res.created).map(([k, v]) => `${v} ${k}`).join(', ')
+      setResult(`Imported ${res.project}${counts ? ` — ${counts}` : ''}`)
+      setError(''); setNeedsRename(false); setBundle(null); setFilename(''); setImportAs('')
+    },
+    onError: (e: Error) => {
+      setError(e.message)
+      setResult('')
+      // A name clash is the one failure the operator can resolve here and now.
+      setNeedsRename(/already exists/i.test(e.message))
+    },
+  })
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setFilename(file.name)
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target?.result as string)
+        if (!parsed?.vestaBundle || !parsed?.ciphertext) throw new Error('not a Vesta bundle')
+        setBundle(parsed)
+        setError(''); setResult(''); setNeedsRename(false)
+      } catch {
+        setBundle(null)
+        setError('That file is not a Vesta project bundle.')
+      }
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="label">Import</label>
+        <p className="text-[11px] text-text-tertiary mb-2">
+          Open a bundle sealed for this instance. The project is created fresh; existing projects are never
+          overwritten.
+        </p>
+        <input
+          type="file"
+          accept=".json,application/json"
+          onChange={handleFile}
+          className="text-xs text-text-tertiary file:mr-3 file:btn-outline file:text-xs file:border-border"
+        />
+      </div>
+
+      {bundle && (
+        <div className="text-[11px] font-mono text-text-tertiary space-y-0.5">
+          <p>{filename}</p>
+          <p>sealed for {bundle.recipient} · exported {new Date(bundle.exportedAt).toLocaleString()}</p>
+        </div>
+      )}
+
+      {needsRename && (
+        <div>
+          <label className="label">Import As</label>
+          <input
+            value={importAs}
+            onChange={(e) => setImportAs(e.target.value)}
+            placeholder="new-project-name"
+            className="input-field font-mono text-xs"
+          />
+        </div>
+      )}
+
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => importMutation.mutate()}
+          disabled={importMutation.isPending || !bundle || (needsRename && !importAs.trim())}
+          className="btn-primary text-xs"
+        >
+          {importMutation.isPending ? 'Importing...' : 'Import Bundle'}
+        </button>
+        {result && <span className="text-xs font-mono text-accent">{result}</span>}
+      </div>
+      {error && <p className="text-status-failed text-xs">{error}</p>}
+    </div>
   )
 }
 

@@ -30,10 +30,11 @@ rules:
   resources: [ "vestaenvironments/status" ]
   verbs: [ "get", "update", "patch" ]
 
-# VestaConfig CRD
+# VestaConfig CRD. Patch is required because setting the instance-wide default SSL
+# provider writes spec.clusterIssuer here — the operator's only source for that fallback.
 - apiGroups: [ "kubernetes.getvesta.sh" ]
   resources: [ "vestaconfigs" ]
-  verbs: [ "get", "list", "watch" ]
+  verbs: [ "get", "list", "watch", "update", "patch" ]
 
 # VestaSecret CRD
 - apiGroups: [ "kubernetes.getvesta.sh" ]
@@ -84,11 +85,30 @@ rules:
 - apiGroups: [ "networking.k8s.io" ]
   resources: [ "networkpolicies" ]
   verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
+- apiGroups: [ "networking.k8s.io" ]
+  resources: [ "ingressclasses" ]
+  verbs: [ "get", "list", "watch" ]
 
 # Traefik Middleware CRDs (for redirect and HTTPS redirect middlewares)
 - apiGroups: [ "traefik.io" ]
   resources: [ "middlewares" ]
   verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
+
+# SSL providers: the API creates and manages cert-manager ClusterIssuers on the admin's
+# behalf (Settings -> SSL Certificates). Certificates are read-only — cert-manager owns
+# them; Vesta only reports their status.
+- apiGroups: [ "cert-manager.io" ]
+  resources: [ "clusterissuers" ]
+  verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
+- apiGroups: [ "cert-manager.io" ]
+  resources: [ "certificates" ]
+  verbs: [ "get", "list", "watch" ]
+
+# Detect whether cert-manager is installed at all, so the UI can offer the install
+# instructions instead of a form that would silently produce nothing.
+- apiGroups: [ "apiextensions.k8s.io" ]
+  resources: [ "customresourcedefinitions" ]
+  verbs: [ "get", "list" ]
 
 # Autoscaling
 - apiGroups: [ "autoscaling" ]
@@ -106,4 +126,4 @@ rules:
   verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
 - apiGroups: [ "" ]
   resources: [ "events" ]
-  verbs: [ "create", "patch" ]
+  verbs: [ "get", "list", "watch", "create", "patch" ]

@@ -1,3 +1,11 @@
+// Package v1alpha1 holds the Vesta API types.
+//
+// The groupName marker is what controller-gen reads to stamp the CRD group. Without it
+// generation emits `group: ""`, which is how the committed manifests came to be stale:
+// `make generate` produced unusable output, so nobody re-ran it.
+//
+// +kubebuilder:object:generate=true
+// +groupName=kubernetes.getvesta.sh
 package v1alpha1
 
 import (
