@@ -29,10 +29,21 @@ metadata:
     {{- include "vesta.labels" . | nindent 4 }}
     app.kubernetes.io/component: upgrader
 rules:
+  # Every verb the chart's own resources need, delete included: hooks are annotated
+  # helm.sh/hook-delete-policy: before-hook-creation, so Helm deletes the previous run's
+  # objects before recreating them. A role without delete fails the pre-upgrade hook and
+  # the upgrade never starts.
+  #
   # Helm stores release state as Secrets in the release namespace.
   - apiGroups: [""]
     resources: ["secrets", "configmaps", "services", "serviceaccounts", "persistentvolumeclaims"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The chart renders the release Namespace. Deliberately no delete: nothing an upgrade
+  # does should be able to remove the namespace, which is what 0.7.0 achieved by other
+  # means.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -48,10 +59,11 @@ rules:
   - apiGroups: ["kubernetes.getvesta.sh"]
     resources: ["vestaconfigs"]
     verbs: ["get", "list", "create", "update", "patch"]
-  # Re-applying the chart re-applies the platform's own RBAC.
+  # Re-applying the chart re-applies the platform's own RBAC. delete is required because
+  # the CRD hook's ClusterRole is recreated on every upgrade under before-hook-creation.
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
-    verbs: ["get", "list", "create", "update", "patch", "bind", "escalate"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "bind", "escalate"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
