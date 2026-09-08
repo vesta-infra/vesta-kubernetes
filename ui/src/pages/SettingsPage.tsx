@@ -4,6 +4,7 @@ import { api } from '../lib/api'
 import { useUserRole, useCurrentUsername } from '../lib/useRole'
 import MFAEnrollment from '../components/MFAEnrollment'
 import ReauthPrompt from '../components/ReauthPrompt'
+import UIDomainSettings from '../components/UIDomainSettings'
 import { BackupCodes } from '../components/MFAChallenge'
 import SSLProvidersSection from '../components/SSLProviders'
 
@@ -97,6 +98,7 @@ export default function SettingsPage() {
 
       {activeTab === 'ssl' && isAdmin && (
         <div className="space-y-8">
+          <UIDomainSettings />
           <SettingsSection
             title="SSL Certificates"
             description="Certificate providers apps can issue TLS certificates from. Vesta creates these as cert-manager ClusterIssuers; the default is used by any app that does not pick its own."

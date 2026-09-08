@@ -21,6 +21,24 @@ export type MFAStatus = {
 }
 
 
+
+export type UIDomainSettings = {
+  host: string
+  tls: boolean
+  clusterIssuer: string
+  ingressClassName: string
+}
+
+export type UIDomainStatus = {
+  configured: boolean
+  settings: UIDomainSettings
+  certReady: boolean
+  certMessage: string
+  namespace: string
+  /** The --set flags that make a change survive the next `helm upgrade`. */
+  helmValues: string[]
+}
+
 export type ComponentVersion = {
   component: string
   image: string
@@ -833,6 +851,14 @@ export const api = {
   // SSL certificate providers (cert-manager ClusterIssuers)
   getCertManagerStatus: () =>
     request<{ installed: boolean; namespace: string }>('/settings/ssl-providers/status'),
+
+  // The dashboard's own hostname and certificate
+  getUIDomain: () =>
+    request<UIDomainStatus>('/settings/ui-domain'),
+
+  setUIDomain: (settings: UIDomainSettings) =>
+    request<{ settings: UIDomainSettings; previous: UIDomainSettings; helmValues: string[]; note: string }>(
+      '/settings/ui-domain', { method: 'PUT', body: JSON.stringify(settings) }),
 
   listSSLProviders: () =>
     request<{ providers: SSLProvider[]; certManagerInstalled: boolean; default: string }>('/settings/ssl-providers'),

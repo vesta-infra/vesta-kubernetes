@@ -128,6 +128,12 @@ jobs:
       - name: Check the CRDs still accept data an earlier release stored
         run: ./hack/check-crd-compat.sh 0.6.3
 
+      # The upgrade Job runs helm as vesta-upgrader, so that account needs every verb the
+      # chart's own resources require. 0.7.3 shipped without delete on RBAC resources and
+      # the pre-upgrade hook failed with a forbidden error.
+      - name: Check self-update can apply everything the chart renders
+        run: ./hack/check-upgrader-rbac.sh
+
       - name: Package Helm chart
         run: helm package deploy/helm/vesta
 

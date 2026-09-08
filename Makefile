@@ -1,4 +1,4 @@
-.PHONY: all build operator api cli sync-crds check-crds helm-lint helm-upgrade-safety cli-release cli-install ui install crds run-operator run-api run-ui docker-build docker-push help
+.PHONY: all build operator api cli sync-crds check-crds helm-lint helm-upgrade-safety check-upgrader-rbac cli-release cli-install ui install crds run-operator run-api run-ui docker-build docker-push help
 
 # Must match .github/workflows/release.yaml and the image repositories in
 # deploy/helm/vesta/values.yaml. These disagreed for a long time -- the Makefile pushed to
@@ -163,6 +163,9 @@ CHART_BASELINE ?= 0.6.3
 
 helm-upgrade-safety: ## Fail if this chart drops a resource an earlier release rendered
 	./hack/check-no-dropped-resources.sh $(CHART_BASELINE)
+
+check-upgrader-rbac: ## Fail if self-update cannot apply everything the chart renders
+	./hack/check-upgrader-rbac.sh
 
 clean: ## Clean build artifacts
 	rm -rf operator/bin api/bin cli/bin ui/dist dist

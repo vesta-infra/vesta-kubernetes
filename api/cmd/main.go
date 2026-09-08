@@ -388,6 +388,11 @@ func main() {
 
 		// SSL certificate providers (admin only). These create and manage cert-manager
 		// ClusterIssuers, so they are gated on the global admin role rather than a scope.
+		// The dashboard's own hostname and certificate. Admin only: a wrong hostname
+		// makes the UI unreachable except by port-forward.
+		auth.GET("/settings/ui-domain", middleware.RequireRole("admin"), h.GetUIDomain)
+		auth.PUT("/settings/ui-domain", middleware.RequireRole("admin"), h.UpdateUIDomain)
+
 		auth.GET("/settings/ssl-providers", middleware.RequireRole("admin"), h.ListSSLProviders)
 		auth.POST("/settings/ssl-providers", middleware.RequireRole("admin"), h.CreateSSLProvider)
 		auth.PUT("/settings/ssl-providers/default", middleware.RequireRole("admin"), h.SetDefaultSSLProvider)
