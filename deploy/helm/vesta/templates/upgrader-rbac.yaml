@@ -47,6 +47,19 @@ rules:
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Read-only, and not because the chart renders these. `helm upgrade --wait` computes
+  # readiness by walking from a Deployment to its ReplicaSets to their Pods, and from a
+  # Service to its Endpoints. Without these it fails partway through the wait -- after the
+  # manifests have already been applied, which is the worst moment to stop.
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods", "endpoints", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
