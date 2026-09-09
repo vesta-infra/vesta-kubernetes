@@ -49,6 +49,17 @@ KINDS = {
 NEEDED = {"create", "update", "patch", "delete"}
 NO_DELETE = {"Namespace", "VestaConfig"}
 
+# Resources helm reads but the chart never renders. `helm upgrade --wait` walks from a
+# Deployment to its ReplicaSets to their Pods, and from a Service to its Endpoints, to
+# decide whether a release is ready. Missing these fails the wait *after* the manifests
+# are applied. Checking only what the chart renders missed this entirely.
+WATCHED = {
+    ("apps", "replicasets"): {"list"},
+    ("", "pods"): {"list"},
+    ("", "endpoints"): {"list"},
+    ("discovery.k8s.io", "endpointslices"): {"list"},
+}
+
 docs = [d for d in yaml.safe_load_all(sys.stdin) if d and d.get("kind")]
 
 rendered, role = set(), None
@@ -78,6 +89,15 @@ for kind in sorted(rendered):
     if missing:
         group = key[0] or "core"
         problems.append(f"{kind} ({group}/{key[1]}): missing {sorted(missing)}")
+
+for key, need in sorted(WATCHED.items()):
+    have = allowed.get(key, set())
+    if "*" in have:
+        continue
+    missing = need - have
+    if missing:
+        group = key[0] or "core"
+        problems.append(f"{group}/{key[1]}: missing {sorted(missing)} (helm --wait reads this)")
 
 if unknown:
     print("FAIL: the chart renders kinds this check does not know about:", file=sys.stderr)
