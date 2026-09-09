@@ -534,6 +534,16 @@ cd cli && go build -o vesta . && ./vesta --help
 ```
 
 
+ helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --version 0.7.4 --set ui.ingress.enabled=true \
+  --set ui.ingress.host=k8.vesta.com \
+  --set ui.ingress.tls=true \
+  --set ui.ingress.clusterIssuer=letsencrypt-prod \
+  --set ui.ingress.ingressClassName=traefik --reset-then-reuse-values
+
+   helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --version 0.7.4  --reset-then-reuse-values
+
 ```
 kubectl apply -f - <<EOF
 apiVersion: networking.k8s.io/v1
