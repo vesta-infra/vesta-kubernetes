@@ -146,8 +146,14 @@ generate: ## Generate CRD manifests from Go types, then sync them into the chart
 	@echo "objects earlier releases stored. Run 'make sync-crds' to copy them across,"
 	@echo "then 'make check-crds' -- and expect to add omitempty until it passes."
 
-sync-crds: ## Copy generated CRDs into the chart (then run check-crds)
-	cp operator/config/crd/bases/*.yaml deploy/helm/vesta/crds/
+sync-crds: ## Add newly generated properties to the chart's CRDs (then run check-crds)
+	@# Not a copy: the chart's schemas stay more permissive than controller-gen output,
+	@# because many Go fields lack omitempty and shipping the generated `required` lists
+	@# made existing VestaApps unappliable. This adds new properties without new
+	@# requirements. A missing property is not harmless either -- Kubernetes prunes what
+	@# the schema does not declare, silently, which is how per-app TLS settings vanished
+	@# on save.
+	python3 hack/merge-crd-properties.py operator/config/crd/bases deploy/helm/vesta/crds
 
 check-crds: ## Fail if the chart's CRDs would reject data an earlier release accepted
 	./hack/check-crd-compat.sh $(CHART_BASELINE)
