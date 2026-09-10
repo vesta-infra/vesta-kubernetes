@@ -2,12 +2,14 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
+import type { VestaBundle } from '../lib/api'
 import { useUserRole } from '../lib/useRole'
 
 export default function ProjectsPage() {
   const queryClient = useQueryClient()
   const { data, isLoading } = useQuery({ queryKey: ['projects'], queryFn: () => api.listProjects() })
   const [showCreate, setShowCreate] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const role = useUserRole()
 
   const deleteMutation = useMutation({
@@ -22,18 +24,31 @@ export default function ProjectsPage() {
           {data?.total ?? 0} project{(data?.total ?? 0) !== 1 ? 's' : ''}
         </p>
         {role !== 'viewer' && (
-        <button onClick={() => setShowCreate(!showCreate)} className="btn-primary">
-          <span className="flex items-center gap-2">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-            </svg>
-            New Project
-          </span>
-        </button>
+        <div className="flex items-center gap-3">
+          {/* Import lives here rather than inside a project: it creates one, so there is
+              nothing to be inside yet. */}
+          {role === 'admin' && (
+            <button
+              onClick={() => { setShowImport(!showImport); setShowCreate(false) }}
+              className="btn-outline text-xs"
+            >
+              {showImport ? 'Cancel' : 'Import from another instance'}
+            </button>
+          )}
+          <button onClick={() => { setShowCreate(!showCreate); setShowImport(false) }} className="btn-primary">
+            <span className="flex items-center gap-2">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              New Project
+            </span>
+          </button>
+        </div>
         )}
       </div>
 
       {showCreate && <CreateProjectForm onClose={() => setShowCreate(false)} />}
+      {showImport && <ImportProjectPanel onClose={() => setShowImport(false)} />}
 
       {isLoading && <Spinner />}
 
@@ -229,6 +244,103 @@ function Spinner() {
           <div className="w-2.5 h-2.5 rounded bg-accent" />
         </div>
       </div>
+    </div>
+  )
+}
+
+function ImportProjectPanel({ onClose }: { onClose: () => void }) {
+  const queryClient = useQueryClient()
+  const [bundle, setBundle] = useState<VestaBundle | null>(null)
+  const [filename, setFilename] = useState('')
+  const [importAs, setImportAs] = useState('')
+  const [needsRename, setNeedsRename] = useState(false)
+  const [error, setError] = useState('')
+  const [result, setResult] = useState('')
+
+  const importMutation = useMutation({
+    mutationFn: () => api.importProject(bundle!, importAs.trim() || undefined),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] })
+      const counts = Object.entries(res.created).map(([k, v]) => `${v} ${k}`).join(', ')
+      setResult(`Imported ${res.project}${counts ? ` — ${counts}` : ''}`)
+      setError(''); setNeedsRename(false); setBundle(null); setFilename(''); setImportAs('')
+    },
+    onError: (e: Error) => {
+      setError(e.message)
+      setResult('')
+      // A name clash is the one failure the operator can resolve here and now.
+      setNeedsRename(/already exists/i.test(e.message))
+    },
+  })
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setFilename(file.name)
+    const reader = new FileReader()
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target?.result as string)
+        if (!parsed?.vestaBundle || !parsed?.ciphertext) throw new Error('not a Vesta bundle')
+        setBundle(parsed)
+        setError(''); setResult(''); setNeedsRename(false)
+      } catch {
+        setBundle(null)
+        setError('That file is not a Vesta project bundle.')
+      }
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
+
+  return (
+    <div className="card p-5 space-y-3 animate-slide-up">
+      <div>
+        <h3 className="section-title">Import Project</h3>
+        <p className="text-[11px] text-text-tertiary mt-1 mb-3">
+          Open a bundle exported from another Vesta instance and sealed for this one. A new project is created;
+          existing projects are never overwritten.
+        </p>
+        <input
+          type="file"
+          accept=".json,application/json"
+          onChange={handleFile}
+          className="text-xs text-text-tertiary file:mr-3 file:btn-outline file:text-xs file:border-border"
+        />
+      </div>
+
+      {bundle && (
+        <div className="text-[11px] font-mono text-text-tertiary space-y-0.5">
+          <p>{filename}</p>
+          <p>sealed for {bundle.recipient} · exported {new Date(bundle.exportedAt).toLocaleString()}</p>
+        </div>
+      )}
+
+      {needsRename && (
+        <div>
+          <label className="label">Import As</label>
+          <input
+            value={importAs}
+            onChange={(e) => setImportAs(e.target.value)}
+            placeholder="new-project-name"
+            className="input-field font-mono text-xs"
+          />
+        </div>
+      )}
+
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => importMutation.mutate()}
+          disabled={importMutation.isPending || !bundle || (needsRename && !importAs.trim())}
+          className="btn-primary text-xs"
+        >
+          {importMutation.isPending ? 'Importing...' : 'Import Bundle'}
+        </button>
+        <button type="button" onClick={onClose} className="btn-ghost text-xs">Cancel</button>
+        {result && <span className="text-xs font-mono text-accent">{result}</span>}
+      </div>
+      {error && <p className="text-status-failed text-xs">{error}</p>}
     </div>
   )
 }
