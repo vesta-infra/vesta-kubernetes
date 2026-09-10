@@ -424,7 +424,7 @@ vesta project export acme \
   --api-url https://vesta.staging.example.com --token "$SOURCE_TOKEN"
 ```
 
-**On the target instance:**
+**On the target instance**, from **Projects → Import from another instance**, or with the CLI:
 
 ```bash
 vesta project import \

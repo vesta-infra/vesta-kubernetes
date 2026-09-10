@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import type { VestaBundle } from '../lib/api'
 import { useUserRole, useIsProjectOwner } from '../lib/useRole'
 import RevealableInput from '../components/RevealableInput'
 
@@ -1020,14 +1019,10 @@ function ProjectTransferSection({ projectId }: { projectId: string }) {
         <h3 className="section-title">Transfer</h3>
         <p className="text-xs text-text-tertiary mt-1">
           Move this project — apps, configuration and secrets — to another Vesta instance.
+          Importing is on the Projects list, since an import creates a project.
         </p>
       </div>
       <ExportProjectPanel projectId={projectId} />
-      {isAdmin && (
-        <div className="pt-6 border-t border-border">
-          <ImportProjectPanel />
-        </div>
-      )}
     </section>
   )
 }
@@ -1082,102 +1077,6 @@ function ExportProjectPanel({ projectId }: { projectId: string }) {
           {exportMutation.isPending ? 'Sealing...' : 'Export Bundle'}
         </button>
         {done && <span className="text-xs font-mono text-accent">{done}</span>}
-      </div>
-      {error && <p className="text-status-failed text-xs">{error}</p>}
-    </div>
-  )
-}
-
-function ImportProjectPanel() {
-  const queryClient = useQueryClient()
-  const [bundle, setBundle] = useState<VestaBundle | null>(null)
-  const [filename, setFilename] = useState('')
-  const [importAs, setImportAs] = useState('')
-  const [needsRename, setNeedsRename] = useState(false)
-  const [error, setError] = useState('')
-  const [result, setResult] = useState('')
-
-  const importMutation = useMutation({
-    mutationFn: () => api.importProject(bundle!, importAs.trim() || undefined),
-    onSuccess: (res) => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] })
-      const counts = Object.entries(res.created).map(([k, v]) => `${v} ${k}`).join(', ')
-      setResult(`Imported ${res.project}${counts ? ` — ${counts}` : ''}`)
-      setError(''); setNeedsRename(false); setBundle(null); setFilename(''); setImportAs('')
-    },
-    onError: (e: Error) => {
-      setError(e.message)
-      setResult('')
-      // A name clash is the one failure the operator can resolve here and now.
-      setNeedsRename(/already exists/i.test(e.message))
-    },
-  })
-
-  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setFilename(file.name)
-    const reader = new FileReader()
-    reader.onload = (ev) => {
-      try {
-        const parsed = JSON.parse(ev.target?.result as string)
-        if (!parsed?.vestaBundle || !parsed?.ciphertext) throw new Error('not a Vesta bundle')
-        setBundle(parsed)
-        setError(''); setResult(''); setNeedsRename(false)
-      } catch {
-        setBundle(null)
-        setError('That file is not a Vesta project bundle.')
-      }
-    }
-    reader.readAsText(file)
-    e.target.value = ''
-  }
-
-  return (
-    <div className="space-y-3">
-      <div>
-        <label className="label">Import</label>
-        <p className="text-[11px] text-text-tertiary mb-2">
-          Open a bundle sealed for this instance. The project is created fresh; existing projects are never
-          overwritten.
-        </p>
-        <input
-          type="file"
-          accept=".json,application/json"
-          onChange={handleFile}
-          className="text-xs text-text-tertiary file:mr-3 file:btn-outline file:text-xs file:border-border"
-        />
-      </div>
-
-      {bundle && (
-        <div className="text-[11px] font-mono text-text-tertiary space-y-0.5">
-          <p>{filename}</p>
-          <p>sealed for {bundle.recipient} · exported {new Date(bundle.exportedAt).toLocaleString()}</p>
-        </div>
-      )}
-
-      {needsRename && (
-        <div>
-          <label className="label">Import As</label>
-          <input
-            value={importAs}
-            onChange={(e) => setImportAs(e.target.value)}
-            placeholder="new-project-name"
-            className="input-field font-mono text-xs"
-          />
-        </div>
-      )}
-
-      <div className="flex items-center gap-3">
-        <button
-          type="button"
-          onClick={() => importMutation.mutate()}
-          disabled={importMutation.isPending || !bundle || (needsRename && !importAs.trim())}
-          className="btn-primary text-xs"
-        >
-          {importMutation.isPending ? 'Importing...' : 'Import Bundle'}
-        </button>
-        {result && <span className="text-xs font-mono text-accent">{result}</span>}
       </div>
       {error && <p className="text-status-failed text-xs">{error}</p>}
     </div>
