@@ -74,13 +74,32 @@ do by hand; it just removes the flags you would otherwise have to remember. Add
 
 ### 2. Helm, with a bundled database
 
+Create the namespace first, with the metadata Helm uses to recognise its own resources:
+
 ```bash
+kubectl create namespace vesta-system
+kubectl annotate namespace vesta-system \
+  meta.helm.sh/release-name=vesta \
+  meta.helm.sh/release-namespace=vesta-system
+kubectl label namespace vesta-system app.kubernetes.io/managed-by=Helm
+
 helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system --create-namespace \
+  -n vesta-system \
   --set postgres.enabled=true
 ```
 
-That is the whole command — CRDs are applied by the chart, image tags come from the chart
+Not `--create-namespace`. That creates the namespace without the ownership metadata, and
+the chart's own `Namespace` object then collides with it — `namespaces "vesta-system"
+already exists`, with the release recorded as failed even though everything else installed.
+Pre-creating it with the annotations lets Helm adopt it.
+
+The chart cannot simply stop rendering the Namespace: Helm deletes resources that
+disappear between chart versions, and that is how 0.7.0 destroyed installs upgrading from
+0.6.x. The template stays until the `resource-policy: keep` annotation it carries has
+reached existing releases, after which removing it is safe. `install-vesta.sh` does all of
+this for you.
+
+Everything else is handled — CRDs are applied by the chart, image tags come from the chart
 version, and the namespace is created for you. Pin the release with `--version 0.7.0`.
 
 The bundled database is a single-replica StatefulSet with a PVC. Fine for evaluation and
@@ -93,7 +112,7 @@ kubectl create secret generic vesta-db-secret -n vesta-system \
   --from-literal=DATABASE_URL="postgres://user:pass@db-host:5432/vesta?sslmode=disable"
 
 helm install vesta oci://ghcr.io/vesta-infra/charts/vesta \
-  -n vesta-system --create-namespace \
+  -n vesta-system \
   --set api.database.existingSecret=vesta-db-secret
 ```
 
@@ -102,10 +121,12 @@ into a Secret it manages.
 
 ### 4. From a checkout
 
+Prepare the namespace as in option 2, then:
+
 ```bash
 git clone https://github.com/vesta-infra/vesta-kubernetes
 cd vesta-kubernetes
-helm install vesta deploy/helm/vesta -n vesta-system --create-namespace \
+helm install vesta deploy/helm/vesta -n vesta-system \
   --set postgres.enabled=true \
   --set api.image.tag=0.7.0 --set ui.image.tag=0.7.0 --set operator.image.tag=0.7.0
 ```

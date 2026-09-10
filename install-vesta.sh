@@ -39,8 +39,15 @@ check_prereqs() {
   [ "${helm_major:-0}" -ge 3 ] || die "helm 3 or newer is required (found $(helm version --short 2>/dev/null || echo unknown))"
   ok "helm $(helm version --template '{{.Version}}' 2>/dev/null)"
 
+  # Named explicitly, every time. A cluster-shaped command that does not say which cluster
+  # it is about to change is how the wrong one gets changed.
+  context="$(kubectl config current-context 2>/dev/null || echo 'unknown')"
+  if [ "${VESTA_DRY_RUN:-}" = "1" ]; then
+    ok "would target context: $context"
+    return 0
+  fi
   kubectl cluster-info >/dev/null 2>&1 || die "cannot reach a Kubernetes cluster. Check your kubeconfig and current context."
-  ok "cluster reachable ($(kubectl config current-context 2>/dev/null || echo 'current context'))"
+  ok "cluster reachable (context: $context)"
 
   server=$(kubectl version -o json 2>/dev/null | sed -n 's/.*"minor": *"\([0-9]*\).*/\1/p' | head -1)
   if [ -n "$server" ] && [ "$server" -lt 27 ]; then
@@ -48,9 +55,47 @@ check_prereqs() {
   fi
 }
 
+# ensure_namespace creates the target namespace already carrying the metadata Helm uses to
+# recognise a resource as its own.
+#
+# The chart renders a Namespace object, and --create-namespace makes one first without that
+# metadata, so the two collide: "namespaces vesta-system already exists", and the release is
+# recorded as failed even though everything else installed. Pre-creating it with the
+# ownership annotations lets Helm adopt it instead.
+#
+# The chart cannot simply stop rendering the Namespace. Helm deletes resources that
+# disappear between chart versions, and that is precisely how 0.7.0 destroyed installs
+# upgrading from 0.6.x. The template stays until the `resource-policy: keep` annotation it
+# carries has reached existing releases, after which removing it is safe.
+ensure_namespace() {
+  # A dry run must not touch the cluster. This printed "created namespace" and then
+  # actually created one, on whatever context happened to be current -- which is the whole
+  # reason anyone passes VESTA_DRY_RUN in the first place.
+  if [ "${VESTA_DRY_RUN:-}" = "1" ]; then
+    log "Would ensure namespace $NAMESPACE exists and is adoptable by the $RELEASE release"
+    return 0
+  fi
+
+  if kubectl get namespace "$NAMESPACE" >/dev/null 2>&1; then
+    ok "namespace $NAMESPACE exists"
+  else
+    kubectl create namespace "$NAMESPACE" >/dev/null
+    ok "created namespace $NAMESPACE"
+  fi
+
+  kubectl annotate namespace "$NAMESPACE" \
+    "meta.helm.sh/release-name=$RELEASE" \
+    "meta.helm.sh/release-namespace=$NAMESPACE" --overwrite >/dev/null
+  kubectl label namespace "$NAMESPACE" \
+    app.kubernetes.io/managed-by=Helm --overwrite >/dev/null
+  ok "namespace is adoptable by the $RELEASE release"
+}
+
 build_args() {
+  # No --create-namespace: ensure_namespace has already made it, with the metadata Helm
+  # needs to adopt rather than collide with the chart's own Namespace object.
   set -- upgrade --install "$RELEASE" "$CHART" \
-    --namespace "$NAMESPACE" --create-namespace \
+    --namespace "$NAMESPACE" \
     --wait --timeout 10m
 
   [ -n "$VERSION" ] && set -- "$@" --version "$VERSION"
@@ -73,6 +118,7 @@ main() {
   log "Installing Vesta into namespace '${NAMESPACE}'"
   log ""
   check_prereqs
+  ensure_namespace
 
   # `upgrade --install` rather than `install`, so re-running this is the upgrade path
   # instead of an error about the release already existing.
