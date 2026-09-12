@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { useUserRole, useIsProjectOwner } from '../lib/useRole'
 import { parseEnvContent, secretKeyError, truncateSecretKey } from '../lib/secretKeys'
+import CopyEnvButton from '../components/CopyEnvButton'
 import RevealableInput from '../components/RevealableInput'
 
 export default function SecretsPage() {
@@ -195,6 +196,7 @@ function SecretItem({ secret: s, isAdmin, onDelete }: { secret: any; isAdmin: bo
         <div className="mt-3 ml-13 border-t border-border pt-3">
           <div className="flex items-center justify-between mb-2">
             <span className="text-[11px] font-mono text-yellow-500">Values visible (auto-hides in 30s)</span>
+            <CopyEnvButton values={revealed} />
           </div>
           <div className="space-y-1">
             {Object.entries(revealed).map(([k, v]) => (
@@ -558,6 +560,7 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete, showProject
         <div className="mt-3 ml-13 border-t border-border pt-3">
           <div className="flex items-center justify-between mb-2">
             <span className="text-[11px] font-mono text-yellow-500">Values visible (auto-hides in 30s)</span>
+            <CopyEnvButton values={revealed} />
           </div>
           <div className="space-y-1">
             {Object.entries(revealed).map(([k, v]) => (

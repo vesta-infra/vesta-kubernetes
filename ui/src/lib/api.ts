@@ -1,5 +1,160 @@
 const BASE = '/api/v1'
 
+
+/** A second factor registered to the current user. */
+export type MFAEnrollment = {
+  method: 'totp' | 'webauthn' | 'backup'
+  id?: string
+  name?: string
+  createdAt: string
+  lastUsedAt?: string | null
+}
+
+export type MFAStatus = {
+  enrollments: MFAEnrollment[]
+  methods: ('totp' | 'webauthn' | 'backup')[]
+  enabled: boolean
+  required: boolean
+  backupCodesLeft: number
+  totpAvailable: boolean
+  requireAdminPolicy: boolean
+}
+
+
+
+export type UIDomainSettings = {
+  host: string
+  tls: boolean
+  clusterIssuer: string
+  ingressClassName: string
+}
+
+export type UIDomainStatus = {
+  configured: boolean
+  settings: UIDomainSettings
+  certReady: boolean
+  certMessage: string
+  namespace: string
+  /** The --set flags that make a change survive the next `helm upgrade`. */
+  helmValues: string[]
+}
+
+export type ComponentVersion = {
+  component: string
+  image: string
+  tag: string
+  ready: boolean
+}
+
+export type SystemVersion = {
+  api: { version: string; commit: string; date: string; goVersion: string; platform: string }
+  components: ComponentVersion[]
+  namespace: string
+}
+
+export type UpdateStatus = {
+  current: string
+  latest: string
+  updateAvailable: boolean
+  checkedAt: string
+  checkEnabled: boolean
+  isRelease: boolean
+  releaseNotesUrl: string
+}
+
+export type UpdateRecord = {
+  id: string
+  fromVersion: string
+  toVersion: string
+  jobName: string
+  status: 'running' | 'succeeded' | 'failed' | 'unknown'
+  message: string
+  startedAt: string
+  finishedAt?: string | null
+}
+
+export type ReauthGrant = {
+  grantId: string
+  method: 'password' | 'webauthn'
+  expiresAt: string
+}
+
+export type Passkey = {
+  id: string
+  name: string
+  createdAt: string
+  lastUsedAt?: string | null
+  transports?: string[]
+}
+
+/**
+ * What POST /auth/login and the verify endpoints return.
+ *
+ * Login is no longer guaranteed to hand back a session: it may instead return a
+ * short-lived token that reaches only the 2FA endpoints. Callers must branch on
+ * mfaRequired / mfaEnrollmentRequired before treating `token` as a session.
+ */
+export type AuthResult = {
+  token: string
+  expiresAt: string
+  user?: { id: string; username: string; email: string; displayName: string; role: string }
+  mfaRequired?: boolean
+  mfaEnrollmentRequired?: boolean
+  methods?: ('totp' | 'webauthn' | 'backup')[]
+  reason?: string
+  totpAvailable?: boolean
+}
+
+/**
+ * An SSL certificate provider — a cert-manager ClusterIssuer.
+ *
+ * `managed` is false for issuers created outside Vesta (with kubectl, or by an older
+ * install). Those stay selectable, because hiding them would make a working setup look
+ * empty, but the UI does not offer to edit them: their shape is the admin's and this form
+ * models only what Vesta writes.
+ */
+export type SSLProvider = {
+  name: string
+  kind: string
+  email?: string
+  acmeServer?: string
+  solver?: string
+  dnsProvider?: string
+  ingressClass?: string
+  dnsZones?: string[]
+  ready: boolean
+  status: string
+  statusReason?: string
+  managed: boolean
+  isDefault: boolean
+}
+
+/** Credentials are write-only: they are sent here and never returned by any read. */
+export type SSLProviderInput = {
+  name: string
+  kind: string
+  email?: string
+  acmeServer?: string
+  eabKeyId?: string
+  eabHmacKey?: string
+  ingressClass?: string
+  dnsProvider?: string
+  dnsConfig?: Record<string, string>
+  dnsCredentials?: Record<string, string>
+  dnsZones?: string[]
+  caSecretName?: string
+}
+
+/** A sealed project bundle. Everything but `recipient` is opaque without the target's key. */
+export type VestaBundle = {
+  vestaBundle: number
+  exportedAt: string
+  recipient: string
+  ephemeralPublicKey: string
+  nonce: string
+  ciphertext: string
+}
+
 function getHeaders(): HeadersInit {
   const token = localStorage.getItem('vesta-token')
   const headers: HeadersInit = { 'Content-Type': 'application/json' }
@@ -7,13 +162,28 @@ function getHeaders(): HeadersInit {
   return headers
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+/**
+ * Calls that change a user's own factors carry a single-use re-authentication grant.
+ *
+ * The grant is spent server-side on success, so it is never reused: each destructive
+ * action needs its own confirmation.
+ */
+async function request<T>(path: string, options?: RequestInit & { reauthGrant?: string }): Promise<T> {
+  const { reauthGrant, ...init } = options || {}
+  const headers: Record<string, string> = { ...(getHeaders() as Record<string, string>) }
+  if (reauthGrant) headers['X-Vesta-Reauth'] = reauthGrant
+
   const res = await fetch(`${BASE}${path}`, {
-    headers: getHeaders(),
-    ...options,
+    headers,
+    ...init,
   })
   if (!res.ok) {
-    if (res.status === 401) {
+    // A 401 normally means the session is gone, so clear it and start over. The 2FA
+    // endpoints are the exception: there a 401 means "that code was wrong", and the
+    // caller is mid-challenge holding a token that is still perfectly valid. Redirecting
+    // would throw away the challenge and send the user back to the password screen for a
+    // single mistyped digit, so those screens render their own errors instead.
+    if (res.status === 401 && !path.startsWith('/auth/mfa/')) {
       localStorage.removeItem('vesta-token')
       localStorage.removeItem('vesta-user')
       window.location.href = '/login'
@@ -38,7 +208,7 @@ export const api = {
 
   // Auth
   login: (username: string, password: string) =>
-    request<{ token: string }>('/auth/login', {
+    request<AuthResult>('/auth/login', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
@@ -123,6 +293,120 @@ export const api = {
 
   updateProject: (id: string, data: any) =>
     request<any>(`/projects/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  // System version and self-update
+  getSystemVersion: () =>
+    request<SystemVersion>('/system/version'),
+
+  getUpdateStatus: () =>
+    request<UpdateStatus>('/system/update'),
+
+  checkForUpdates: () =>
+    request<UpdateStatus>('/system/update/check', { method: 'POST' }),
+
+  setUpdateSettings: (checkEnabled: boolean) =>
+    request<{ checkEnabled: boolean }>('/system/update/settings', {
+      method: 'PUT', body: JSON.stringify({ checkEnabled }),
+    }),
+
+  // Requires a re-auth grant: pointing Vesta's own deployments at another version is
+  // close to cluster-admin.
+  triggerUpdate: (version: string, reauthGrant: string) =>
+    request<{ status: string; version: string; job: string; note: string }>('/system/update', {
+      method: 'POST', body: JSON.stringify({ version }), reauthGrant,
+    }),
+
+  getUpdateProgress: () =>
+    request<{ current: UpdateRecord | null; history: UpdateRecord[] }>('/system/update/status'),
+
+  // Two-factor authentication
+  mfaStatus: () =>
+    request<MFAStatus>('/auth/mfa/status'),
+
+  mfaVerify: (code: string) =>
+    request<AuthResult>('/auth/mfa/verify', { method: 'POST', body: JSON.stringify({ code }) }),
+
+  // reauthGrant is required only when the account already holds a factor; the first one
+  // is exempt, which is what keeps mandatory enrollment at login possible.
+  totpEnroll: (reauthGrant?: string) =>
+    request<{ secret: string; otpauthUrl: string; qrDataUri: string; expiresAt: string }>(
+      '/auth/mfa/totp/enroll', { method: 'POST', reauthGrant }),
+
+  totpConfirm: (code: string) =>
+    request<{ confirmed: boolean; backupCodes: string[] }>(
+      '/auth/mfa/totp/confirm', { method: 'POST', body: JSON.stringify({ code }) }),
+
+  totpDisable: (reauthGrant: string) =>
+    request<void>('/auth/mfa/totp', { method: 'DELETE', reauthGrant }),
+
+  listPasskeys: () =>
+    request<{ items: Passkey[]; total: number }>('/auth/mfa/webauthn/credentials'),
+
+  renamePasskey: (id: string, name: string) =>
+    request<void>(`/auth/mfa/webauthn/credentials/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }),
+
+  deletePasskey: (id: string, reauthGrant: string) =>
+    request<void>(`/auth/mfa/webauthn/credentials/${id}`, { method: 'DELETE', reauthGrant }),
+
+  passkeyRegisterBegin: (reauthGrant?: string) =>
+    request<{ sessionId: string; publicKey: any }>('/auth/mfa/webauthn/register/begin', { method: 'POST', reauthGrant }),
+
+  passkeyRegisterFinish: (sessionId: string, name: string, credential: any) =>
+    request<{ id: string; name: string; backupCodes: string[] | null }>(
+      `/auth/mfa/webauthn/register/finish?sessionId=${encodeURIComponent(sessionId)}&name=${encodeURIComponent(name)}`,
+      { method: 'POST', body: JSON.stringify(credential) }),
+
+  passkeyAuthBegin: () =>
+    request<{ sessionId: string; publicKey: any }>('/auth/mfa/webauthn/authenticate/begin', { method: 'POST' }),
+
+  passkeyAuthFinish: (sessionId: string, credential: any) =>
+    request<AuthResult>(
+      `/auth/mfa/webauthn/authenticate/finish?sessionId=${encodeURIComponent(sessionId)}`,
+      { method: 'POST', body: JSON.stringify(credential) }),
+
+  regenerateBackupCodes: (reauthGrant: string) =>
+    request<{ backupCodes: string[] }>('/auth/mfa/backup-codes', { method: 'POST', reauthGrant }),
+
+  // Re-authentication: proving it is still you before a change that weakens your account.
+  reauthPassword: (password: string) =>
+    request<ReauthGrant>('/auth/reauth/password', { method: 'POST', body: JSON.stringify({ password }) }),
+
+  reauthPasskeyBegin: () =>
+    request<{ sessionId: string; publicKey: any }>('/auth/reauth/webauthn/begin', { method: 'POST' }),
+
+  reauthPasskeyFinish: (sessionId: string, credential: any) =>
+    request<ReauthGrant>(`/auth/reauth/webauthn/finish?sessionId=${encodeURIComponent(sessionId)}`, {
+      method: 'POST', body: JSON.stringify(credential),
+    }),
+
+  resetUserMFA: (userId: string, reauthGrant: string) =>
+    request<{ reset: boolean; user: string; mustReenroll: boolean }>(`/users/${userId}/mfa`, {
+      method: 'DELETE', reauthGrant,
+    }),
+
+  getMFAPolicy: () =>
+    request<{ requireAdmin: boolean }>('/settings/mfa-policy'),
+
+  updateMFAPolicy: (requireAdmin: boolean) =>
+    request<{ requireAdmin: boolean }>('/settings/mfa-policy', {
+      method: 'PUT', body: JSON.stringify({ requireAdmin }),
+    }),
+
+  // Project transfer between Vesta instances
+  getInstanceIdentity: () =>
+    request<{ publicKey: string; fingerprint: string }>('/instance/identity'),
+
+  exportProject: (id: string, recipientPublicKey: string) =>
+    request<VestaBundle>(`/projects/${id}/export`, {
+      method: 'POST',
+      body: JSON.stringify({ recipientPublicKey }),
+    }),
+
+  importProject: (bundle: VestaBundle, as?: string) =>
+    request<{ project: string; importedAs: boolean; created: Record<string, number> }>('/projects/import', {
+      method: 'POST',
+      body: JSON.stringify({ bundle, ...(as ? { as } : {}) }),
+    }),
 
   deleteProject: (id: string) =>
     request<void>(`/projects/${id}`, { method: 'DELETE' }),
@@ -489,6 +773,12 @@ export const api = {
       body: JSON.stringify(data),
     }),
 
+  // Diagnostics -- why an app is not healthy
+  getAppDiagnostics: (appId: string, environment?: string) => {
+    const qs = environment ? `?environment=${encodeURIComponent(environment)}` : ''
+    return request<any>(`/apps/${appId}/diagnostics${qs}`)
+  },
+
   // Health Dashboard
   getHealthDashboard: (params?: { projectId?: string; teamId?: string }) => {
     const qs = new URLSearchParams()
@@ -557,6 +847,42 @@ export const api = {
 
   deleteGitHubApp: () =>
     request<{ status: string }>('/settings/github-app', { method: 'DELETE' }),
+
+  // SSL certificate providers (cert-manager ClusterIssuers)
+  getCertManagerStatus: () =>
+    request<{ installed: boolean; namespace: string }>('/settings/ssl-providers/status'),
+
+  // The dashboard's own hostname and certificate
+  getUIDomain: () =>
+    request<UIDomainStatus>('/settings/ui-domain'),
+
+  setUIDomain: (settings: UIDomainSettings) =>
+    request<{ settings: UIDomainSettings; previous: UIDomainSettings; helmValues: string[]; note: string }>(
+      '/settings/ui-domain', { method: 'PUT', body: JSON.stringify(settings) }),
+
+  listSSLProviders: () =>
+    request<{ providers: SSLProvider[]; certManagerInstalled: boolean; default: string }>('/settings/ssl-providers'),
+
+  createSSLProvider: (data: SSLProviderInput) =>
+    request<{ name: string; kind: string }>('/settings/ssl-providers', {
+      method: 'POST', body: JSON.stringify(data),
+    }),
+
+  updateSSLProvider: (name: string, data: SSLProviderInput) =>
+    request<{ name: string; kind: string }>(`/settings/ssl-providers/${encodeURIComponent(name)}`, {
+      method: 'PUT', body: JSON.stringify(data),
+    }),
+
+  deleteSSLProvider: (name: string, force = false) =>
+    request<{ status: string; warning?: string }>(
+      `/settings/ssl-providers/${encodeURIComponent(name)}${force ? '?force=true' : ''}`,
+      { method: 'DELETE' },
+    ),
+
+  setDefaultSSLProvider: (name: string) =>
+    request<{ default: string }>('/settings/ssl-providers/default', {
+      method: 'PUT', body: JSON.stringify({ name }),
+    }),
 
   // Git helpers
   listRepoBranches: (repo: string) =>

@@ -35,6 +35,12 @@ type AuditLogFilter struct {
 	To           *time.Time
 	Limit        int
 	Offset       int
+
+	// ScopeToUserID restricts results to what this user is entitled to see: entries for
+	// projects they belong to, plus their own actions. Leave empty for an unrestricted
+	// query, which callers must gate to admins themselves. Without this the audit log
+	// was globally readable by anyone with a login.
+	ScopeToUserID string
 }
 
 func (d *DB) InsertAuditLog(ctx context.Context, entry AuditLogEntry) error {
@@ -90,6 +96,19 @@ func (d *DB) ListAuditLogs(ctx context.Context, f AuditLogFilter) ([]AuditLogEnt
 		where = append(where, fmt.Sprintf("created_at <= $%d", idx))
 		args = append(args, *f.To)
 		idx++
+	}
+	if f.ScopeToUserID != "" {
+		// Entries in projects this user belongs to, plus anything they did themselves.
+		// Non-project entries (logins, token creation) by other users stay hidden.
+		// Two placeholders rather than one repeated: project_members.user_id is a UUID
+		// column while audit_log.user_id is TEXT, and reusing a single parameter makes
+		// Postgres infer one type and fail the other comparison.
+		where = append(where, fmt.Sprintf(
+			"(project_id IN (SELECT project_id FROM project_members WHERE user_id = $%d) OR user_id = $%d)",
+			idx, idx+1,
+		))
+		args = append(args, f.ScopeToUserID, f.ScopeToUserID)
+		idx += 2
 	}
 
 	whereClause := ""

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { useUserRole } from '../lib/useRole'
+import { useUserRole, useIsProjectOwner } from '../lib/useRole'
 import RevealableInput from '../components/RevealableInput'
 
 export default function ProjectDetailPage() {
@@ -234,6 +234,7 @@ export default function ProjectDetailPage() {
       <NotificationsSection projectId={projectId!} />
       <AlertRulesSection projectId={projectId!} />
       <DependencyGraphSection projectId={projectId!} />
+      <ProjectTransferSection projectId={projectId!} />
     </div>
   )
 }
@@ -999,6 +1000,86 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
         <p className="text-status-failed text-xs">{(mutation.error as Error).message}</p>
       )}
     </form>
+  )
+}
+
+// Moves a whole project to a different Vesta install. The bundle is sealed to one
+// instance's public key, so the file is inert to everyone else, including whoever carries
+// it. Export is owner-or-admin because the bundle holds every secret in the project.
+function ProjectTransferSection({ projectId }: { projectId: string }) {
+  const role = useUserRole()
+  const isAdmin = role === 'admin'
+  const isOwner = useIsProjectOwner(projectId)
+
+  if (!isAdmin && !isOwner) return null
+
+  return (
+    <section className="card p-6 space-y-6">
+      <div>
+        <h3 className="section-title">Transfer</h3>
+        <p className="text-xs text-text-tertiary mt-1">
+          Move this project — apps, configuration and secrets — to another Vesta instance.
+          Importing is on the Projects list, since an import creates a project.
+        </p>
+      </div>
+      <ExportProjectPanel projectId={projectId} />
+    </section>
+  )
+}
+
+function ExportProjectPanel({ projectId }: { projectId: string }) {
+  const [recipientKey, setRecipientKey] = useState('')
+  const [error, setError] = useState('')
+  const [done, setDone] = useState('')
+
+  const exportMutation = useMutation({
+    mutationFn: () => api.exportProject(projectId, recipientKey.trim()),
+    onSuccess: (bundle) => {
+      // The download is the deliverable; nothing is kept server-side.
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `vesta-${projectId}.bundle.json`
+      link.click()
+      URL.revokeObjectURL(url)
+      setError('')
+      setDone(`Sealed for ${bundle.recipient}`)
+      setRecipientKey('')
+    },
+    onError: (e: Error) => { setError(e.message); setDone('') },
+  })
+
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="label">Export</label>
+        <p className="text-[11px] text-text-tertiary mb-2">
+          Paste the target instance&apos;s public key, found under Settings → Instance Identity there. Referenced
+          registry credentials travel with the bundle.
+        </p>
+        <textarea
+          value={recipientKey}
+          onChange={(e) => { setRecipientKey(e.target.value); setError(''); setDone('') }}
+          placeholder="vesta1:pub:..."
+          rows={2}
+          spellCheck={false}
+          className="input-field font-mono text-xs w-full"
+        />
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={() => exportMutation.mutate()}
+          disabled={exportMutation.isPending || !recipientKey.trim()}
+          className="btn-primary text-xs"
+        >
+          {exportMutation.isPending ? 'Sealing...' : 'Export Bundle'}
+        </button>
+        {done && <span className="text-xs font-mono text-accent">{done}</span>}
+      </div>
+      {error && <p className="text-status-failed text-xs">{error}</p>}
+    </div>
   )
 }
 

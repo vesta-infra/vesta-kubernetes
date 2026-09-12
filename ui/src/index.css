@@ -5,9 +5,16 @@
 @tailwind utilities;
 
 @layer base {
+  /* Tells the browser to draw its own widgets (unchecked checkboxes, select
+     popups, scrollbars, date pickers) in dark form instead of light-on-dark. */
+  html {
+    color-scheme: dark;
+  }
+
   body {
     @apply bg-surface-0 text-text-primary antialiased;
     font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
   }
 
   ::selection {
@@ -15,13 +22,13 @@
   }
 
   ::-webkit-scrollbar {
-    @apply w-[5px];
+    @apply w-[5px] h-[5px];
   }
   ::-webkit-scrollbar-track {
     @apply bg-transparent;
   }
   ::-webkit-scrollbar-thumb {
-    @apply bg-border/60 rounded-full hover:bg-border-hover;
+    @apply bg-border-hover/70 rounded-full hover:bg-border-strong;
   }
 
   input, select, textarea {
@@ -30,15 +37,58 @@
   input:focus, select:focus, textarea:focus {
     @apply border-accent/40 ring-2 ring-accent/10 outline-none;
   }
+
+  /* Checkboxes, radios, and range thumbs follow the brand instead of the OS blue. */
+  input[type='checkbox'],
+  input[type='radio'],
+  input[type='range'],
+  progress {
+    accent-color: #f59e0b;
+  }
+  input[type='checkbox'],
+  input[type='radio'] {
+    @apply cursor-pointer;
+  }
+
+  /* Replace the OS dropdown arrow with one drawn in our own ink. */
+  select {
+    -webkit-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235b6577' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.6rem center;
+    background-size: 0.85rem;
+    padding-right: 2rem;
+  }
+  select:hover {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2398a2b3' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  }
+  select option {
+    @apply bg-surface-2 text-text-primary;
+  }
+
+  /* Keyboard focus stays visible on non-input controls too. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent/30 ring-offset-2 ring-offset-surface-0;
+  }
 }
 
 @layer components {
+  /* Elevation is carried by a hairline ring + a deep shadow, not by a lighter fill,
+     so cards stay dark against the near-black canvas. */
   .card {
-    @apply bg-surface-2/80 border border-border rounded-xl shadow-card shadow-inner-glow backdrop-blur-sm;
+    @apply bg-surface-2/70 border border-border/80 rounded-xl shadow-card shadow-ring-subtle backdrop-blur-md;
   }
   .card-hover {
     @apply card transition-all duration-300 ease-out
-           hover:border-accent/20 hover:shadow-card-hover hover:bg-surface-2;
+           hover:border-border-hover hover:shadow-card-hover hover:bg-surface-3/60;
+  }
+  /* A larger container that groups content; flatter than a card so nested cards read. */
+  .panel {
+    @apply bg-surface-1/60 border border-border/70 rounded-2xl backdrop-blur-md;
+  }
+  .panel-header {
+    @apply flex items-center justify-between px-5 py-4 border-b border-border/60;
   }
   .btn-primary {
     @apply px-5 py-2.5 bg-gradient-to-b from-accent to-accent-dim text-surface-0 rounded-lg text-sm font-semibold
@@ -49,6 +99,11 @@
   .btn-ghost {
     @apply px-4 py-2.5 text-sm text-text-secondary rounded-lg border border-transparent
            transition-all duration-200 hover:text-text-primary hover:bg-surface-3 hover:border-border;
+  }
+  .btn-outline {
+    @apply px-3.5 py-2 text-[13px] font-medium text-text-secondary rounded-lg border border-border
+           bg-surface-2/60 transition-all duration-200
+           hover:text-text-primary hover:border-border-hover hover:bg-surface-3;
   }
   .input-field {
     @apply w-full px-3.5 py-2.5 bg-surface-1 border border-border rounded-lg text-sm
@@ -66,6 +121,25 @@
   }
   .status-badge {
     @apply text-[11px] font-mono font-medium px-2.5 py-1 rounded-md inline-flex items-center gap-1.5;
+  }
+  /* Small neutral metadata pill. */
+  .chip {
+    @apply text-[10px] font-mono text-text-tertiary bg-surface-3/70 border border-border/60
+           px-1.5 py-0.5 rounded inline-flex items-center gap-1;
+  }
+  .kpi-label {
+    @apply text-[10px] font-mono text-text-tertiary uppercase tracking-[0.16em];
+  }
+  /* Stat-tile value: proportional figures, sans -- never the display serif. */
+  .kpi-value {
+    @apply text-[34px] leading-none font-semibold tracking-[-0.02em] text-text-primary;
+  }
+  /* Meter track is a step of the surface ramp; the fill carries the state. */
+  .meter-track {
+    @apply h-1.5 w-full rounded-full bg-surface-4/80 overflow-hidden;
+  }
+  .meter-fill {
+    @apply h-full rounded-full transition-[width] duration-700 ease-out;
   }
 }
 
@@ -94,6 +168,16 @@
     background-size: 24px 24px;
   }
 
+  /* Faint neutral grid that fades out downward -- reads as depth, not decoration. */
+  .grid-fade {
+    background-image:
+      linear-gradient(to right, rgba(255, 255, 255, 0.022) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.022) 1px, transparent 1px);
+    background-size: 56px 56px;
+    -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9), transparent 70%);
+    mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9), transparent 70%);
+  }
+
   .gradient-border {
     position: relative;
   }
@@ -110,10 +194,30 @@
     pointer-events: none;
   }
 
+  /* 1px highlight along the top edge -- the light-from-above cue that makes a dark
+     card read as a raised surface. */
+  .top-sheen {
+    position: relative;
+  }
+  .top-sheen::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 12%;
+    right: 12%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.10), transparent);
+    pointer-events: none;
+  }
+
   .text-gradient {
     background: linear-gradient(135deg, #f59e0b, #fbbf24, #f59e0b);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
+  }
+
+  .tabular {
+    font-variant-numeric: tabular-nums;
   }
 }

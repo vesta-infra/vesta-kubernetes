@@ -24,6 +24,17 @@ api:
     pullPolicy: IfNotPresent
   replicas: 1
   port: 8090
+  # -- Readiness probe path.
+  #
+  # /readyz verifies the database and Kubernetes API are reachable, which is what makes a
+  # bad upgrade fail safely: without it a new image that cannot reach Postgres still goes
+  # Ready, the rollout completes, the old ReplicaSet scales to zero, and the component
+  # that would roll back is the broken one.
+  #
+  # It only exists in API images from the release that introduced it. If you pin an older
+  # api.image.tag, that image returns 404 here and the pod never becomes Ready -- set this
+  # back to /healthz in that case.
+  readinessPath: /readyz
   resources:
     requests:
       cpu: 100m
@@ -36,6 +47,8 @@ api:
     host: kubernetes.getvesta.sh
     tls: true
     clusterIssuer: letsencrypt-prod
+    # -- IngressClass for this ingress. Defaults to config.ingressClassName.
+    ingressClassName: ""
     annotations: {}
   # -- Database configuration
   database:
@@ -45,6 +58,39 @@ api:
     existingSecret: ""
     # -- Key in the existing secret that contains the DATABASE_URL
     secretKey: "DATABASE_URL"
+  # -- JWT session signing key. REQUIRED: the API refuses to start without one.
+  # Must be at least 32 characters. Changing it signs every user out.
+  jwt:
+    # -- Signing key. Generate with: openssl rand -base64 48
+    secret: ""
+    # -- Use an existing secret instead of creating one (set to secret name)
+    existingSecret: ""
+    # -- Key in the existing secret that contains the JWT_SECRET
+    secretKey: "JWT_SECRET"
+  # -- Key encrypting reversible secrets at rest, currently TOTP shared secrets.
+  # Generated automatically and reused across upgrades if left empty.
+  # Losing or rotating it does not sign anyone out, but it does make every enrolled
+  # authenticator app unverifiable -- those users fall back to their recovery codes.
+  # Passkeys are unaffected; they need no key.
+  encryption:
+    # -- 32 raw bytes, base64-encoded. Generate with: openssl rand -base64 32
+    key: ""
+    # -- Use an existing secret instead of creating one (set to secret name)
+    existingSecret: ""
+    # -- Key in the existing secret that contains VESTA_ENCRYPTION_KEY
+    secretKey: "VESTA_ENCRYPTION_KEY"
+  # -- Security and session settings
+  security:
+    # -- Externally reachable base URL, used to build links in outbound email.
+    # Never derived from request headers, which the caller controls.
+    publicUrl: ""
+    # -- Comma-separated CIDRs of proxies whose X-Forwarded-For may be trusted
+    # (typically the ingress controller range). Empty trusts none, so client IPs
+    # recorded in the audit log are the direct peer and cannot be forged.
+    trustedProxies: ""
+    # -- Comma-separated origins permitted to open log/exec WebSockets, in addition
+    # to same-origin requests. Needed only when the UI and API are on different hosts.
+    allowedOrigins: ""
   # -- GitHub App integration (optional, created via manifest flow in UI)
   github:
     # -- Pre-existing K8s Secret with GitHub App credentials (app-id, private-key, webhook-secret)
@@ -70,7 +116,17 @@ ui:
     host: ui.getvesta.sh
     tls: true
     clusterIssuer: letsencrypt-prod
+    # -- IngressClass for this ingress. Defaults to config.ingressClassName.
+    ingressClassName: ""
     annotations: {}
+
+# -- cert-manager integration. Vesta does not install cert-manager; it creates
+# ClusterIssuers in an existing install (Settings -> SSL Certificates).
+certManager:
+  # -- Namespace cert-manager's controller runs in. Provider credential Secrets are
+  # written here because that is where a ClusterIssuer's secretRefs are resolved — a
+  # credential written anywhere else is simply not found, and the issuer sits Pending.
+  namespace: cert-manager
 
 # -- Vesta platform configuration (creates VestaConfig CRD)
 config:
@@ -79,7 +135,12 @@ config:
   # Supports {{app}}, {{env}}, {{domain}} placeholders.
   # Example: "{{app}}-{{env}}.{{domain}}" → myapp-staging.apps.getvesta.sh
   domainTemplate: ""
-  clusterIssuer: letsencrypt-prod
+  # -- Default cert-manager ClusterIssuer for apps that do not choose their own.
+  # Left empty on purpose: this is now managed from Settings -> SSL Certificates, and the
+  # vestaconfig template only renders the field when it is set — so an empty value here
+  # means `helm upgrade` will not overwrite the default an admin chose in the UI. Set it
+  # only to seed the value at install time on a cluster that already has an issuer.
+  clusterIssuer: ""
   ingressClassName: ""
 
   registry:
@@ -135,7 +196,60 @@ serviceAccount:
   annotations: {}
 
 # -- Namespace
-namespace: vesta-system
+# -- Namespace is taken from the release (`helm -n <ns> --create-namespace`) rather than
+# a value, so the two can never disagree. This key is no longer read; it is left
+# documented here because `--reuse-values` will carry it forward from older installs.
+# namespace: vesta-system
+
+# -- CRD lifecycle. Helm applies a chart's crds/ directory once and never again, so Vesta
+# applies its CRDs from a pre-install/pre-upgrade hook instead. Disable only if you manage
+# CRDs yourself, and remember that a schema change then has to be applied by hand before
+# the upgrade.
+crdManagement:
+  enabled: true
+  timeoutSeconds: 300
+  image:
+    repository: registry.k8s.io/kubectl
+    tag: "v1.31.3"
+    pullPolicy: IfNotPresent
+
+# -- Let an admin upgrade Vesta from the web UI.
+#
+# The upgrade runs `helm upgrade` in a Job, so Helm stays the source of truth and a later
+# manual upgrade will not revert it. It needs a ServiceAccount broad enough to re-apply
+# the whole chart, including RBAC and CRDs -- turn this off if you would rather upgrade
+# from a terminal and not carry that account.
+selfUpdate:
+  enabled: true
+  # -- Image the upgrade Job runs helm from. Override to a mirror for an air-gapped
+  # cluster; the Job has no other way to obtain helm.
+  helmImage: alpine/helm:3.16.3
+
+# -- Optional bundled PostgreSQL, for evaluation and small installs.
+#
+# Off by default: a database inside the cluster is one you have to back up, upgrade and
+# operate yourself, which is rarely what you want in production. When enabled it removes
+# the manual secret step entirely -- DATABASE_URL is wired automatically and api.database
+# is ignored.
+postgres:
+  enabled: false
+  image:
+    repository: postgres
+    tag: "16-alpine"
+    pullPolicy: IfNotPresent
+  database: vesta
+  username: vesta
+  # -- Leave empty to generate one on first install and reuse it on every upgrade.
+  password: ""
+  storage: 10Gi
+  # -- Empty uses the cluster default StorageClass.
+  storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
 
 # -- Image pull secrets for Vesta's own images
 imagePullSecrets: []

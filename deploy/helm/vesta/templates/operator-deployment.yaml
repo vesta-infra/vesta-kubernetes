@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "vesta.fullname" . }}-operator
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "vesta.labels" . | nindent 4 }}
     app.kubernetes.io/component: operator

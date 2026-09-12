@@ -5,7 +5,28 @@ import { XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'rec
 import { api } from '../lib/api'
 import { useUserRole, useIsProjectOwner } from '../lib/useRole'
 import { parseEnvContent, secretKeyError, truncateSecretKey } from '../lib/secretKeys'
+import CopyEnvButton from '../components/CopyEnvButton'
 import RevealableInput from '../components/RevealableInput'
+import AppDiagnostics from '../components/AppDiagnostics'
+import { providerKindLabel } from '../components/SSLProviders'
+
+// The cert-manager annotation that used to be the only way to pick an issuer. It is now
+// owned by the provider selector: the operator stamps it last, so a copy left in the raw
+// annotation map would be silently ignored rather than honoured.
+const CLUSTER_ISSUER_ANNOTATION = 'cert-manager.io/cluster-issuer'
+
+// What the Configuration card shows under "Certificate". A lock icon that says only
+// "Enabled" hides the thing an operator actually needs when a certificate fails to issue:
+// which issuer was asked for.
+function certificateSourceLabel(ingress: any): string {
+  if (ingress?.tlsMode === 'custom-annotations') return 'Managed by annotations'
+  if (ingress?.tlsSecretName) return ingress.tlsSecretName
+  if (ingress?.tlsMode === 'manual') return 'Manual (no secret set)'
+  if (ingress?.clusterIssuer) return ingress.clusterIssuer
+  const legacy = ingress?.annotations?.[CLUSTER_ISSUER_ANNOTATION]
+  if (legacy) return `${legacy} (from annotation)`
+  return 'Instance default'
+}
 
 export default function AppDetailPage() {
   const { appId } = useParams<{ appId: string }>()
@@ -308,6 +329,8 @@ export default function AppDetailPage() {
       {activeTab === 'overview' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <div className="lg:col-span-2 space-y-4">
+            <AppDiagnostics appId={appId!} phase={phase} />
+
             <section className="card p-5">
               <h3 className="section-title mb-4">Status</h3>
               <div className="grid grid-cols-2 gap-x-6 gap-y-4">
@@ -410,7 +433,23 @@ export default function AppDetailPage() {
                 {appEnvironments.map((env: string) => {
                   const namespace = `${projectId}-${env}`
                   const svcName = app.name || appId
-                  const port = app.spec?.runtime?.port || app.spec?.service?.ports?.[0]?.port || ''
+                  // Callers reach the Service on its `port`, never the container's
+                  // targetPort: multi-port apps expose spec.service.ports (which an
+                  // environment may override), and legacy single-port apps are always
+                  // published on 80 regardless of runtime.port.
+                  const envCfg = rawEnvs.find((e: any) => typeof e !== 'string' && e.name === env)
+                  const specPorts: any[] = envCfg?.service?.ports?.length
+                    ? envCfg.service.ports
+                    : (app.spec?.service?.ports || [])
+                  const svcPorts: { name?: string; port: number }[] = specPorts.length > 0
+                    ? specPorts
+                        .filter((p: any) => p.port > 0)
+                        .filter((p: any, i: number, arr: any[]) => arr.findIndex((o: any) => o.port === p.port) === i)
+                        .map((p: any) => ({ name: p.name, port: p.port }))
+                    : app.spec?.runtime?.port ? [{ port: 80 }] : []
+                  const dnsRows = svcPorts.length > 0
+                    ? svcPorts.map(p => ({ key: `${p.port}`, name: svcPorts.length > 1 ? p.name : '', value: `${svcName}.${namespace}.svc.cluster.local:${p.port}` }))
+                    : [{ key: 'default', name: '', value: `${svcName}.${namespace}.svc.cluster.local` }]
                   return (
                     <div key={env} className="bg-surface-1 border border-border rounded-lg p-3">
                       <p className="text-xs font-medium text-text-secondary mb-2">{env}</p>
@@ -423,10 +462,13 @@ export default function AppDetailPage() {
                           <span className="text-[11px] text-text-tertiary w-28 flex-shrink-0">Namespace DNS</span>
                           <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all">{svcName}.{namespace}</code>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-[11px] text-text-tertiary w-28 flex-shrink-0">Cluster DNS</span>
-                          <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all">{svcName}.{namespace}.svc.cluster.local{port ? `:${port}` : ''}</code>
-                        </div>
+                        {dnsRows.map((row, i) => (
+                          <div key={row.key} className="flex items-center gap-2">
+                            <span className="text-[11px] text-text-tertiary w-28 flex-shrink-0">{i === 0 ? 'Cluster DNS' : ''}</span>
+                            <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all">{row.value}</code>
+                            {row.name && <span className="text-[11px] text-text-tertiary font-mono">{row.name}</span>}
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )
@@ -677,6 +719,13 @@ export default function AppDetailPage() {
                 )}
                 {app.spec?.ingress?.tls !== undefined && (
                   <ConfigItem label="TLS" value={app.spec.ingress.tls ? 'Enabled' : 'Disabled'} accent={app.spec.ingress.tls} />
+                )}
+                {app.spec?.ingress?.tls && (
+                  <ConfigItem
+                    label="Certificate"
+                    value={certificateSourceLabel(app.spec.ingress)}
+                    mono={!!app.spec.ingress.clusterIssuer || !!app.spec.ingress.tlsSecretName}
+                  />
                 )}
               </div>
               {app.spec?.cronjobs?.length > 0 && (
@@ -960,9 +1009,34 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const [tls, setTls] = useState(app.spec?.ingress?.tls || false)
   const [ingressAnnotations, setIngressAnnotations] = useState<{ key: string; value: string }[]>(() => {
     const a = app.spec?.ingress?.annotations || {}
-    const entries = Object.entries(a)
+    // The issuer annotation is surfaced through the provider selector instead, so it is
+    // filtered out of the raw editor. Saving writes it back as ingress.clusterIssuer.
+    const entries = Object.entries(a).filter(([key]) => key !== CLUSTER_ISSUER_ANNOTATION)
     return entries.length > 0 ? entries.map(([key, value]) => ({ key, value: value as string })) : []
   })
+
+  // Certificate provider. Before the selector existed, the only way to choose an issuer was
+  // a raw cert-manager.io/cluster-issuer annotation, so seed from that when no field is set
+  // — the form must show what the app is actually using, not an inherited default it is not.
+  const legacyIssuerAnnotation: string = app.spec?.ingress?.annotations?.[CLUSTER_ISSUER_ANNOTATION] || ''
+  const [tlsMode, setTlsMode] = useState<string>(() => {
+    if (app.spec?.ingress?.tlsMode) return app.spec.ingress.tlsMode
+    if (app.spec?.ingress?.tlsSecretName) return 'manual'
+    return ''
+  })
+  const [clusterIssuer, setClusterIssuer] = useState<string>(
+    app.spec?.ingress?.clusterIssuer || legacyIssuerAnnotation || ''
+  )
+  const [tlsSecretName, setTlsSecretName] = useState<string>(app.spec?.ingress?.tlsSecretName || '')
+  const migratingIssuerAnnotation = !app.spec?.ingress?.clusterIssuer && !!legacyIssuerAnnotation
+
+  const { data: sslProviderData } = useQuery({
+    queryKey: ['ssl-providers'],
+    queryFn: api.listSSLProviders,
+    retry: false,
+  })
+  const sslProviders = sslProviderData?.providers || []
+  const defaultProvider = sslProviderData?.default || ''
 
   // Service config (multi-port + service type)
   const [serviceType, setServiceType] = useState<string>(app.spec?.service?.type || 'ClusterIP')
@@ -979,6 +1053,33 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     }
     return []
   })
+
+  // Kubernetes rejects a Deployment whose container ports repeat a name, and it
+  // does so in the operator's reconcile loop -- far from this form. Catch it here.
+  const servicePortErrors = useMemo(() => {
+    const nameAt = new Map<string, number>()
+    const portAt = new Map<string, number>()
+    return servicePorts.map((sp, i) => {
+      const name = sp.name.trim()
+      if (name) {
+        if (nameAt.has(name)) return `Duplicate name: already used by port ${nameAt.get(name)! + 1}`
+        if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name)) return 'Lowercase letters, numbers and - only'
+        if (name.length > 15) return 'Max 15 characters'
+        if (!/[a-z]/.test(name)) return 'Must contain a letter'
+        nameAt.set(name, i)
+      } else if (servicePorts.length > 1) {
+        return 'Name is required when there is more than one port'
+      }
+      if (sp.port) {
+        const key = `${sp.port}/${sp.protocol || 'TCP'}`
+        if (portAt.has(key)) return `Port ${sp.port} is already exposed by port ${portAt.get(key)! + 1}`
+        portAt.set(key, i)
+      }
+      return ''
+    })
+  }, [servicePorts])
+  const hasServicePortErrors = servicePortErrors.some(Boolean)
+
   const useServiceConfig = servicePorts.length > 0
 
   // Health check config
@@ -1003,7 +1104,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
-  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string; domains: string[]; tls: boolean; redirectDomains: string[]; redirectTarget: string }>>(() => {
+  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string; domains: string[]; tls: boolean; clusterIssuer: string; redirectDomains: string[]; redirectTarget: string }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
       const env = typeof e === 'string' ? { name: e } : e
@@ -1026,6 +1127,10 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         memoryLimit: env.resources?.limits?.memory || '',
         domains: envDomains,
         tls: env.ingress?.tls || false,
+        // Same legacy path as the app level: a raw annotation was the only way to vary
+        // the issuer per environment before this selector existed.
+        clusterIssuer: env.ingress?.clusterIssuer
+          || env.ingress?.annotations?.[CLUSTER_ISSUER_ANNOTATION] || '',
         redirectDomains: env.ingress?.redirectDomains || [],
         redirectTarget: env.ingress?.redirectTarget || '',
       }
@@ -1163,12 +1268,24 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     // Ingress
     const ingressAnns: Record<string, string> = {}
     ingressAnnotations.forEach(a => { if (a.key) ingressAnns[a.key] = a.value })
-    if (domain || Object.keys(ingressAnns).length > 0) {
+    // Under "custom annotations" the user drives TLS themselves, so their issuer annotation
+    // is written through untouched. Otherwise it is dropped: the provider field is the one
+    // source of truth, and a leftover copy would be silently ignored by the operator.
+    if (tlsMode === 'custom-annotations' && legacyIssuerAnnotation && !ingressAnns[CLUSTER_ISSUER_ANNOTATION]) {
+      ingressAnns[CLUSTER_ISSUER_ANNOTATION] = legacyIssuerAnnotation
+    }
+
+    if (domain || Object.keys(ingressAnns).length > 0 || tls) {
       const existingIngress = app.spec?.ingress || {}
       patch.ingress = {
         ...existingIngress,
         ...(domain && { domain }),
         tls,
+        // Explicit nulls, not omissions: the API preserves fields a patch leaves out, so
+        // clearing a provider has to be said out loud.
+        clusterIssuer: tlsMode === '' && clusterIssuer ? clusterIssuer : null,
+        tlsSecretName: tlsMode === 'manual' && tlsSecretName ? tlsSecretName : null,
+        tlsMode: tlsMode || null,
         annotations: Object.keys(ingressAnns).length > 0 ? ingressAnns : undefined,
       }
       // Remove undefined keys so they don't serialize as null
@@ -1235,9 +1352,15 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       const filteredDomains = cfg.domains.filter(d => d.trim())
       const filteredRedirectDomains = cfg.redirectDomains.filter(d => d.trim())
       if (filteredDomains.length > 0 || filteredRedirectDomains.length > 0) {
+        const envAnns = { ...(env.ingress?.annotations || {}) }
+        delete envAnns[CLUSTER_ISSUER_ANNOTATION]
         env.ingress = {
           ...(filteredDomains.length > 0 && { domains: filteredDomains }),
           tls: cfg.tls,
+          // Explicit null means "inherit the app-level provider", which is distinct from
+          // omitting the key — the API preserves omitted fields.
+          clusterIssuer: cfg.clusterIssuer || null,
+          ...(Object.keys(envAnns).length > 0 && { annotations: envAnns }),
           ...(filteredRedirectDomains.length > 0 && { redirectDomains: filteredRedirectDomains }),
           ...(cfg.redirectTarget.trim() && { redirectTarget: cfg.redirectTarget.trim() }),
         }
@@ -1294,6 +1417,77 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
     mutation.mutate(patch)
   }
+
+  // Rendered in both the simple-port and service-config layouts. Defined once here rather
+  // than duplicated in each branch, which is how the two TLS checkboxes drifted apart before.
+  const TlsControls = () => (
+    <div className="flex flex-col justify-end pb-1 gap-2">
+      <label className="flex items-center gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={tls}
+          onChange={e => setTls(e.target.checked)}
+          className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+        />
+        <span className="text-xs text-text-secondary">TLS</span>
+      </label>
+
+      {tls && (
+        <>
+          <select
+            value={tlsMode === 'manual' ? '__manual__' : tlsMode === 'custom-annotations' ? '__annotations__' : clusterIssuer}
+            onChange={e => {
+              const v = e.target.value
+              if (v === '__manual__') { setTlsMode('manual'); setClusterIssuer('') }
+              else if (v === '__annotations__') { setTlsMode('custom-annotations'); setClusterIssuer(''); setTlsSecretName('') }
+              else { setTlsMode(''); setClusterIssuer(v); setTlsSecretName('') }
+            }}
+            className="input-field text-xs"
+          >
+            <option value="">
+              {defaultProvider ? `Default (${defaultProvider})` : 'Default (none configured)'}
+            </option>
+            {sslProviders.map(p => (
+              <option key={p.name} value={p.name}>
+                {p.name} — {providerKindLabel(p.kind)}{p.ready ? '' : ' (not ready)'}
+              </option>
+            ))}
+            <option value="__manual__">Manual certificate…</option>
+            <option value="__annotations__">Custom — managed by ingress annotations</option>
+          </select>
+
+          {migratingIssuerAnnotation && tlsMode === '' && (
+            <p className="text-[10px] text-status-pending leading-relaxed">
+              Set by a custom ingress annotation — saving moves it to the provider field.
+            </p>
+          )}
+
+          {tlsMode === 'manual' && (
+            <input
+              value={tlsSecretName}
+              onChange={e => setTlsSecretName(e.target.value)}
+              className="input-field font-mono text-xs"
+              placeholder="tls secret name"
+              title="A Kubernetes Secret of type kubernetes.io/tls in this app's namespace. Create one under Secrets."
+            />
+          )}
+
+          {tlsMode === 'custom-annotations' && (
+            <p className="text-[10px] text-text-tertiary leading-relaxed">
+              Vesta will not manage this certificate. Set cert-manager.io/cluster-issuer yourself
+              under Ingress Annotations below.
+            </p>
+          )}
+
+          {!defaultProvider && !clusterIssuer && tlsMode === '' && (
+            <p className="text-[10px] text-status-failed leading-relaxed">
+              No default provider is set, so no certificate will be issued. Add one in Settings → SSL Certificates.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  )
 
   return (
     <form onSubmit={handleSubmit} className="card p-5 space-y-5 animate-slide-up">
@@ -1357,12 +1551,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
               <label className="label">Domain</label>
               <input value={domain} onChange={e => setDomain(e.target.value)} className="input-field" placeholder="app.example.com" />
             </div>
-            <div className="flex items-end pb-1">
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" checked={tls} onChange={e => setTls(e.target.checked)} className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20" />
-                <span className="text-xs text-text-secondary">TLS</span>
-              </label>
-            </div>
+            <TlsControls />
           </div>
         ) : (
           <>
@@ -1379,12 +1568,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                 <label className="label">Domain</label>
                 <input value={domain} onChange={e => setDomain(e.target.value)} className="input-field" placeholder="app.example.com" />
               </div>
-              <div className="flex items-end pb-1">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={tls} onChange={e => setTls(e.target.checked)} className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20" />
-                  <span className="text-xs text-text-secondary">TLS</span>
-                </label>
-              </div>
+              <TlsControls />
             </div>
 
             <div className="border border-border rounded-lg overflow-hidden">
@@ -1401,8 +1585,16 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                 </thead>
                 <tbody>
                   {servicePorts.map((sp, i) => (
-                    <tr key={i} className="border-t border-border">
-                      <td className="px-2 py-1"><input value={sp.name} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, name: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="http" /></td>
+                    <tr key={i} className="border-t border-border align-top">
+                      <td className="px-2 py-1">
+                        <input
+                          value={sp.name}
+                          onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, name: e.target.value }; setServicePorts(u) }}
+                          className={`input-field text-xs ${servicePortErrors[i] ? '!border-status-failed/60 focus:!border-status-failed/60 focus:!ring-status-failed/10' : ''}`}
+                          placeholder="http"
+                          aria-invalid={!!servicePortErrors[i]}
+                        />
+                      </td>
                       <td className="px-2 py-1"><input type="number" value={sp.port} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, port: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="80" /></td>
                       <td className="px-2 py-1"><input type="number" value={sp.targetPort} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, targetPort: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="3000" /></td>
                       <td className="px-2 py-1">
@@ -1420,11 +1612,31 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                         )}
                       </td>
                     </tr>
-                  ))}
+                  )).flatMap((row, i) => servicePortErrors[i]
+                    ? [row, (
+                        <tr key={`err-${i}`}>
+                          <td colSpan={serviceType === 'NodePort' ? 6 : 5} className="px-3 pb-2 pt-0">
+                            <span className="text-[11px] text-status-failed">{servicePortErrors[i]}</span>
+                          </td>
+                        </tr>
+                      )]
+                    : [row])}
                 </tbody>
               </table>
             </div>
-            <button type="button" onClick={() => setServicePorts([...servicePorts, { name: '', port: '', targetPort: '', protocol: 'TCP', nodePort: '' }])} className="btn-ghost text-xs">+ Add Port</button>
+            <button
+              type="button"
+              onClick={() => {
+                // Suggest a free name so adding a port doesn't invite a duplicate.
+                const taken = new Set(servicePorts.map(p => p.name.trim()))
+                let suggested = 'port-2'
+                for (let n = servicePorts.length + 1; taken.has(suggested); n++) suggested = `port-${n}`
+                setServicePorts([...servicePorts, { name: suggested, port: '', targetPort: '', protocol: 'TCP', nodePort: '' }])
+              }}
+              className="btn-ghost text-xs"
+            >
+              + Add Port
+            </button>
           </>
         )}
       </div>
@@ -1576,6 +1788,19 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                         />
                         <span className="text-[10px] text-text-secondary">TLS</span>
                       </label>
+                      {cfg.tls && (
+                        <select
+                          value={cfg.clusterIssuer}
+                          onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], clusterIssuer: e.target.value } }))}
+                          className="input-field !py-1 !text-[10px] w-44"
+                          title="Certificate provider for this environment. Inherit uses the app-level selection."
+                        >
+                          <option value="">Inherit</option>
+                          {sslProviders.map(p => (
+                            <option key={p.name} value={p.name}>{p.name}</option>
+                          ))}
+                        </select>
+                      )}
                       <button
                         type="button"
                         onClick={() => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], domains: [...prev[envName].domains, ''] } }))}
@@ -1946,13 +2171,31 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           <label className="label">Ingress Annotations</label>
           <button type="button" onClick={() => setIngressAnnotations(prev => [...prev, { key: '', value: '' }])} className="text-xs text-accent hover:text-accent-glow">+ Add</button>
         </div>
-        {ingressAnnotations.map((a, i) => (
-          <div key={i} className="flex gap-2 mb-2">
-            <input value={a.key} onChange={e => { const u = [...ingressAnnotations]; u[i].key = e.target.value; setIngressAnnotations(u) }} placeholder="traefik.ingress.kubernetes.io/body-size" className="input-field flex-1 font-mono text-xs" />
-            <input value={a.value} onChange={e => { const u = [...ingressAnnotations]; u[i].value = e.target.value; setIngressAnnotations(u) }} placeholder="10MB" className="input-field flex-1 text-xs" />
-            <button type="button" onClick={() => setIngressAnnotations(prev => prev.filter((_, j) => j !== i))} className="text-text-tertiary hover:text-status-failed text-xs px-2">&times;</button>
-          </div>
-        ))}
+        {ingressAnnotations.map((a, i) => {
+          // The issuer has a dedicated control. Typed here it would be dropped on save,
+          // so say so at the field rather than letting the server reject the whole form.
+          const isIssuerKey = a.key.trim() === CLUSTER_ISSUER_ANNOTATION
+          return (
+            <div key={i} className="mb-2">
+              <div className="flex gap-2">
+                <input
+                  value={a.key}
+                  onChange={e => { const u = [...ingressAnnotations]; u[i].key = e.target.value; setIngressAnnotations(u) }}
+                  placeholder="traefik.ingress.kubernetes.io/body-size"
+                  className={`input-field flex-1 font-mono text-xs ${isIssuerKey ? '!border-status-failed/60' : ''}`}
+                  aria-invalid={isIssuerKey}
+                />
+                <input value={a.value} onChange={e => { const u = [...ingressAnnotations]; u[i].value = e.target.value; setIngressAnnotations(u) }} placeholder="10MB" className="input-field flex-1 text-xs" />
+                <button type="button" onClick={() => setIngressAnnotations(prev => prev.filter((_, j) => j !== i))} className="text-text-tertiary hover:text-status-failed text-xs px-2">&times;</button>
+              </div>
+              {isIssuerKey && (
+                <p className="text-[10px] text-status-failed mt-1">
+                  Use the certificate provider selector above, or set it to “Custom — managed by ingress annotations”.
+                </p>
+              )}
+            </div>
+          )
+        })}
       </div>
 
       <div>
@@ -1983,11 +2226,14 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         ))}
       </div>
 
-      <div className="flex gap-3 pt-1">
-        <button type="submit" disabled={mutation.isPending} className="btn-primary">
+      <div className="flex items-center gap-3 pt-1">
+        <button type="submit" disabled={mutation.isPending || (useServiceConfig && hasServicePortErrors)} className="btn-primary">
           {mutation.isPending ? 'Saving...' : 'Save Changes'}
         </button>
         <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
+        {useServiceConfig && hasServicePortErrors && (
+          <span className="text-xs text-status-failed">Fix the service port errors above to save.</span>
+        )}
       </div>
       {mutation.isError && (
         <p className="text-status-failed text-xs">{(mutation.error as Error).message}</p>
@@ -2779,6 +3025,21 @@ function CloneAppModal({ appName, isPending, error, onClone, onClose }: {
 
 const POD_LOG_COLORS = ['#56d4dd', '#e5c07b', '#98c379', '#c678dd', '#d19a66', '#61afef']
 
+function PodAge({ age, startedAt }: { age?: string; startedAt?: string }) {
+  if (!age) return null
+  return (
+    <span
+      className="flex items-center gap-1 text-[11px] text-text-tertiary"
+      title={startedAt ? `Started ${new Date(startedAt).toLocaleString()}` : undefined}
+    >
+      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      <span className="font-mono">{age}</span>
+    </span>
+  )
+}
+
 function AppLogs({ appId, environments, selectedEnv, onEnvChange }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
   const env = selectedEnv || environments[0] || ''
   const setEnv = onEnvChange
@@ -2957,7 +3218,9 @@ function AppLogs({ appId, environments, selectedEnv, onEnvChange }: { appId: str
                   <div key={pod.pod} className="flex items-center gap-1.5">
                     <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: POD_LOG_COLORS[i % POD_LOG_COLORS.length] }} />
                     <span className="text-[11px] font-mono text-text-secondary">{pod.pod.split('-').slice(-2).join('-')}</span>
-                    <span className="text-[10px] text-text-tertiary">({pod.status})</span>
+                    <span className="text-[10px] text-text-tertiary" title={pod.startedAt ? `Started ${new Date(pod.startedAt).toLocaleString()}` : undefined}>
+                      ({pod.status}{pod.age ? ` · ${pod.age}` : ''})
+                    </span>
                   </div>
                 ))}
               </div>
@@ -2989,6 +3252,7 @@ function AppLogs({ appId, environments, selectedEnv, onEnvChange }: { appId: str
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="text-[11px] text-text-tertiary">{pod.status}</span>
+                  <PodAge age={pod.age} startedAt={pod.startedAt} />
                   {pod.restarts > 0 && (
                     <span className="text-[11px] text-status-failed">{pod.restarts} restart{pod.restarts !== 1 ? 's' : ''}</span>
                   )}
@@ -4319,6 +4583,7 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
       <div className="flex items-center justify-between">
         <p className="text-xs text-text-tertiary">{existingKeys.length} variable{existingKeys.length !== 1 ? 's' : ''} in {env}</p>
         <div className="flex items-center gap-3">
+          {existingKeys.length > 0 && <CopyEnvButton values={values} />}
           {existingKeys.length > 0 && (
             <button
               onClick={() => {
@@ -4690,6 +4955,7 @@ function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; pro
         <div className="bg-surface-1 border border-border rounded-lg p-3">
           <div className="flex items-center justify-between mb-2">
             <span className="text-[11px] font-mono text-yellow-500">Values visible (auto-hides in 30s)</span>
+            <CopyEnvButton values={revealed} />
           </div>
           <div className="space-y-1">
             {Object.entries(revealed).map(([k, v]) => (

@@ -1,13 +1,21 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
-import { useUserRole } from '../lib/useRole'
+import { useUserRole, useCurrentUsername } from '../lib/useRole'
+import MFAEnrollment from '../components/MFAEnrollment'
+import ReauthPrompt from '../components/ReauthPrompt'
+import UIDomainSettings from '../components/UIDomainSettings'
+import { BackupCodes } from '../components/MFAChallenge'
+import SSLProvidersSection from '../components/SSLProviders'
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'general' | 'teams' | 'users' | 'roles' | 'audit' | 'webhooks' | 'integrations'>(() => {
+  const [activeTab, setActiveTab] = useState<'general' | 'teams' | 'users' | 'roles' | 'audit' | 'webhooks' | 'integrations' | 'ssl' | 'system'>(() => {
     const params = new URLSearchParams(window.location.search)
     const tab = params.get('tab')
     if (tab === 'integrations') return 'integrations'
+    if (tab === 'ssl') return 'ssl'
+    // The update banner links straight here.
+    if (tab === 'system') return 'system'
     return 'general'
   })
   const role = useUserRole()
@@ -19,6 +27,8 @@ export default function SettingsPage() {
     { key: 'users' as const, label: 'Users' },
     { key: 'roles' as const, label: 'Roles' },
     ...(isAdmin ? [
+      { key: 'ssl' as const, label: 'SSL Certificates' },
+      { key: 'system' as const, label: 'System' },
       { key: 'integrations' as const, label: 'Integrations' },
       { key: 'audit' as const, label: 'Audit Log' },
       { key: 'webhooks' as const, label: 'Webhooks' },
@@ -27,7 +37,7 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-display italic text-text-primary">Settings</h2>
+      <p className="text-sm text-text-secondary">Manage your profile, teams, access, and integrations.</p>
 
       <div className="flex border-b border-border">
         {tabs.map((tab) => (
@@ -49,7 +59,9 @@ export default function SettingsPage() {
         <div className="space-y-8">
           <ProfileSection />
           <ChangePasswordSection />
+          <TwoFactorSection />
           <APIKeysSection />
+          <InstanceIdentitySection />
         </div>
       )}
 
@@ -68,6 +80,7 @@ export default function SettingsPage() {
       {activeTab === 'roles' && (
         <div className="space-y-8">
           <RolesSection />
+          {isAdmin && <MFAPolicySection />}
         </div>
       )}
 
@@ -83,12 +96,44 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {activeTab === 'ssl' && isAdmin && (
+        <div className="space-y-8">
+          <UIDomainSettings />
+          <SettingsSection
+            title="SSL Certificates"
+            description="Certificate providers apps can issue TLS certificates from. Vesta creates these as cert-manager ClusterIssuers; the default is used by any app that does not pick its own."
+          >
+            <SSLProvidersSection />
+          </SettingsSection>
+        </div>
+      )}
+
+      {activeTab === 'system' && isAdmin && (
+        <div className="space-y-8">
+          <SystemVersionSection />
+        </div>
+      )}
+
       {activeTab === 'integrations' && isAdmin && (
         <div className="space-y-8">
           <GitHubAppSection />
         </div>
       )}
     </div>
+  )
+}
+
+// Settings sections put their heading and a one-line explanation in a left column
+// so the form isn't a narrow ribbon in a very wide card.
+function SettingsSection({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
+  return (
+    <section className="card p-6 grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-5 lg:gap-10">
+      <div>
+        <h3 className="section-title">{title}</h3>
+        {description && <p className="text-xs text-text-tertiary leading-relaxed mt-2">{description}</p>}
+      </div>
+      <div className="min-w-0">{children}</div>
+    </section>
   )
 }
 
@@ -130,11 +175,10 @@ function ProfileSection() {
   if (isLoading) return <Spinner />
 
   return (
-    <section className="card p-6">
-      <h3 className="section-title mb-5">Profile</h3>
+    <SettingsSection title="Profile" description="How you appear across the platform. Your username can't be changed.">
       <form
         onSubmit={(e) => { e.preventDefault(); mutation.mutate() }}
-        className="space-y-4 max-w-lg"
+        className="space-y-4 max-w-xl"
       >
         <div>
           <label className="label">Username</label>
@@ -168,7 +212,7 @@ function ProfileSection() {
           )}
         </div>
       </form>
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -210,9 +254,8 @@ function ChangePasswordSection() {
   }
 
   return (
-    <section className="card p-6">
-      <h3 className="section-title mb-5">Change Password</h3>
-      <form onSubmit={handleSubmit} className="space-y-4 max-w-lg">
+    <SettingsSection title="Change Password" description="Use at least 8 characters. You'll stay signed in on this device.">
+      <form onSubmit={handleSubmit} className="space-y-4 max-w-xl">
         <div>
           <label className="label">Current Password</label>
           <input
@@ -256,7 +299,7 @@ function ChangePasswordSection() {
           {success && <span className="text-xs text-status-running">Password changed</span>}
         </div>
       </form>
-    </section>
+    </SettingsSection>
   )
 }
 
@@ -594,6 +637,425 @@ function APIKeysSection() {
   )
 }
 
+// What is running, whether something newer exists, and the button that applies it.
+function SystemVersionSection() {
+  const queryClient = useQueryClient()
+  const [confirming, setConfirming] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const { data: sys } = useQuery({ queryKey: ['systemVersion'], queryFn: () => api.getSystemVersion() })
+  const { data: status } = useQuery({ queryKey: ['updateStatus'], queryFn: () => api.getUpdateStatus() })
+  const { data: progress } = useQuery({
+    queryKey: ['updateProgress'],
+    queryFn: () => api.getUpdateProgress(),
+    // While an upgrade runs the API is replaced underneath us, so poll rather than wait
+    // on a response that will never arrive.
+    refetchInterval: (q) => (q.state.data?.current?.status === 'running' ? 5000 : false),
+    retry: true,
+  })
+  const { data: mfa } = useQuery({ queryKey: ['mfaStatus'], queryFn: () => api.mfaStatus() })
+
+  const check = useMutation({
+    mutationFn: () => api.checkForUpdates(),
+    onSuccess: () => { setError(''); queryClient.invalidateQueries({ queryKey: ['updateStatus'] }) },
+    onError: (e: Error) => setError(e.message),
+  })
+
+  const toggleChecks = useMutation({
+    mutationFn: (enabled: boolean) => api.setUpdateSettings(enabled),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['updateStatus'] }),
+    onError: (e: Error) => setError(e.message),
+  })
+
+  const start = useMutation({
+    mutationFn: (grantId: string) => api.triggerUpdate(status!.latest, grantId),
+    onSuccess: (res) => {
+      setConfirming(false)
+      setError('')
+      setNotice(res.note)
+      queryClient.invalidateQueries({ queryKey: ['updateProgress'] })
+    },
+    onError: (e: Error) => { setConfirming(false); setError(e.message) },
+  })
+
+  const running = progress?.current?.status === 'running'
+
+  return (
+    <section className="card p-6 space-y-5">
+      <div>
+        <h3 className="section-title">Version</h3>
+        <p className="text-xs text-text-tertiary mt-1">
+          What this installation is running, read from the deployments rather than from the chart.
+        </p>
+      </div>
+
+      <div className="space-y-1">
+        {sys?.components?.map((c) => (
+          <div key={c.component} className="flex items-center justify-between px-3 py-2 bg-surface-1 border border-border rounded-lg">
+            <span className="text-xs text-text-secondary capitalize">{c.component}</span>
+            <span className="flex items-center gap-3">
+              <span className="text-xs font-mono text-text-primary">{c.tag}</span>
+              <span className={`w-1.5 h-1.5 rounded-full ${c.ready ? 'bg-status-running' : 'bg-status-failed'}`}
+                    title={c.ready ? 'ready' : 'not ready'} />
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="pt-4 border-t border-border space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-text-primary">
+              {running ? `Upgrading to ${progress?.current?.toVersion}...`
+                : status?.updateAvailable ? `Version ${status.latest} is available`
+                : 'Up to date'}
+            </p>
+            <p className="text-[11px] text-text-tertiary mt-0.5">
+              {status?.checkedAt ? `Last checked ${new Date(status.checkedAt).toLocaleString()}` : 'Never checked'}
+              {!status?.isRelease && ' · development build, updates are not offered'}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={() => check.mutate()} disabled={check.isPending || !status?.checkEnabled}
+                    className="text-xs text-accent hover:text-accent-glow font-mono disabled:opacity-40">
+              {check.isPending ? 'Checking...' : 'Check now'}
+            </button>
+            {status?.updateAvailable && !running && (
+              <button onClick={() => { setError(''); setNotice(''); setConfirming(true) }} className="btn-primary text-xs">
+                Update to {status.latest}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {running && (
+          <p className="text-[11px] text-text-tertiary">
+            The API restarts partway through, so this page may briefly fail to load. It will reconnect on its own.
+          </p>
+        )}
+
+        {confirming && (
+          <ReauthPrompt
+            action={`Upgrading Vesta from ${status?.current} to ${status?.latest}. All three components restart, and the API will drop this connection partway through.`}
+            hasPasskey={(mfa?.methods ?? []).includes('webauthn')}
+            onConfirmed={(grantId) => start.mutate(grantId)}
+            onCancel={() => setConfirming(false)}
+          />
+        )}
+
+        <label className="flex items-center gap-2 text-xs text-text-tertiary cursor-pointer">
+          <input
+            type="checkbox"
+            checked={status?.checkEnabled ?? true}
+            onChange={(e) => toggleChecks.mutate(e.target.checked)}
+          />
+          Check for new releases automatically (turn off for an air-gapped cluster)
+        </label>
+      </div>
+
+      {progress?.history && progress.history.length > 0 && (
+        <div className="pt-4 border-t border-border">
+          <p className="label mb-2">Recent upgrades</p>
+          <div className="space-y-1">
+            {progress.history.slice(0, 5).map((h) => (
+              <div key={h.id} className="flex items-center justify-between text-[11px] font-mono">
+                <span className="text-text-tertiary">
+                  {h.fromVersion || '?'} → {h.toVersion}
+                </span>
+                <span className={
+                  h.status === 'succeeded' ? 'text-status-running'
+                  : h.status === 'failed' ? 'text-status-failed'
+                  : 'text-text-tertiary'
+                }>
+                  {h.status}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {notice && <p className="text-xs text-accent">{notice}</p>}
+      {error && <p className="text-xs text-status-failed">{error}</p>}
+    </section>
+  )
+}
+
+// Instance-wide rule for who must carry a second factor.
+function MFAPolicySection() {
+  const queryClient = useQueryClient()
+  const [error, setError] = useState('')
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['mfaPolicy'],
+    queryFn: () => api.getMFAPolicy(),
+  })
+
+  const update = useMutation({
+    mutationFn: (requireAdmin: boolean) => api.updateMFAPolicy(requireAdmin),
+    onSuccess: () => {
+      setError('')
+      queryClient.invalidateQueries({ queryKey: ['mfaPolicy'] })
+      queryClient.invalidateQueries({ queryKey: ['mfaStatus'] })
+    },
+    onError: (e: Error) => setError(e.message),
+  })
+
+  if (isLoading) return <section className="card p-6"><Spinner /></section>
+
+  const enabled = data?.requireAdmin ?? false
+
+  return (
+    <section className="card p-6">
+      <div className="mb-5">
+        <h3 className="section-title">Two-Factor Policy</h3>
+        <p className="text-xs text-text-tertiary mt-1">Who must hold a second factor to sign in.</p>
+      </div>
+
+      <label className="flex items-start gap-3 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={update.isPending}
+          onChange={(e) => update.mutate(e.target.checked)}
+          className="mt-0.5"
+        />
+        <span>
+          <span className="block text-sm text-text-primary">Require two-factor authentication for admins</span>
+          <span className="block text-[11px] text-text-tertiary mt-0.5">
+            Admins without a factor are asked to enrol at their next sign-in rather than being locked out, and
+            cannot remove their last one.
+          </span>
+        </span>
+      </label>
+
+      {enabled && (
+        <p className="text-[11px] text-text-tertiary mt-3 pt-3 border-t border-border">
+          Make sure you can enrol before relying on this: passkeys need HTTPS, and authenticator apps need this
+          instance to have an encryption key configured.
+        </p>
+      )}
+
+      {error && <p className="text-status-failed text-xs mt-3">{error}</p>}
+    </section>
+  )
+}
+
+// Manage this account's second factors.
+function TwoFactorSection() {
+  const queryClient = useQueryClient()
+  const [adding, setAdding] = useState(false)
+  const [newCodes, setNewCodes] = useState<string[] | null>(null)
+  const [error, setError] = useState('')
+
+  // The action waiting on a confirmation. Held rather than executed so the grant, which
+  // is single-use, is spent on exactly the change the user approved.
+  const [pending, setPending] = useState<
+    { kind: 'removeTotp' } | { kind: 'removePasskey'; id: string; name: string } | { kind: 'regenerate' } | { kind: 'add' } | null
+  >(null)
+
+  // Grant held for an enrollment in progress. Adding a factor to an account that already
+  // has one needs the same proof as removing one, or an attacker on a stolen session
+  // simply registers their own alongside the victim's and keeps access.
+  const [addGrant, setAddGrant] = useState<string | null>(null)
+
+  const { data: status, isLoading } = useQuery({
+    queryKey: ['mfaStatus'],
+    queryFn: () => api.mfaStatus(),
+  })
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['mfaStatus'] })
+
+  const run = useMutation({
+    mutationFn: async (grantId: string) => {
+      if (!pending) return
+      if (pending.kind === 'add') { setAddGrant(grantId); setAdding(true); return }
+      if (pending.kind === 'removeTotp') return api.totpDisable(grantId)
+      if (pending.kind === 'removePasskey') return api.deletePasskey(pending.id, grantId)
+      const res = await api.regenerateBackupCodes(grantId)
+      setNewCodes(res.backupCodes)
+    },
+    onSuccess: () => { setError(''); setPending(null); refresh() },
+    onError: (e: Error) => { setError(e.message); setPending(null) },
+  })
+
+  const describePending = () => {
+    if (pending?.kind === 'add') return 'Adding another second factor to your account.'
+    if (pending?.kind === 'removeTotp') return 'Removing your authenticator app.'
+    if (pending?.kind === 'removePasskey') return `Removing the passkey "${pending.name}".`
+    return 'Generating new recovery codes. Your existing codes will stop working.'
+  }
+
+  // The first factor needs no proof -- there is nothing to prove possession of yet.
+  const startAdding = () => {
+    setNewCodes(null); setError('')
+    if ((status?.enrollments.length ?? 0) === 0) {
+      setAddGrant(null)
+      setAdding(true)
+      return
+    }
+    setPending({ kind: 'add' })
+  }
+
+  if (isLoading) return <section className="card p-6"><Spinner /></section>
+
+  const enrollments = status?.enrollments ?? []
+
+  return (
+    <section className="card p-6">
+      <div className="flex items-start justify-between mb-5">
+        <div>
+          <h3 className="section-title">Two-Factor Authentication</h3>
+          <p className="text-xs text-text-tertiary mt-1">
+            {status?.required
+              ? 'Required for your role. You must keep at least one factor.'
+              : 'A second factor after your password. Strongly recommended.'}
+          </p>
+        </div>
+        {!adding && !pending && (
+          <button onClick={startAdding} className="btn-ghost text-xs">Add factor</button>
+        )}
+      </div>
+
+      {newCodes && <div className="mb-5"><BackupCodes codes={newCodes} onDone={() => setNewCodes(null)} /></div>}
+
+      {pending && (
+        <div className="mb-5">
+          <ReauthPrompt
+            action={describePending()}
+            hasPasskey={(status?.methods ?? []).includes('webauthn')}
+            onConfirmed={(grantId) => run.mutate(grantId)}
+            onCancel={() => setPending(null)}
+          />
+        </div>
+      )}
+
+      {adding && (
+        <div className="mb-5 bg-surface-1 border border-border rounded-lg p-4">
+          <MFAEnrollment
+            totpAvailable={status?.totpAvailable ?? false}
+            reauthGrant={addGrant ?? undefined}
+            onEnrolled={() => { setAdding(false); setAddGrant(null); refresh() }}
+            onCancel={() => { setAdding(false); setAddGrant(null) }}
+            onReauthRequired={() => {
+              // A grant is single-use, so a cancelled passkey prompt burns it. Collect
+              // another rather than leaving the user with an error they cannot clear.
+              setAdding(false)
+              setAddGrant(null)
+              setError('That confirmation was already used. Please confirm again.')
+              setPending({ kind: 'add' })
+            }}
+          />
+        </div>
+      )}
+
+      {enrollments.length === 0 && !adding && (
+        <p className="text-xs text-text-tertiary">No second factor is enrolled on this account.</p>
+      )}
+
+      <div className="space-y-2">
+        {enrollments.map((e) => (
+          <div key={e.id || e.method} className="flex items-center justify-between px-3 py-2.5 bg-surface-1 border border-border rounded-lg group">
+            <div className="min-w-0">
+              <p className="text-sm text-text-primary">{e.name || (e.method === 'totp' ? 'Authenticator app' : 'Passkey')}</p>
+              <p className="text-[11px] text-text-tertiary mt-0.5">
+                {e.method === 'totp' ? 'Authenticator app' : 'Passkey'}
+                {e.lastUsedAt ? ` · last used ${new Date(e.lastUsedAt).toLocaleDateString()}` : ' · never used'}
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                setError('')
+                setAdding(false)
+                if (e.method === 'totp') setPending({ kind: 'removeTotp' })
+                else if (e.id) setPending({ kind: 'removePasskey', id: e.id, name: e.name || 'Passkey' })
+              }}
+              className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {enrollments.length > 0 && (
+        <div className="flex items-center justify-between mt-4 pt-4 border-t border-border">
+          <p className="text-xs text-text-tertiary">
+            {status?.backupCodesLeft ?? 0} recovery code{(status?.backupCodesLeft ?? 0) !== 1 ? 's' : ''} remaining
+          </p>
+          <button
+            onClick={() => { setError(''); setAdding(false); setPending({ kind: 'regenerate' }) }}
+            disabled={run.isPending}
+            className="text-xs text-accent hover:text-accent-glow font-mono"
+          >
+            {run.isPending ? 'Working...' : 'Regenerate codes'}
+          </button>
+        </div>
+      )}
+
+      {error && <p className="text-status-failed text-xs mt-3">{error}</p>}
+    </section>
+  )
+}
+
+// The public half of this instance's transfer keypair. Operators hand it to whoever is
+// exporting a project to them; bundles sealed with it can only be opened here.
+function InstanceIdentitySection() {
+  const [copied, setCopied] = useState(false)
+
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ['instanceIdentity'],
+    queryFn: () => api.getInstanceIdentity(),
+    staleTime: Infinity,
+  })
+
+  const copyKey = () => {
+    if (!data) return
+    navigator.clipboard.writeText(data.publicKey)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <section className="card p-6">
+      <div className="mb-5">
+        <h3 className="section-title">Instance Identity</h3>
+        <p className="text-xs text-text-tertiary mt-1">
+          Send this key to anyone exporting a project to this instance. Only this instance can open a bundle sealed
+          with it.
+        </p>
+      </div>
+
+      {isLoading && <Spinner />}
+      {isError && <p className="text-status-failed text-xs">{(error as Error).message}</p>}
+
+      {data && (
+        <div className="space-y-3">
+          <div>
+            <label className="label">Public Key</label>
+            <div className="flex items-start gap-3">
+              <code className="flex-1 text-xs font-mono text-text-secondary bg-surface-1 border border-border rounded-lg px-3 py-2.5 break-all select-all">
+                {data.publicKey}
+              </code>
+              <button onClick={copyKey} className="btn-outline text-xs whitespace-nowrap">
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="label">Fingerprint</label>
+            <p className="text-xs font-mono text-text-primary tracking-wider">{data.fingerprint}</p>
+            <p className="text-[11px] text-text-tertiary mt-1">
+              Read this aloud to confirm the key arrived intact before a bundle is sealed with it.
+            </p>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 function CreateAPIKeyForm({ onClose, onCreated }: { onClose: () => void; onCreated: (token: string) => void }) {
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
@@ -680,6 +1142,31 @@ function UserManagementSection() {
   })
   const [showRegister, setShowRegister] = useState(false)
 
+  // Whose factors are being cleared, held until the admin confirms their own identity.
+  const [resetting, setResetting] = useState<{ id: string; name: string } | null>(null)
+  const [notice, setNotice] = useState('')
+  const [error, setError] = useState('')
+
+  const currentUsername = useCurrentUsername()
+  const { data: ownStatus } = useQuery({
+    queryKey: ['mfaStatus'],
+    queryFn: () => api.mfaStatus(),
+  })
+
+  const reset = useMutation({
+    mutationFn: (grantId: string) => api.resetUserMFA(resetting!.id, grantId),
+    onSuccess: (res) => {
+      setError('')
+      setNotice(
+        `Two-factor authentication cleared for ${res.user}.` +
+        (res.mustReenroll ? ' They will be asked to enrol again at their next sign-in.' : '')
+      )
+      setResetting(null)
+      queryClient.invalidateQueries({ queryKey: ['users'] })
+    },
+    onError: (e: Error) => { setError(e.message); setResetting(null) },
+  })
+
   return (
     <section className="card p-6">
       <div className="flex items-center justify-between mb-5">
@@ -695,6 +1182,20 @@ function UserManagementSection() {
       </div>
 
       {showRegister && <RegisterUserForm onClose={() => { setShowRegister(false); queryClient.invalidateQueries({ queryKey: ['users'] }) }} />}
+
+      {notice && <p className="text-xs text-accent mb-4">{notice}</p>}
+      {error && <p className="text-xs text-status-failed mb-4">{error}</p>}
+
+      {resetting && (
+        <div className="mb-5">
+          <ReauthPrompt
+            action={`Clearing every second factor for ${resetting.name}. They will sign in with their password alone until they enrol again.`}
+            hasPasskey={(ownStatus?.methods ?? []).includes('webauthn')}
+            onConfirmed={(grantId) => reset.mutate(grantId)}
+            onCancel={() => setResetting(null)}
+          />
+        </div>
+      )}
 
       {isLoading && <Spinner />}
 
@@ -714,13 +1215,29 @@ function UserManagementSection() {
                 <p className="text-xs text-text-tertiary mt-0.5">{user.email}</p>
               </div>
             </div>
-            <span className={`text-[11px] font-mono px-2 py-0.5 rounded ${
-              user.role === 'admin' ? 'bg-accent/10 text-accent' :
-              user.role === 'viewer' ? 'bg-surface-3 text-text-tertiary' :
-              'bg-status-running/10 text-status-running'
-            }`}>
-              {user.role}
-            </span>
+            <div className="flex items-center gap-3">
+              {/* Self-reset is refused by the API: an admin clearing their own factors
+                  here would bypass the anti-lockout rule their own settings enforce. */}
+              {user.username !== currentUsername && (
+                <button
+                  onClick={() => {
+                    setNotice(''); setError('')
+                    setResetting({ id: user.id, name: user.displayName || user.username })
+                  }}
+                  className="text-xs text-text-tertiary hover:text-status-failed transition-colors"
+                  title="Clear this user's two-factor authentication"
+                >
+                  Reset 2FA
+                </button>
+              )}
+              <span className={`text-[11px] font-mono px-2 py-0.5 rounded ${
+                user.role === 'admin' ? 'bg-accent/10 text-accent' :
+                user.role === 'viewer' ? 'bg-surface-3 text-text-tertiary' :
+                'bg-status-running/10 text-status-running'
+              }`}>
+                {user.role}
+              </span>
+            </div>
           </div>
         ))}
       </div>
