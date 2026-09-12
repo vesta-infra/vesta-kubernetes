@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -65,6 +66,19 @@ var (
 
 	IngressGVR = schema.GroupVersionResource{
 		Group: "networking.k8s.io", Version: "v1", Resource: "ingresses",
+	}
+
+	// cert-manager resources backing the SSL providers settings. These are only present
+	// when the cluster admin has installed cert-manager, so every call against them must
+	// treat NotFound on the resource type itself as "not installed" rather than an error.
+	ClusterIssuerGVR = schema.GroupVersionResource{
+		Group: "cert-manager.io", Version: "v1", Resource: "clusterissuers",
+	}
+	CertificateGVR = schema.GroupVersionResource{
+		Group: "cert-manager.io", Version: "v1", Resource: "certificates",
+	}
+	CRDGVR = schema.GroupVersionResource{
+		Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions",
 	}
 )
 
@@ -138,6 +152,27 @@ func (c *Client) GetClusterResource(ctx context.Context, gvr schema.GroupVersion
 	return c.Dynamic.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
 }
 
+// Cluster-scoped writes. ClusterIssuer and VestaConfig are cluster-scoped, and the
+// namespaced helpers above cannot address them — .Namespace() on a cluster-scoped
+// resource yields a request the API server rejects.
+
+func (c *Client) CreateClusterResource(ctx context.Context, gvr schema.GroupVersionResource, obj map[string]interface{}) (*unstructured.Unstructured, error) {
+	u := &unstructured.Unstructured{Object: obj}
+	return c.Dynamic.Resource(gvr).Create(ctx, u, metav1.CreateOptions{})
+}
+
+func (c *Client) UpdateClusterResource(ctx context.Context, gvr schema.GroupVersionResource, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	return c.Dynamic.Resource(gvr).Update(ctx, obj, metav1.UpdateOptions{})
+}
+
+func (c *Client) DeleteClusterResource(ctx context.Context, gvr schema.GroupVersionResource, name string) error {
+	return c.Dynamic.Resource(gvr).Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+func (c *Client) PatchClusterResource(ctx context.Context, gvr schema.GroupVersionResource, name string, patchData []byte) (*unstructured.Unstructured, error) {
+	return c.Dynamic.Resource(gvr).Patch(ctx, name, types.MergePatchType, patchData, metav1.PatchOptions{})
+}
+
 func ToJSON(v interface{}) []byte {
 	b, _ := json.Marshal(v)
 	return b
@@ -155,6 +190,39 @@ func (c *Client) ListPods(ctx context.Context, namespace, labelSelector string) 
 	}
 	return list.Items, nil
 }
+
+// ListEvents returns events in a namespace, newest first. Warning events are the
+// cluster's own explanation of why a pod won't start (failed pulls, failed mounts,
+// scheduling failures), which is exactly what a bare "Failed" phase hides.
+func (c *Client) ListEvents(ctx context.Context, namespace string) ([]corev1.Event, error) {
+	list, err := c.Clientset.CoreV1().Events(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	events := list.Items
+	sort.Slice(events, func(i, j int) bool {
+		return eventTime(events[i]).After(eventTime(events[j]))
+	})
+	return events, nil
+}
+
+// eventTime prefers the timestamps that are actually populated: series events set
+// LastObservedTime, older ones LastTimestamp, and some only EventTime.
+func eventTime(e corev1.Event) time.Time {
+	if e.Series != nil && !e.Series.LastObservedTime.IsZero() {
+		return e.Series.LastObservedTime.Time
+	}
+	if !e.LastTimestamp.IsZero() {
+		return e.LastTimestamp.Time
+	}
+	if !e.EventTime.IsZero() {
+		return e.EventTime.Time
+	}
+	return e.CreationTimestamp.Time
+}
+
+// EventTime exposes the resolved timestamp for callers building API responses.
+func EventTime(e corev1.Event) time.Time { return eventTime(e) }
 
 // GetPodLogs returns the log output for a pod/container.
 func (c *Client) GetPodLogs(ctx context.Context, namespace, podName, container string, tailLines int64, previous bool) (string, error) {

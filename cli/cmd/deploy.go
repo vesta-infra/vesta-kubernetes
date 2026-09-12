@@ -14,30 +14,43 @@ import (
 var deployCmd = &cobra.Command{
 	Use:   "deploy [app-id]",
 	Short: "Deploy a new image tag to an app",
-	Long:  `Triggers a deployment by updating the image tag. The repository and imagePullSecrets are already configured on the app.`,
-	Args:  cobra.ExactArgs(1),
-	Run:   runDeploy,
+	Long: `Triggers a deployment by updating the image tag for one environment.
+
+The repository and imagePullSecrets are already configured on the app; only the tag and
+the environment to roll it into are given here.`,
+	Args: cobra.ExactArgs(1),
+	Run:  runDeploy,
 }
 
 var (
 	deployTag       string
+	deployEnv       string
 	deployReason    string
 	deployCommitSHA string
 )
 
 func init() {
 	deployCmd.Flags().StringVar(&deployTag, "tag", "", "Image tag to deploy (required)")
+	deployCmd.Flags().StringVar(&deployEnv, "environment", "", "Target environment (required)")
 	deployCmd.Flags().StringVar(&deployReason, "reason", "", "Deploy reason")
 	deployCmd.Flags().StringVar(&deployCommitSHA, "commit", "", "Git commit SHA")
 	_ = deployCmd.MarkFlagRequired("tag")
+	// Required rather than defaulted: the API rejects an empty environment with
+	// `environment "" not found on app`, which reads like the app is broken rather than
+	// like a flag is missing.
+	_ = deployCmd.MarkFlagRequired("environment")
 	rootCmd.AddCommand(deployCmd)
 }
 
 func runDeploy(cmd *cobra.Command, args []string) {
 	appId := args[0]
 
+	// The API validates the environment against the app and rejects an empty one with
+	// `environment "" not found`. The flag was missing entirely, so every deploy failed
+	// with a message that read like the app was misconfigured.
 	body := map[string]interface{}{
-		"tag": deployTag,
+		"tag":         deployTag,
+		"environment": deployEnv,
 	}
 	if deployReason != "" {
 		body["reason"] = deployReason

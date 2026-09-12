@@ -1,0 +1,73 @@
+name: Release CLI
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (without the leading v), e.g. 0.6.3"
+        required: true
+
+jobs:
+  release-cli:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME#v}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release archives
+        run: make cli-release CLI_VERSION=${{ steps.version.outputs.version }}
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vesta-cli-${{ steps.version.outputs.version }}
+          path: dist/cli/*
+
+      - name: Publish to the GitHub release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/cli/*
+          fail_on_unmatched_files: true
+          # Append so this never clobbers release notes written by hand or by
+          # another workflow that already created the release for this tag.
+          append_body: true
+          body: |
+            ## Install the CLI
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/install.sh | sh
+            ```
+
+            Or pin this version:
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/vesta-infra/vesta-kubernetes/develop/install.sh | VESTA_VERSION=${{ steps.version.outputs.version }} sh
+            ```
+
+            Windows: download `vesta_${{ steps.version.outputs.version }}_windows_amd64.zip` below.
+            Verify downloads against `checksums.txt`.

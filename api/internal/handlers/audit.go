@@ -52,6 +52,12 @@ func (h *Handler) GetActivityFeed(c *gin.Context) {
 		ProjectID: c.Query("projectId"),
 	}
 
+	// The dashboard shows this rail to every role, so it stays open - but non-admins see
+	// only their own projects and their own actions rather than the whole instance.
+	if c.GetString("role") != "admin" {
+		filter.ScopeToUserID = c.GetString("userId")
+	}
+
 	if v := c.Query("limit"); v != "" {
 		filter.Limit, _ = strconv.Atoi(v)
 	} else {

@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../lib/api'
+import type { AuthResult } from '../lib/api'
+import MFAChallenge from '../components/MFAChallenge'
+import MFAEnrollment from '../components/MFAEnrollment'
 
-type View = 'login' | 'forgot' | 'reset'
+type View = 'login' | 'forgot' | 'reset' | 'mfa' | 'mfa-enroll'
 
 export default function LoginPage() {
   const navigate = useNavigate()
@@ -13,6 +16,13 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [checking, setChecking] = useState(true)
   const [forgotAvailable, setForgotAvailable] = useState(false)
+
+  // Second-factor state. `pending` holds the short-lived token that reaches only the 2FA
+  // endpoints; it is written to storage because the shared api client reads the bearer
+  // token from there, and replaced by a real session the moment one is issued.
+  const [mfaMethods, setMfaMethods] = useState<('totp' | 'webauthn' | 'backup')[]>([])
+  const [totpAvailable, setTotpAvailable] = useState(true)
+  const [enrollReason, setEnrollReason] = useState('')
 
   // Forgot password state
   const [forgotEmail, setForgotEmail] = useState('')
@@ -43,17 +53,61 @@ export default function LoginPage() {
     setLoading(true)
     try {
       const res = await api.login(username, password)
+
+      // A correct password no longer implies a session. Both partial tokens are stored
+      // the same way, but neither is accepted anywhere except the 2FA endpoints.
       localStorage.setItem('vesta-token', res.token)
-      try {
-        const user = await api.getCurrentUser()
-        localStorage.setItem('vesta-user', JSON.stringify({ username: user.username, email: user.email, role: user.role }))
-      } catch { /* non-critical */ }
-      navigate('/')
+
+      if (res.mfaRequired) {
+        setMfaMethods(res.methods || [])
+        setView('mfa')
+        return
+      }
+      if (res.mfaEnrollmentRequired) {
+        setTotpAvailable(res.totpAvailable !== false)
+        setEnrollReason(res.reason || '')
+        setView('mfa-enroll')
+        return
+      }
+
+      await finishLogin()
     } catch (err: any) {
       setError(err.message || 'Login failed')
     } finally {
       setLoading(false)
     }
+  }
+
+  // Caches the profile the layout reads, then lands on the dashboard. Shared so the
+  // password-only and two-factor paths cannot drift.
+  const finishLogin = async () => {
+    try {
+      const user = await api.getCurrentUser()
+      localStorage.setItem('vesta-user', JSON.stringify({ username: user.username, email: user.email, role: user.role }))
+    } catch { /* non-critical */ }
+    navigate('/')
+  }
+
+  const handleVerified = async (result: AuthResult) => {
+    localStorage.setItem('vesta-token', result.token)
+    await finishLogin()
+  }
+
+  // Enrolling under a mandatory policy does not itself produce a session -- the enroll
+  // token cannot be upgraded in place -- so the user signs in again, this time through
+  // the challenge they just set up.
+  const handleEnrolled = () => {
+    localStorage.removeItem('vesta-token')
+    setPassword('')
+    setView('login')
+    setError('Two-factor authentication is set up. Sign in again to continue.')
+  }
+
+  const cancelMFA = () => {
+    localStorage.removeItem('vesta-token')
+    setPassword('')
+    setError('')
+    setView('login')
   }
 
   const handleForgot = async (e: React.FormEvent) => {
@@ -130,6 +184,27 @@ export default function LoginPage() {
         </div>
 
         <div className="card p-8 gradient-border animate-slide-up" style={{ animationDelay: '0.15s', animationFillMode: 'both' }}>
+          {view === 'mfa' && (
+            <MFAChallenge methods={mfaMethods} onVerified={handleVerified} onCancel={cancelMFA} />
+          )}
+
+          {view === 'mfa-enroll' && (
+            <div className="space-y-4">
+              <div>
+                <h2 className="text-lg font-medium text-text-primary">Set up two-factor authentication</h2>
+                <p className="text-xs text-text-tertiary mt-1">
+                  {enrollReason || 'Your account requires a second factor before you can continue.'}
+                </p>
+              </div>
+              {/* No onCancel: the policy is what makes this step mandatory. */}
+              <MFAEnrollment totpAvailable={totpAvailable} onEnrolled={handleEnrolled} />
+              <button type="button" onClick={cancelMFA}
+                      className="text-xs text-text-tertiary hover:text-text-secondary font-mono">
+                Sign in as someone else
+              </button>
+            </div>
+          )}
+
           {view === 'login' && (
             <form onSubmit={handleLogin} className="space-y-5">
               {error && (

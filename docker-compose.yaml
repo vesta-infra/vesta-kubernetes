@@ -21,7 +21,9 @@ services:
       - PORT=8090
       - KUBECONFIG=/tmp/kubeconfig
       - DATABASE_URL=postgres://vesta:vesta-dev@postgres:5432/vesta?sslmode=disable
-      - JWT_SECRET=vesta-dev-jwt-secret-change-in-production
+      # At least 32 characters; the API refuses to start otherwise.
+      - JWT_SECRET=vesta-dev-jwt-secret-change-in-production-0123456789
+      - VESTA_PUBLIC_URL=http://localhost:3000
     volumes:
       - ${HOME}/.kube/config-docker:/tmp/kubeconfig:ro
     depends_on:

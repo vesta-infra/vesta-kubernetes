@@ -1,4 +1,5 @@
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom'
+import UpdateBanner from './UpdateBanner'
 import { useEffect, useState } from 'react'
 import { useUserRole } from '../lib/useRole'
 import { api } from '../lib/api'
@@ -75,6 +76,11 @@ const bottomNavItems = [
 
 const allNavItems = [...mainNavItems, ...bottomNavItems]
 
+// The release workflow passes the git tag as APP_VERSION, which already carries a
+// leading "v" -- prefixing another one rendered "vv0.6.1".
+const rawVersion = import.meta.env.VITE_APP_VERSION || 'dev'
+const appVersion = /^\d/.test(rawVersion) ? `v${rawVersion}` : rawVersion
+
 export default function Layout() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -115,14 +121,14 @@ export default function Layout() {
   )?.label || 'Vesta'
 
   return (
-    <div className="min-h-screen flex bg-surface-0">
+    <div className="h-screen flex bg-surface-0 overflow-hidden">
       {/* Sidebar */}
-      <aside className="w-[220px] bg-surface-1/50 backdrop-blur-xl border-r border-border flex flex-col shrink-0 relative">
+      <aside className="w-[228px] h-full bg-surface-1/60 backdrop-blur-xl border-r border-border/70 flex flex-col shrink-0 relative overflow-y-auto">
         {/* Ambient sidebar glow */}
-        <div className="absolute top-0 left-0 w-full h-40 bg-gradient-to-b from-accent/[0.03] to-transparent pointer-events-none" />
+        <div className="absolute top-0 left-0 w-full h-32 bg-gradient-to-b from-accent/[0.025] to-transparent pointer-events-none" />
 
         {/* Logo */}
-        <div className="relative px-5 py-6 border-b border-border/60">
+        <div className="relative px-5 py-6 border-b border-border/70">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-accent/20 to-accent/5 border border-accent/20 flex items-center justify-center shadow-glow-sm">
               <div className="w-2.5 h-2.5 rounded-[3px] bg-accent shadow-[0_0_8px_rgba(245,158,11,0.4)]" />
@@ -135,7 +141,8 @@ export default function Layout() {
         </div>
 
         {/* Main nav */}
-        <nav className="flex-1 px-3 py-5 space-y-1 relative">
+        <nav className="flex-1 min-h-0 px-3 py-5 space-y-0.5 relative">
+          <p className="px-3 pb-2 text-[9px] font-mono uppercase tracking-[0.2em] text-text-quaternary">Platform</p>
           {mainNavItems.filter(item => !(role === 'viewer' && (item.to === '/secrets'))).map((item) => (
             <NavLink
               key={item.to}
@@ -144,8 +151,8 @@ export default function Layout() {
               className={({ isActive }) =>
                 `flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all duration-200 group relative ${
                   isActive
-                    ? 'bg-accent/[0.08] text-accent shadow-[inset_0_0_0_1px_rgba(245,158,11,0.12)]'
-                    : 'text-text-secondary hover:text-text-primary hover:bg-surface-3/50'
+                    ? 'bg-accent/[0.07] text-accent shadow-[inset_0_0_0_1px_rgba(245,158,11,0.16)]'
+                    : 'text-text-secondary hover:text-text-primary hover:bg-surface-3/60'
                 }`
               }
             >
@@ -165,7 +172,7 @@ export default function Layout() {
         </nav>
 
         {/* Bottom nav */}
-        <div className="px-3 pb-2 space-y-1">
+        <div className="px-3 pb-2 space-y-0.5">
           {bottomNavItems.filter(item => !(role === 'viewer' && item.to === '/settings')).map((item) => (
             <NavLink
               key={item.to}
@@ -173,8 +180,8 @@ export default function Layout() {
               className={({ isActive }) =>
                 `flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all duration-200 group relative ${
                   isActive
-                    ? 'bg-accent/[0.08] text-accent shadow-[inset_0_0_0_1px_rgba(245,158,11,0.12)]'
-                    : 'text-text-secondary hover:text-text-primary hover:bg-surface-3/50'
+                    ? 'bg-accent/[0.07] text-accent shadow-[inset_0_0_0_1px_rgba(245,158,11,0.16)]'
+                    : 'text-text-secondary hover:text-text-primary hover:bg-surface-3/60'
                 }`
               }
             >
@@ -194,9 +201,9 @@ export default function Layout() {
         </div>
 
         {/* User section */}
-        <div className="relative px-3 py-4 border-t border-border/60 space-y-2">
+        <div className="relative px-3 py-4 border-t border-border/70 space-y-2">
           {user?.username && (
-            <div className="px-3 py-2 bg-surface-2/50 rounded-lg">
+            <div className="px-3 py-2 bg-surface-2/60 border border-border/60 rounded-lg">
               <div className="flex items-center gap-2.5">
                 <div className="w-6 h-6 rounded-full bg-accent/10 border border-accent/20 flex items-center justify-center text-[10px] font-bold text-accent">
                   {user.username.charAt(0).toUpperCase()}
@@ -223,20 +230,22 @@ export default function Layout() {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto relative">
+      <main className="flex-1 h-full overflow-y-auto relative">
         {/* Ambient background effects */}
-        <div className="fixed top-0 right-0 w-[600px] h-[600px] bg-gradient-radial from-accent/[0.02] via-transparent to-transparent pointer-events-none" />
+        <div className="fixed top-0 right-0 w-[620px] h-[620px] bg-gradient-radial from-accent/[0.025] via-transparent to-transparent pointer-events-none" aria-hidden="true" />
+        <div className="fixed bottom-0 left-1/3 w-[520px] h-[420px] bg-gradient-radial from-status-running/[0.015] via-transparent to-transparent pointer-events-none" aria-hidden="true" />
 
-        <header className="sticky top-0 z-10 bg-surface-0/70 backdrop-blur-2xl border-b border-border/50 px-8 py-5">
+        <header className="sticky top-0 z-10 bg-surface-0/90 backdrop-blur-2xl border-b border-border/60 px-8 py-5">
           <div className="flex items-center justify-between max-w-6xl mx-auto">
             <h2 className="page-title">{pageTitle}</h2>
             <div className="flex items-center gap-2">
-              <span className="text-[10px] font-mono text-text-tertiary/60 tracking-wider">v{import.meta.env.VITE_APP_VERSION || 'dev'}</span>
+              <span className="text-[10px] font-mono text-text-tertiary/60 tracking-wider">{appVersion}</span>
               <div className="w-1.5 h-1.5 rounded-full bg-status-running shadow-[0_0_6px_rgba(34,197,94,0.4)] animate-glow-pulse" />
             </div>
           </div>
         </header>
         <div className="max-w-6xl mx-auto px-8 py-8 animate-fade-in">
+          <UpdateBanner />
           <Outlet />
         </div>
       </main>
