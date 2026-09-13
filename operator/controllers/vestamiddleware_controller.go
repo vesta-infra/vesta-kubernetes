@@ -7,8 +7,10 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -41,6 +43,10 @@ type VestaMiddlewareReconciler struct {
 // +kubebuilder:rbac:groups=traefik.io,resources=middlewares,verbs=get;list;watch;create;update;patch;delete
 
 const middlewareOfLabel = "kubernetes.getvesta.sh/middleware"
+
+// middlewareHomeNamespace is where VestaMiddlewares and the credentials Secrets Vesta
+// issues for them live. Projections are copies out of here.
+const middlewareHomeNamespace = "vesta-system"
 
 func (r *VestaMiddlewareReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -76,12 +82,21 @@ func (r *VestaMiddlewareReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	for _, ns := range wanted {
+		// The Secret has to land before the Middleware that references it. Traefik drops a
+		// basicAuth middleware whose secret is missing, and with it the router -- so the
+		// wrong order here is briefly a 404 on every request rather than a prompt.
+		if err := r.projectManagedSecret(ctx, &mw, ns); err != nil {
+			return ctrl.Result{}, fmt.Errorf("project credentials for %s into %s: %w", mw.Name, ns, err)
+		}
 		if err := r.project(ctx, &mw, ns, compiled); err != nil {
 			return ctrl.Result{}, fmt.Errorf("project middleware %s into %s: %w", mw.Name, ns, err)
 		}
 	}
 
 	if err := r.garbageCollect(ctx, mw.Name, wanted); err != nil {
+		return ctrl.Result{}, err
+	}
+	if err := r.garbageCollectSecrets(ctx, mw.Name, wanted); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -185,7 +200,86 @@ func (r *VestaMiddlewareReconciler) garbageCollect(ctx context.Context, name str
 }
 
 func (r *VestaMiddlewareReconciler) deleteProjectionsEverywhere(ctx context.Context, name string) error {
-	return r.garbageCollect(ctx, name, nil)
+	if err := r.garbageCollect(ctx, name, nil); err != nil {
+		return err
+	}
+	return r.garbageCollectSecrets(ctx, name, nil)
+}
+
+// projectManagedSecret copies the credentials Secret Vesta owns into a target namespace.
+// Only a managed Secret is copied: one the user named themselves is expected to exist in
+// the app namespace already, and writing over it would replace credentials Vesta did not
+// issue with ones it did.
+func (r *VestaMiddlewareReconciler) projectManagedSecret(ctx context.Context, mw *vestav1alpha1.VestaMiddleware, namespace string) error {
+	if mw.Spec.Type != "basicAuth" || mw.Spec.BasicAuth == nil || !mw.Spec.BasicAuth.ManagedSecret {
+		return nil
+	}
+	name := mw.Spec.BasicAuth.SecretName
+	if name == "" {
+		return nil
+	}
+
+	var source corev1.Secret
+	if err := r.Get(ctx, client.ObjectKey{Namespace: middlewareHomeNamespace, Name: name}, &source); err != nil {
+		if errors.IsNotFound(err) {
+			// The API writes the Secret before the middleware, so this is a torn state
+			// rather than a steady one. Reported, not retried forever.
+			return fmt.Errorf("credentials secret %s/%s is missing", middlewareHomeNamespace, name)
+		}
+		return err
+	}
+
+	desired := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "vesta-operator",
+				middlewareOfLabel:              mw.Name,
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: source.Data,
+	}
+
+	var existing corev1.Secret
+	err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &existing)
+	if errors.IsNotFound(err) {
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
+		return err
+	}
+	existing.Data = source.Data
+	existing.Labels = desired.Labels
+	return r.Update(ctx, &existing)
+}
+
+// garbageCollectSecrets withdraws projected credentials from namespaces that no longer
+// reference the middleware. Leaving them behind would strand valid credentials in a
+// namespace whose apps no longer use them.
+func (r *VestaMiddlewareReconciler) garbageCollectSecrets(ctx context.Context, name string, keep []string) error {
+	keepSet := make(map[string]bool, len(keep))
+	for _, ns := range keep {
+		keepSet[ns] = true
+	}
+
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, client.MatchingLabels{middlewareOfLabel: name}); err != nil {
+		return fmt.Errorf("list projected credentials for %s: %w", name, err)
+	}
+
+	for i := range secrets.Items {
+		item := &secrets.Items[i]
+		// The Secret in vesta-system is the source, not a projection.
+		if item.Namespace == middlewareHomeNamespace || keepSet[item.Namespace] {
+			continue
+		}
+		if err := r.Delete(ctx, item); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("delete projected credentials %s/%s: %w", item.Namespace, item.Name, err)
+		}
+	}
+	return nil
 }
 
 func (r *VestaMiddlewareReconciler) traefikInstalled() bool {

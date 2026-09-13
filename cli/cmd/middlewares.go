@@ -97,6 +97,10 @@ var middlewaresCreateCmd = &cobra.Command{
 		"  {\n    \"name\": \"office-only\",\n    \"type\": \"ipAllowList\",\n" +
 		"    \"description\": \"Office and VPN ranges\",\n" +
 		"    \"config\": { \"sourceRange\": [\"10.0.0.0/8\"] }\n  }\n\n" +
+		"For basicAuth, give users directly and Vesta hashes them into a Secret it owns:\n\n" +
+		"  {\n    \"name\": \"staging-gate\",\n    \"type\": \"basicAuth\",\n" +
+		"    \"config\": { \"users\": [{ \"username\": \"alice\", \"password\": \"...\" }] }\n  }\n\n" +
+		"Or name a Secret you manage yourself with \"secretName\". Not both.\n\n" +
 		"Use \"-\" to read from stdin.",
 	Run: func(cmd *cobra.Command, args []string) {
 		file, _ := cmd.Flags().GetString("file")
