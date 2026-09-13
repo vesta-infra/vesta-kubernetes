@@ -42,6 +42,15 @@ const mainNavItems = [
     ),
   },
   {
+    to: '/middlewares',
+    label: 'Middlewares',
+    icon: (
+      <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+      </svg>
+    ),
+  },
+  {
     to: '/templates',
     label: 'Templates',
     icon: (

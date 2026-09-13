@@ -1,3 +1,31 @@
+export type MiddlewareType =
+  | 'rateLimit' | 'basicAuth' | 'ipAllowList' | 'headers'
+  | 'stripPrefix' | 'compress' | 'retry' | 'circuitBreaker' | 'buffering' | 'raw'
+
+export interface Middleware {
+  name: string
+  type: MiddlewareType
+  displayName?: string
+  description?: string
+  project?: string
+  app?: string
+  environment?: string
+  config: Record<string, any>
+  ready: boolean
+  reason?: string
+  appliedCount: number
+  appliedNamespaces?: string[]
+}
+
+export interface MiddlewarePayload {
+  name?: string
+  type: MiddlewareType
+  displayName?: string
+  description?: string
+  project?: string
+  config: Record<string, any>
+}
+
 const BASE = '/api/v1'
 
 
@@ -765,6 +793,22 @@ export const api = {
     request<any>(`/apps/${appId}/rate-limits?environment=${environment}`),
   updateRateLimits: (appId: string, data: { environment: string; limits: Record<string, string> }) =>
     request<any>(`/apps/${appId}/rate-limits`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  listMiddlewares: (project?: string) =>
+    request<{ middlewares: Middleware[] }>(`/middlewares${project ? `?project=${encodeURIComponent(project)}` : ''}`),
+  getMiddleware: (name: string) => request<Middleware>(`/middlewares/${name}`),
+  createMiddleware: (data: MiddlewarePayload) =>
+    request<Middleware>('/middlewares', { method: 'POST', body: JSON.stringify(data) }),
+  updateMiddleware: (name: string, data: MiddlewarePayload) =>
+    request<Middleware>(`/middlewares/${name}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteMiddleware: (name: string, force = false) =>
+    request<any>(`/middlewares/${name}${force ? '?force=true' : ''}`, { method: 'DELETE' }),
+
+  getAppMiddlewares: (appId: string, environment: string) =>
+    request<{ middlewares: string[]; inherited: boolean; environment: string }>(
+      `/apps/${appId}/middlewares?environment=${encodeURIComponent(environment)}`),
+  updateAppMiddlewares: (appId: string, data: { environment: string; middlewares: string[]; inherit?: boolean }) =>
+    request<any>(`/apps/${appId}/middlewares`, { method: 'PUT', body: JSON.stringify(data) }),
 
   // Environment Cloning
   cloneEnvironment: (projectId: string, envName: string, data: { name: string; branch?: string }) =>

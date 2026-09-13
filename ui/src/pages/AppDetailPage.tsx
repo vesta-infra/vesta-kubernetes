@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { useParams, Link, useNavigate, useLocation, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
+import MiddlewareAttachSection from '../components/MiddlewareAttachSection'
 import { api } from '../lib/api'
 import { useUserRole, useIsProjectOwner } from '../lib/useRole'
 import { parseEnvContent, secretKeyError, truncateSecretKey } from '../lib/secretKeys'
@@ -479,6 +480,12 @@ export default function AppDetailPage() {
 
             {appEnvironments.length > 0 && (
             <RateLimitSection appId={appId!} environments={appEnvironments} role={role} />
+            )}
+
+            {appEnvironments.length > 0 && (
+            <section className="card p-5">
+              <MiddlewareAttachSection appId={appId!} environments={appEnvironments} role={role} />
+            </section>
             )}
 
             <section className="card p-5">

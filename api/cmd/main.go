@@ -285,6 +285,17 @@ func main() {
 		auth.GET("/apps/:appId/rate-limits", middleware.RequireScope("read"), h.GetRateLimits)
 		auth.PUT("/apps/:appId/rate-limits", dv, middleware.RequireScope("write"), h.UpdateRateLimits)
 
+		// Middlewares are defined once in vesta-system and attached to an app's
+		// environments in order. Deleting one still attached is refused by the handler,
+		// since Traefik drops a whole router whose middleware is missing.
+		auth.GET("/middlewares", middleware.RequireScope("read"), h.ListMiddlewares)
+		auth.GET("/middlewares/:name", middleware.RequireScope("read"), h.GetMiddleware)
+		auth.POST("/middlewares", dv, middleware.RequireScope("write"), h.CreateMiddleware)
+		auth.PUT("/middlewares/:name", dv, middleware.RequireScope("write"), h.UpdateMiddleware)
+		auth.DELETE("/middlewares/:name", dv, middleware.RequireScope("write"), h.DeleteMiddleware)
+		auth.GET("/apps/:appId/middlewares", middleware.RequireScope("read"), h.GetAppMiddlewares)
+		auth.PUT("/apps/:appId/middlewares", dv, middleware.RequireScope("write"), h.UpdateAppMiddlewares)
+
 		// Builds
 		auth.POST("/apps/:appId/builds", dv, middleware.RequireScope("deploy", "write"), h.TriggerBuild)
 		auth.GET("/apps/:appId/builds", middleware.RequireScope("read"), h.ListBuilds)

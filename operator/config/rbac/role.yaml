@@ -38,6 +38,12 @@ rules:
 
 # VestaSecret CRD
 - apiGroups: [ "kubernetes.getvesta.sh" ]
+  resources: [ "vestamiddlewares" ]
+  verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
+- apiGroups: [ "kubernetes.getvesta.sh" ]
+  resources: [ "vestamiddlewares/status" ]
+  verbs: [ "get", "update", "patch" ]
+- apiGroups: [ "kubernetes.getvesta.sh" ]
   resources: [ "vestasecrets" ]
   verbs: [ "get", "list", "watch", "create", "update", "patch", "delete" ]
 - apiGroups: [ "kubernetes.getvesta.sh" ]

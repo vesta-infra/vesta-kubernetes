@@ -437,6 +437,15 @@ spec:
                           items:
                             type: string
                           type: array
+                        middlewares:
+                          description: |-
+                            Middlewares replaces the app-level list for this environment. It is a pointer so
+                            that an empty list is distinguishable from an absent one: nil inherits the
+                            app-level middlewares, [] applies none, which is how an environment opts out of a
+                            platform-wide allowList without the app having to stop declaring it.
+                          items:
+                            type: string
+                          type: array
                         redirectDomains:
                           items:
                             type: string
@@ -617,6 +626,11 @@ spec:
                       type: string
                     type: object
                   basicAuth:
+                    description: |-
+                      BasicAuth is a no-op and has never been read by the operator. Use a VestaMiddleware
+                      of type "basicAuth" and list it in Middlewares instead. The field remains so that
+                      upgrading does not prune it from resources that already set it.
+                      Deprecated: superseded by VestaMiddleware.
                     type: boolean
                   clusterIssuer:
                     description: |-
@@ -627,6 +641,15 @@ spec:
                     type: string
                   ingressClassName:
                     type: string
+                  middlewares:
+                    description: |-
+                      Middlewares names VestaMiddleware resources to apply to every environment's ingress,
+                      in order. Traefik applies middlewares in the order listed and the order is
+                      semantic -- an allowList before an auth check rejects strangers without prompting
+                      for a password, the reverse prompts first -- so this list is ordered, not a set.
+                    items:
+                      type: string
+                    type: array
                   redirectDomains:
                     items:
                       type: string

@@ -1392,18 +1392,45 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Spec.IngressClassName = existingClass
 			}
 
+			// Middlewares apply whether or not TLS is on, so this sits outside the TLS
+			// branch even though the HTTPS redirect that seeded it does not.
+			if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
+				var platform []string
+				if tlsEnabled {
+					// redirectScheme is a no-op on requests that already arrived over
+					// HTTPS, so it is safe to list unconditionally once TLS is on.
+					platform = append(platform, traefikMiddlewareRef(
+						target.Namespace, fmt.Sprintf("%s-https-redirect", app.Name)))
+				}
+
+				var appRefs []string
+				for _, name := range resolveAppMiddlewares(app, target.Config) {
+					if name = strings.TrimSpace(name); name != "" {
+						appRefs = append(appRefs, traefikMiddlewareRef(
+							target.Namespace, projectedMiddlewareName(name)))
+					}
+				}
+
+				// Whatever is on the object now came from the user's own annotations,
+				// which are merged in last rather than overwritten.
+				var existing []string
+				if current := ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"]; current != "" {
+					existing = strings.Split(current, ",")
+				}
+
+				if composed := composeMiddlewareAnnotation(platform, appRefs, existing); composed != "" {
+					ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = composed
+				} else {
+					// Removing the last middleware has to clear the annotation; leaving a
+					// stale value would keep routing through a Middleware that no longer exists,
+					// and Traefik drops the whole router when a referenced middleware is missing.
+					delete(ing.Annotations, "traefik.ingress.kubernetes.io/router.middlewares")
+				}
+			}
+
 			if tlsEnabled {
 				if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
 					ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
-					// Reference the HTTPS redirect middleware (redirectScheme is no-op for HTTPS requests)
-					httpsMiddlewareName := fmt.Sprintf("%s-https-redirect", app.Name)
-					middlewareRef := fmt.Sprintf("%s-%s@kubernetescrd", target.Namespace, httpsMiddlewareName)
-					// Append to existing middlewares if any (e.g., from per-env annotations)
-					if existing, ok := ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"]; ok && existing != "" {
-						ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = existing + "," + middlewareRef
-					} else {
-						ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = middlewareRef
-					}
 				}
 				// Unmanaged leaves spec.tls alone too — the user's annotations decide
 				// whether and how this ingress terminates TLS.

@@ -437,6 +437,21 @@ spec:
                             one cert-manager issues. Empty uses the generated "<app>-<env>-tls"
                             name.'
                           type: string
+                        middlewares:
+                          description: 'Middlewares replaces the app-level list for
+                            this environment. It is a pointer so
+
+                            that an empty list is distinguishable from an absent one:
+                            nil inherits the
+
+                            app-level middlewares, [] applies none, which is how an
+                            environment opts out of a
+
+                            platform-wide allowList without the app having to stop
+                            declaring it.'
+                          items:
+                            type: string
+                          type: array
                     service:
                       type: object
                       description: Per-environment service override.
@@ -969,6 +984,21 @@ spec:
                       cert-manager issues. Empty uses the generated "<app>-<env>-tls"
                       name.'
                     type: string
+                  middlewares:
+                    description: 'Middlewares names VestaMiddleware resources to apply
+                      to every environment''s ingress,
+
+                      in order. Traefik applies middlewares in the order listed and
+                      the order is
+
+                      semantic -- an allowList before an auth check rejects strangers
+                      without prompting
+
+                      for a password, the reverse prompts first -- so this list is
+                      ordered, not a set.'
+                    items:
+                      type: string
+                    type: array
               cronjobs:
                 type: array
                 items:

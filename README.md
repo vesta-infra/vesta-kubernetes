@@ -388,6 +388,51 @@ default chart and the dev proxy rewrites `Host`. Set `VESTA_ALLOWED_ORIGINS` to 
 browser origins may complete a ceremony; left unset, any syntactically valid domain is
 accepted.
 
+### Ingress middlewares
+
+Rate limits, basic auth, IP allow lists, CORS headers and the rest are defined once as
+middlewares and attached to as many app environments as you like. A middleware lives in
+`vesta-system`; the operator projects it into each namespace that uses it and withdraws it
+when the last app detaches.
+
+```bash
+vesta middlewares list
+vesta middlewares create -f office-only.json
+vesta middlewares attach office-only --app shop --env production
+vesta middlewares detach office-only --app shop --env production
+```
+
+```json
+{
+  "name": "office-only",
+  "type": "ipAllowList",
+  "description": "Office and VPN ranges",
+  "config": { "sourceRange": ["10.0.0.0/8", "203.0.113.7"] }
+}
+```
+
+Ten types have validated forms in the UI — `rateLimit`, `basicAuth`, `ipAllowList`,
+`headers`, `stripPrefix`, `compress`, `retry`, `circuitBreaker`, `buffering` — plus `raw`,
+which passes a Traefik middleware spec through untouched for plugins and anything without
+a form.
+
+**Order matters.** Traefik runs middlewares in the order listed, and the order changes
+behaviour: an allow list above a basic-auth check rejects unknown addresses without
+prompting them for a password, while the reverse prompts first. The attachment list is
+ordered for that reason, and Vesta puts its own HTTPS/domain redirects ahead of yours so a
+request about to be 301'd spends no rate-limit budget.
+
+Per environment, the list either inherits the app-level one or replaces it. An empty list
+is a replacement, not an absence — it is how one environment opts out of a middleware the
+app otherwise applies everywhere.
+
+`basicAuth` never stores credentials: point `secretName` at a Secret holding htpasswd
+lines. The API refuses inline credentials, since a CRD is readable by anyone with `get` on
+the type.
+
+Middleware is a Traefik feature. On another ingress class the middleware reports itself
+inactive with the reason, rather than accepting configuration that would never take effect.
+
 ### Pod sizes
 
 Apps pick a resource preset rather than setting requests and limits by hand. Two families
