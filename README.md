@@ -426,9 +426,26 @@ Per environment, the list either inherits the app-level one or replaces it. An e
 is a replacement, not an absence — it is how one environment opts out of a middleware the
 app otherwise applies everywhere.
 
-`basicAuth` never stores credentials: point `secretName` at a Secret holding htpasswd
-lines. The API refuses inline credentials, since a CRD is readable by anyone with `get` on
-the type.
+`basicAuth` takes usernames and passwords directly:
+
+```json
+{
+  "name": "staging-gate",
+  "type": "basicAuth",
+  "config": { "users": [{ "username": "alice", "password": "…" }] }
+}
+```
+
+Passwords are bcrypt-hashed before anything is written and stored in a Secret Vesta owns in
+`vesta-system`, which the operator copies into each namespace the middleware is projected
+into. The middleware itself only ever holds a secret name and the list of usernames — a CRD
+is readable by anyone with `get` on the type, so a password there would be a leak however
+it arrived. They are never readable afterwards, so editing shows each account with a blank
+password meaning "leave this one alone"; type a new one to rotate it, or remove the row to
+revoke access.
+
+If you would rather manage the htpasswd data yourself, set `secretName` instead and Vesta
+leaves that Secret alone. Setting both is refused rather than silently preferring one.
 
 Middleware is a Traefik feature. On another ingress class the middleware reports itself
 inactive with the reason, rather than accepting configuration that would never take effect.

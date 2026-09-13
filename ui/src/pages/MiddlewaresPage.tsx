@@ -26,9 +26,8 @@ const TYPE_FIELDS: Record<MiddlewareType, { blurb: string; fields: FieldSpec[] }
     ],
   },
   basicAuth: {
-    blurb: 'Prompts for a username and password. Credentials live in a Secret, never on this resource.',
+    blurb: 'Prompts for a username and password. Passwords are hashed before they are stored — Vesta keeps them in a Secret, never on the middleware.',
     fields: [
-      { key: 'secretName', label: 'Secret name', kind: 'text', placeholder: 'app-htpasswd', help: 'A Secret in the app namespace holding htpasswd lines under the key "users".' },
       { key: 'realm', label: 'Realm', kind: 'text', placeholder: 'Staging' },
       { key: 'removeHeader', label: 'Strip Authorization header before proxying', kind: 'boolean' },
     ],
@@ -226,7 +225,15 @@ function MiddlewareForm({ existing, onClose, onSaved }: {
   const [name, setName] = useState(existing?.name ?? '')
   const [type, setType] = useState<MiddlewareType>(existing?.type ?? 'rateLimit')
   const [description, setDescription] = useState(existing?.description ?? '')
-  const [config, setConfig] = useState<Record<string, any>>(existing?.config ?? {})
+  const [config, setConfig] = useState<Record<string, any>>(() => {
+    const initial = { ...(existing?.config ?? {}) }
+    if (existing?.type === 'basicAuth') {
+      // Passwords are hashed and never come back, so each existing account starts with a
+      // blank password field meaning "leave this one alone".
+      initial.users = (existing.config?.users ?? []).map((u: string) => ({ username: u, password: '' }))
+    }
+    return initial
+  })
   const [rawText, setRawText] = useState(
     existing?.type === 'raw' ? JSON.stringify(existing.config, null, 2) : '{\n  "compress": {}\n}')
   const [error, setError] = useState('')
@@ -257,6 +264,23 @@ function MiddlewareForm({ existing, onClose, onSaved }: {
       finalConfig = Object.fromEntries(
         Object.entries(config).filter(([, v]) =>
           v !== '' && v !== undefined && v !== null && !(Array.isArray(v) && v.length === 0)))
+
+      if (type === 'basicAuth') {
+        const users = (config.users ?? []).filter((u: any) => u.username?.trim())
+        if (users.length === 0) {
+          setError('Add at least one user — a basic auth middleware with none would lock everyone out.')
+          return
+        }
+        // A blank password means "keep the stored one", which only exists for an account
+        // that is already there. A new one needs a password now.
+        const known = new Set(existing?.type === 'basicAuth' ? (existing.config?.users ?? []) : [])
+        const missing = users.find((u: any) => !u.password && !known.has(u.username.trim()))
+        if (missing) {
+          setError(`Set a password for ${missing.username}.`)
+          return
+        }
+        finalConfig.users = users
+      }
     }
 
     save.mutate({
@@ -333,6 +357,13 @@ function MiddlewareForm({ existing, onClose, onSaved }: {
           </div>
         ) : (
           <div className="space-y-3 mb-4">
+            {type === 'basicAuth' && (
+              <BasicAuthUsers
+                value={config.users ?? []}
+                existingUsernames={existing?.type === 'basicAuth' ? (existing.config?.users ?? []) : []}
+                onChange={v => setField('users', v)}
+              />
+            )}
             {spec.fields.map(field => (
               <FieldInput key={field.key} field={field} value={config[field.key]} onChange={v => setField(field.key, v)} />
             ))}
@@ -426,6 +457,77 @@ function FieldInput({ field, value, onChange }: { field: FieldSpec; value: any; 
         className="input-field w-full text-sm"
       />
       {field.help && <p className="text-[10px] text-text-tertiary mt-1">{field.help}</p>}
+    </div>
+  )
+}
+
+
+// Credentials for a basicAuth middleware. Passwords are sent once and hashed server-side;
+// they are never read back, so an existing account shows a blank password field that means
+// "leave this one as it is" rather than "clear it".
+function BasicAuthUsers({ value, existingUsernames, onChange }: {
+  value: { username: string; password: string }[]
+  existingUsernames: string[]
+  onChange: (v: { username: string; password: string }[]) => void
+}) {
+  const users = value.length > 0 ? value : [{ username: '', password: '' }]
+
+  function update(i: number, patch: Partial<{ username: string; password: string }>) {
+    onChange(users.map((u, ui) => ui === i ? { ...u, ...patch } : u))
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <label className="label">Users</label>
+        <button
+          type="button"
+          onClick={() => onChange([...users, { username: '', password: '' }])}
+          className="text-xs text-accent hover:text-accent-glow"
+        >
+          + Add user
+        </button>
+      </div>
+
+      {users.map((user, i) => {
+        const isExisting = existingUsernames.includes(user.username.trim())
+        return (
+          <div key={i} className="mb-2">
+            <div className="flex gap-2">
+              <input
+                value={user.username}
+                onChange={e => update(i, { username: e.target.value })}
+                placeholder="username"
+                className="input-field flex-1 font-mono text-xs"
+                autoComplete="off"
+              />
+              <input
+                type="password"
+                value={user.password}
+                onChange={e => update(i, { password: e.target.value })}
+                placeholder={isExisting ? 'unchanged' : 'password'}
+                className="input-field flex-1 text-xs"
+                autoComplete="new-password"
+              />
+              <button
+                type="button"
+                onClick={() => onChange(users.filter((_, ui) => ui !== i))}
+                className="text-text-tertiary hover:text-status-failed text-xs px-2"
+              >&times;</button>
+            </div>
+            {isExisting && !user.password && (
+              <p className="text-[10px] text-text-tertiary mt-1">
+                Password unchanged. Type a new one to replace it.
+              </p>
+            )}
+          </div>
+        )
+      })}
+
+      <p className="text-[10px] text-text-tertiary mt-1">
+        Hashed with bcrypt and stored in a Secret Vesta manages. Removing a user here
+        revokes their access on the next save.
+      </p>
     </div>
   )
 }

@@ -108,6 +108,17 @@ func (h *Handler) CreateMiddleware(c *gin.Context) {
 		return
 	}
 
+	// basicAuth credentials are hashed into a Secret before anything is written, so the
+	// resource created below carries a reference and never a password.
+	if req.Type == "basicAuth" {
+		prepared, err := h.prepareBasicAuth(c, req.Name, req.Config)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+			return
+		}
+		req.Config = prepared
+	}
+
 	obj := map[string]interface{}{
 		"apiVersion": "kubernetes.getvesta.sh/v1alpha1",
 		"kind":       "VestaMiddleware",
@@ -120,6 +131,11 @@ func (h *Handler) CreateMiddleware(c *gin.Context) {
 
 	created, err := h.K8s.CreateResource(c.Request.Context(), k8s.VestaMiddlewareGVR, vestaSystemNS, obj)
 	if err != nil {
+		// The Secret was written first, so a failure here would otherwise leave
+		// credentials behind for a middleware that does not exist.
+		if req.Type == "basicAuth" {
+			_ = h.deleteCredentialsSecret(c.Request.Context(), req.Name)
+		}
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to create middleware: " + err.Error()})
 		return
 	}
@@ -144,6 +160,15 @@ func (h *Handler) UpdateMiddleware(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "middleware not found"})
 		return
+	}
+
+	if req.Type == "basicAuth" {
+		prepared, prepErr := h.prepareBasicAuth(c, name, req.Config)
+		if prepErr != nil {
+			c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: prepErr.Error()})
+			return
+		}
+		req.Config = prepared
 	}
 
 	obj.Object["spec"] = middlewareSpecFrom(req)
@@ -177,6 +202,14 @@ func (h *Handler) DeleteMiddleware(c *gin.Context) {
 
 	if err := h.K8s.DeleteResource(c.Request.Context(), k8s.VestaMiddlewareGVR, vestaSystemNS, name); err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to delete middleware: " + err.Error()})
+		return
+	}
+	// Only the source Secret. The operator withdraws the projected copies, since it is
+	// the one that recorded where they went.
+	if err := h.deleteCredentialsSecret(c.Request.Context(), name); err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"message": "middleware deleted, but its credentials secret could not be removed: " + err.Error(),
+		})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "middleware deleted"})
@@ -399,14 +432,24 @@ func validateMiddlewarePayload(req middlewareRequest) error {
 		return fmt.Errorf("a raw middleware must name exactly one Traefik middleware type, found %d", len(req.Config))
 	}
 	if req.Type == "basicAuth" {
-		if secret, _ := req.Config["secretName"].(string); strings.TrimSpace(secret) == "" {
-			return fmt.Errorf("basicAuth requires secretName: credentials are read from a Secret, never stored on the middleware")
+		// Two ways to configure it: enter usernames and passwords, which Vesta hashes and
+		// stores in a Secret it owns, or name a Secret you manage yourself. Credentials
+		// pass through the request but are never written to the middleware -- a CRD is
+		// readable by anyone with get on the type, so plaintext there would be a leak
+		// regardless of how it arrived.
+		users, hasUsers := req.Config["users"]
+		secretName, _ := req.Config["secretName"].(string)
+
+		if !hasUsers && strings.TrimSpace(secretName) == "" {
+			return fmt.Errorf("basicAuth needs either a list of users or the name of a Secret you manage")
 		}
-		// Refuse plaintext credentials outright rather than storing them in a resource
-		// that anyone with read access to the type can fetch.
-		for _, forbidden := range []string{"users", "password", "passwords"} {
-			if _, present := req.Config[forbidden]; present {
-				return fmt.Errorf("basicAuth does not accept %q inline; put the htpasswd data in a Secret and reference it with secretName", forbidden)
+		if hasUsers && strings.TrimSpace(secretName) != "" {
+			// Silently preferring one would make the other look applied when it is not.
+			return fmt.Errorf("set either users or secretName, not both")
+		}
+		if hasUsers {
+			if _, ok := users.([]interface{}); !ok {
+				return fmt.Errorf("users must be a list of {username, password} objects")
 			}
 		}
 	}
@@ -475,6 +518,82 @@ func middlewareToResponse(obj *unstructured.Unstructured) map[string]interface{}
 			out["appliedCount"] = count
 		}
 		out["appliedNamespaces"] = status["appliedNamespaces"]
+	}
+	return out
+}
+
+// prepareBasicAuth converts submitted credentials into a Secret that Vesta owns and a
+// config that names it. The returned config carries no passwords: what reaches the CRD is
+// a secret name, the usernames, and the managed flag.
+func (h *Handler) prepareBasicAuth(c *gin.Context, name string, config map[string]interface{}) (map[string]interface{}, error) {
+	raw, hasUsers := config["users"]
+	if !hasUsers {
+		// A Secret the caller manages. Nothing to hash, nothing to own.
+		return config, nil
+	}
+
+	entries, _ := raw.([]interface{})
+	users := make([]basicAuthUser, 0, len(entries))
+	for _, entry := range entries {
+		fields, ok := entry.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("users must be a list of {username, password} objects")
+		}
+		username, _ := fields["username"].(string)
+		password, _ := fields["password"].(string)
+		users = append(users, basicAuthUser{Username: username, Password: password})
+	}
+
+	// An edit may resubmit existing users with a blank password, meaning "leave this one
+	// alone". Those keep the hash already stored; only the rest are hashed afresh.
+	existing, err := h.existingCredentialUsers(c.Request.Context(), name)
+	if err != nil {
+		return nil, fmt.Errorf("reading existing credentials: %w", err)
+	}
+	kept, needHashing, err := mergeCredentials(users, existing)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateBasicAuthUsers(needHashing); err != nil && len(kept) == 0 {
+		return nil, err
+	}
+	for _, user := range needHashing {
+		if err := validateBasicAuthUsers([]basicAuthUser{user}); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := h.writeCredentialsSecretMerging(c.Request.Context(), name, kept, needHashing); err != nil {
+		return nil, err
+	}
+
+	usernames := make([]string, 0, len(users))
+	for _, user := range users {
+		usernames = append(usernames, strings.TrimSpace(user.Username))
+	}
+	return basicAuthConfigFor(name, usernames, config), nil
+}
+
+// basicAuthConfigFor builds the config that reaches the CRD. It is constructed key by key
+// rather than copied from the request, so no field of the submitted config can reach the
+// stored resource unless it is named here -- which is what keeps a password out of a CRD
+// that anyone with get on the type can read, whatever the caller put in the body.
+func basicAuthConfigFor(middlewareName string, usernames []string, submitted map[string]interface{}) map[string]interface{} {
+	names := make([]interface{}, 0, len(usernames))
+	for _, username := range usernames {
+		names = append(names, username)
+	}
+
+	out := map[string]interface{}{
+		"secretName":    credentialsSecretName(middlewareName),
+		"managedSecret": true,
+		"users":         names,
+	}
+	if realm, ok := submitted["realm"].(string); ok && realm != "" {
+		out["realm"] = realm
+	}
+	if removeHeader, ok := submitted["removeHeader"].(bool); ok && removeHeader {
+		out["removeHeader"] = true
 	}
 	return out
 }

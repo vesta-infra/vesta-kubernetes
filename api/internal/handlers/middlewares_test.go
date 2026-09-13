@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -97,26 +98,44 @@ func TestValidateMiddlewarePayload(t *testing.T) {
 		}
 	})
 
-	t.Run("basicAuth refuses inline credentials", func(t *testing.T) {
-		// The whole point of the secretName indirection: a CRD is readable by anyone with
-		// get on the type, so htpasswd data must never land in one.
-		for _, field := range []string{"users", "password", "passwords"} {
-			err := validateMiddlewarePayload(middlewareRequest{
-				Type:   "basicAuth",
-				Config: map[string]interface{}{"secretName": "creds", field: "admin:$apr1$xyz"},
-			})
-			if err == nil {
-				t.Errorf("expected %q to be refused inline", field)
-			}
-		}
-	})
-
-	t.Run("basicAuth requires a secret name", func(t *testing.T) {
+	t.Run("basicAuth needs users or a secret name", func(t *testing.T) {
 		err := validateMiddlewarePayload(middlewareRequest{
 			Type: "basicAuth", Config: map[string]interface{}{"realm": "staging"},
 		})
 		if err == nil {
 			t.Fatal("expected an error")
+		}
+	})
+
+	// Credentials may travel in the request -- that is how the UI works -- but nothing
+	// resembling one may reach the resource. The config that gets stored is built key by
+	// key rather than copied, so this holds whatever the caller sends.
+	t.Run("no submitted field can smuggle a password into the stored config", func(t *testing.T) {
+		stored := basicAuthConfigFor("gate", []string{"alice"}, map[string]interface{}{
+			"realm":        "staging",
+			"password":     "hunter2",
+			"passwords":    []string{"hunter2"},
+			"users":        []interface{}{map[string]interface{}{"username": "alice", "password": "hunter2"}},
+			"htpasswd":     "alice:$apr1$xyz",
+			"secretName":   "attacker-controlled",
+			"anythingElse": "hunter2",
+		})
+
+		encoded := fmt.Sprintf("%v", stored)
+		if strings.Contains(encoded, "hunter2") || strings.Contains(encoded, "$apr1$") {
+			t.Errorf("a credential reached the stored config: %v", stored)
+		}
+		// secretName is derived, never taken from the caller -- otherwise a middleware
+		// could be pointed at any Secret in vesta-system.
+		if stored["secretName"] != "vmw-gate-auth" {
+			t.Errorf("secretName should be derived from the name, got %v", stored["secretName"])
+		}
+		if stored["realm"] != "staging" {
+			t.Errorf("realm should survive, got %v", stored["realm"])
+		}
+		users, _ := stored["users"].([]interface{})
+		if len(users) != 1 || users[0] != "alice" {
+			t.Errorf("only usernames should be stored, got %v", stored["users"])
 		}
 	})
 

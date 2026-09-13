@@ -17,6 +17,12 @@ export interface Middleware {
   appliedNamespaces?: string[]
 }
 
+export interface BasicAuthUser {
+  username: string
+  /** Write-only. Blank on an existing account means "leave the stored password alone". */
+  password: string
+}
+
 export interface MiddlewarePayload {
   name?: string
   type: MiddlewareType

@@ -772,11 +772,24 @@ type RateLimitSourceCriterion struct {
 // in this resource: SecretName points at a Kubernetes Secret holding htpasswd-format
 // users, because a CRD is readable by anyone holding get on the type.
 type BasicAuthMiddleware struct {
-	// SecretName is a Secret in the same namespace as the app, with the htpasswd lines
-	// under the key named by SecretKey (default "users").
+	// SecretName is a Secret holding htpasswd lines under the key "users".
 	SecretName string `json:"secretName,omitempty"`
 	SecretKey  string `json:"secretKey,omitempty"`
 	Realm      string `json:"realm,omitempty"`
+
+	// ManagedSecret marks SecretName as a Secret Vesta owns, built by hashing credentials
+	// entered through the API and held in vesta-system. The operator copies it into every
+	// namespace this middleware is projected into, because Traefik resolves a basicAuth
+	// secret in the Middleware's own namespace and a shared middleware has many.
+	//
+	// A Secret the user created is left alone: it is expected to exist already in the app
+	// namespace, and copying over it would overwrite credentials Vesta did not issue.
+	ManagedSecret bool `json:"managedSecret,omitempty"`
+
+	// Users lists the usernames held in the Secret. Passwords are bcrypt-hashed before
+	// they leave the API and are never stored here -- this is only so the UI can show who
+	// has access without decrypting anything.
+	Users []string `json:"users,omitempty"`
 	// RemoveHeader drops the Authorization header before proxying to the app.
 	RemoveHeader bool `json:"removeHeader,omitempty"`
 }
