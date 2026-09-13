@@ -450,6 +450,32 @@ leaves that Secret alone. Setting both is refused rather than silently preferrin
 Middleware is a Traefik feature. On another ingress class the middleware reports itself
 inactive with the reason, rather than accepting configuration that would never take effect.
 
+### HTTPS redirects
+
+By default Vesta stamps a Traefik `redirectScheme` Middleware on each TLS-enabled app. Many
+Traefik installations already redirect at the entrypoint:
+
+```
+--entryPoints.web.http.redirections.entryPoint.to=:443
+--entryPoints.web.http.redirections.entryPoint.scheme=https
+```
+
+That runs before any router or middleware is consulted, so the per-app middleware adds
+nothing. And it is not free: Traefik drops an **entire router** when it cannot resolve a
+referenced middleware, so a redundant one is an extra way for the route to 404. Turn it off
+platform-wide:
+
+```yaml
+apiVersion: kubernetes.getvesta.sh/v1alpha1
+kind: VestaConfig
+spec:
+  httpsRedirect: none      # or "middleware" (default)
+```
+
+or per app under `spec.ingress.httpsRedirect`, which overrides the platform setting in
+either direction. Switching to `none` deletes the middlewares Vesta created and withdraws
+the annotations referencing them.
+
 ### Pod sizes
 
 Apps pick a resource preset rather than setting requests and limits by hand. Two families

@@ -999,6 +999,13 @@ spec:
                     items:
                       type: string
                     type: array
+                  httpsRedirect:
+                    description: HTTPSRedirect overrides VestaConfig.spec.httpsRedirect
+                      for this app. Empty inherits.
+                    enum:
+                    - middleware
+                    - none
+                    type: string
               cronjobs:
                 type: array
                 items:

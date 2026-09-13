@@ -175,10 +175,22 @@ func builtinPodSize(name string) (corev1.ResourceList, corev1.ResourceList, bool
 		return nil, nil, false
 	}
 	return corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse(p.cpuReq),
-			corev1.ResourceMemory: resource.MustParse(p.memReq),
-		}, corev1.ResourceList{
-			corev1.ResourceCPU:    resource.MustParse(p.cpuLim),
-			corev1.ResourceMemory: resource.MustParse(p.memLim),
-		}, true
+		corev1.ResourceCPU:    resource.MustParse(p.cpuReq),
+		corev1.ResourceMemory: resource.MustParse(p.memReq),
+	}, corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse(p.cpuLim),
+		corev1.ResourceMemory: resource.MustParse(p.memLim),
+	}, true
+}
+
+// GetHTTPSRedirect returns how HTTP should be redirected to HTTPS: "middleware" to stamp a
+// per-app Traefik redirectScheme, or "none" for a cluster whose entrypoint already does it.
+//
+// Defaults to "middleware" so that upgrading changes nothing for anyone relying on it.
+func (cr *ConfigResolver) GetHTTPSRedirect() string {
+	cfg := cr.GetConfig()
+	if cfg != nil && cfg.HTTPSRedirect != "" {
+		return cfg.HTTPSRedirect
+	}
+	return "middleware"
 }

@@ -198,3 +198,19 @@ spec:
                     type: string
               prometheusUrl:
                 type: string
+              httpsRedirect:
+                description: "HTTPSRedirect decides how an app's HTTP traffic is redirected\
+                  \ to HTTPS.\n\n  \"middleware\" (default) stamps a Traefik redirectScheme\
+                  \ Middleware per app and\n    references it from the Ingress annotation.\n\
+                  \  \"none\" stamps nothing, for clusters whose ingress controller\
+                  \ already redirects at\n    the entrypoint -- the standard Traefik\
+                  \ chart does this with\n    entryPoints.web.http.redirections, which\
+                  \ runs before any router or middleware is\n    consulted, making\
+                  \ the per-app middleware pure redundancy.\n\nThe distinction matters\
+                  \ beyond tidiness: Traefik drops an entire router when a\nreferenced\
+                  \ middleware cannot be resolved, so a redundant middleware is not\
+                  \ a no-op,\nit is an extra way for the route to fail."
+                enum:
+                - middleware
+                - none
+                type: string
