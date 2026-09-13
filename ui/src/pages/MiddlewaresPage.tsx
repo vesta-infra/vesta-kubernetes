@@ -120,17 +120,24 @@ export default function MiddlewaresPage() {
   const middlewares = data?.middlewares ?? []
 
   return (
-    <div className="p-6 max-w-5xl">
-      <div className="flex items-start justify-between mb-6">
-        <div>
-          <h1 className="text-xl font-semibold">Middlewares</h1>
-          <p className="text-sm text-text-tertiary mt-1">
-            Reusable ingress policy — rate limits, authentication, allow lists, headers.
-            Define one here, then attach it to an app’s environments from the app’s Ingress tab.
-          </p>
-        </div>
-        <button onClick={() => { setCreating(true); setEditing(null) }} className="btn-primary text-sm">
-          New middleware
+    <div className="space-y-6">
+      {/* Layout already renders the page title, so this row carries the count and the
+          action only -- the explanation lives in the empty state, where someone who has
+          not met the feature is the one reading. */}
+      <div className="flex items-center justify-between gap-4">
+        <p className="text-sm text-text-secondary">
+          {middlewares.length} middleware{middlewares.length !== 1 ? 's' : ''}
+        </p>
+        <button
+          onClick={() => { setCreating(true); setEditing(null) }}
+          className="btn-primary whitespace-nowrap"
+        >
+          <span className="flex items-center gap-2">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+            New Middleware
+          </span>
         </button>
       </div>
 
@@ -139,8 +146,9 @@ export default function MiddlewaresPage() {
       {!isLoading && middlewares.length === 0 && !creating && (
         <div className="card p-8 text-center">
           <p className="text-sm text-text-secondary">No middlewares yet.</p>
-          <p className="text-xs text-text-tertiary mt-1">
-            A middleware defined here can be attached to any number of apps and edited in one place.
+          <p className="text-xs text-text-tertiary mt-2 max-w-md mx-auto leading-relaxed">
+            Reusable ingress policy — rate limits, authentication, allow lists, headers.
+            Define one here, then attach it to an app’s environments from the app’s Ingress tab.
           </p>
         </div>
       )}
