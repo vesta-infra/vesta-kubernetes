@@ -639,6 +639,13 @@ spec:
                     type: string
                   domain:
                     type: string
+                  httpsRedirect:
+                    description: HTTPSRedirect overrides VestaConfig.spec.httpsRedirect
+                      for this app. Empty inherits.
+                    enum:
+                    - middleware
+                    - none
+                    type: string
                   ingressClassName:
                     type: string
                   middlewares:

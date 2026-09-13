@@ -359,3 +359,47 @@ func TestVestaManagedReferencesAreWithdrawnNotCarriedForward(t *testing.T) {
 		}
 	})
 }
+
+// httpsRedirect: none exists because a per-app redirectScheme is redundant on a cluster
+// whose entrypoint already redirects -- the standard Traefik chart does this with
+// entryPoints.web.http.redirections, which runs before any router or middleware. A
+// redundant middleware is not harmless: Traefik drops the whole router when it cannot
+// resolve one, so it is an extra way for the route to 404.
+func TestHTTPSRedirectSetting(t *testing.T) {
+	r := &VestaAppReconciler{ConfigResolver: &ConfigResolver{}}
+
+	t.Run("defaults to middleware so upgrading changes nothing", func(t *testing.T) {
+		if !r.httpsRedirectViaMiddleware(&vestav1alpha1.VestaApp{}) {
+			t.Error("an app with no setting must keep the existing behaviour")
+		}
+	})
+
+	t.Run("an app can opt out without changing the cluster", func(t *testing.T) {
+		app := &vestav1alpha1.VestaApp{
+			Spec: vestav1alpha1.VestaAppSpec{
+				Ingress: &vestav1alpha1.IngressConfig{HTTPSRedirect: "none"},
+			},
+		}
+		if r.httpsRedirectViaMiddleware(app) {
+			t.Error("httpsRedirect: none on the app must suppress the middleware")
+		}
+	})
+
+	t.Run("an app can opt in when the platform default is none", func(t *testing.T) {
+		platformOff := &VestaAppReconciler{ConfigResolver: &ConfigResolver{
+			config: &vestav1alpha1.VestaConfigSpec{HTTPSRedirect: "none"},
+		}}
+		if platformOff.httpsRedirectViaMiddleware(&vestav1alpha1.VestaApp{}) {
+			t.Error("the platform default should apply to an app with no setting")
+		}
+
+		app := &vestav1alpha1.VestaApp{
+			Spec: vestav1alpha1.VestaAppSpec{
+				Ingress: &vestav1alpha1.IngressConfig{HTTPSRedirect: "middleware"},
+			},
+		}
+		if !platformOff.httpsRedirectViaMiddleware(app) {
+			t.Error("an explicit app setting must win over the platform default")
+		}
+	})
+}

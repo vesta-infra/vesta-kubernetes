@@ -151,6 +151,24 @@ spec:
                 required:
                 - enabled
                 type: object
+              httpsRedirect:
+                description: |-
+                  HTTPSRedirect decides how an app's HTTP traffic is redirected to HTTPS.
+
+                    "middleware" (default) stamps a Traefik redirectScheme Middleware per app and
+                      references it from the Ingress annotation.
+                    "none" stamps nothing, for clusters whose ingress controller already redirects at
+                      the entrypoint -- the standard Traefik chart does this with
+                      entryPoints.web.http.redirections, which runs before any router or middleware is
+                      consulted, making the per-app middleware pure redundancy.
+
+                  The distinction matters beyond tidiness: Traefik drops an entire router when a
+                  referenced middleware cannot be resolved, so a redundant middleware is not a no-op,
+                  it is an extra way for the route to fail.
+                enum:
+                - middleware
+                - none
+                type: string
               ingressClassName:
                 type: string
               podSizeList:

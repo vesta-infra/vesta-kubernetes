@@ -229,6 +229,10 @@ type IngressConfig struct {
 	// Deprecated: superseded by VestaMiddleware.
 	BasicAuth bool `json:"basicAuth,omitempty"`
 
+	// HTTPSRedirect overrides VestaConfig.spec.httpsRedirect for this app. Empty inherits.
+	// +kubebuilder:validation:Enum=middleware;none
+	HTTPSRedirect string `json:"httpsRedirect,omitempty"`
+
 	// Middlewares names VestaMiddleware resources to apply to every environment's ingress,
 	// in order. Traefik applies middlewares in the order listed and the order is
 	// semantic -- an allowList before an auth check rejects strangers without prompting
@@ -512,6 +516,21 @@ type VestaConfigSpec struct {
 	Auth              *AuthConfig            `json:"auth,omitempty"`
 	Templates         *TemplatesConfig       `json:"templates,omitempty"`
 	PrometheusURL     string                 `json:"prometheusUrl,omitempty"`
+
+	// HTTPSRedirect decides how an app's HTTP traffic is redirected to HTTPS.
+	//
+	//   "middleware" (default) stamps a Traefik redirectScheme Middleware per app and
+	//     references it from the Ingress annotation.
+	//   "none" stamps nothing, for clusters whose ingress controller already redirects at
+	//     the entrypoint -- the standard Traefik chart does this with
+	//     entryPoints.web.http.redirections, which runs before any router or middleware is
+	//     consulted, making the per-app middleware pure redundancy.
+	//
+	// The distinction matters beyond tidiness: Traefik drops an entire router when a
+	// referenced middleware cannot be resolved, so a redundant middleware is not a no-op,
+	// it is an extra way for the route to fail.
+	// +kubebuilder:validation:Enum=middleware;none
+	HTTPSRedirect string `json:"httpsRedirect,omitempty"`
 }
 
 type RegistryConfig struct {

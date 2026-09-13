@@ -1420,9 +1420,13 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 
 			var platform, appRefs []string
 			if isTraefik {
-				if tlsEnabled {
+				if tlsEnabled && r.httpsRedirectViaMiddleware(app) {
 					// redirectScheme is a no-op on requests that already arrived over
 					// HTTPS, so it is safe to list unconditionally once TLS is on.
+					//
+					// Skipped entirely under httpsRedirect: none, where the ingress
+					// controller redirects at the entrypoint and this middleware would add
+					// nothing but a second way for the router to fail.
 					platform = append(platform, traefikMiddlewareRef(
 						target.Namespace, fmt.Sprintf("%s-https-redirect", app.Name)))
 				}
@@ -1734,6 +1738,16 @@ func traefikMiddlewareGVK() schema.GroupVersionKind {
 // this middleware, and Traefik drops the whole router when a referenced middleware does not
 // exist -- so a swallowed failure here is not a missing redirect, it is a 404 on every
 // request to the app.
+// httpsRedirectViaMiddleware reports whether this app should get a per-app redirectScheme
+// Middleware. An app-level setting wins over the platform default, so one app can opt out
+// without changing the cluster.
+func (r *VestaAppReconciler) httpsRedirectViaMiddleware(app *vestav1alpha1.VestaApp) bool {
+	if app.Spec.Ingress != nil && app.Spec.Ingress.HTTPSRedirect != "" {
+		return app.Spec.Ingress.HTTPSRedirect == "middleware"
+	}
+	return r.ConfigResolver.GetHTTPSRedirect() == "middleware"
+}
+
 func (r *VestaAppReconciler) reconcileHTTPSRedirectMiddleware(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
 	logger := log.FromContext(ctx)
 	middlewareName := fmt.Sprintf("%s-https-redirect", app.Name)
@@ -1751,7 +1765,7 @@ func (r *VestaAppReconciler) reconcileHTTPSRedirectMiddleware(ctx context.Contex
 	ingressClassName := r.resolveIngressClassName(ctx, app)
 	isTraefik := strings.Contains(strings.ToLower(ingressClassName), "traefik")
 
-	if tlsEnabled && isTraefik {
+	if tlsEnabled && isTraefik && r.httpsRedirectViaMiddleware(app) {
 		// Create/update the redirect middleware
 		middleware := &unstructured.Unstructured{}
 		middleware.SetGroupVersionKind(traefikMiddlewareGVK())
