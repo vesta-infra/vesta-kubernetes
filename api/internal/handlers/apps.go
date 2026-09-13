@@ -14,6 +14,16 @@ import (
 )
 
 // Default pod size presets used when no VestaConfig is found
+// defaultPodSizes is used when no VestaConfig declares any. It must stay in step with
+// config.podSizeList in the chart's values.yaml, or what an operator sees depends on
+// whether a VestaConfig happens to exist. TestDefaultPodSizesMatchChartValues enforces it.
+//
+// Two families. The balanced sizes run roughly one core per gigabyte, which suits most
+// request-handling services. The mem- sizes run a quarter of that -- about one core per
+// four gigabytes -- for workloads that hold far more in memory than they compute over:
+// JVM services, in-process caches, anything loading a large dataset at startup. Giving
+// those a balanced size means either paying for CPU that idles, or being throttled long
+// before the memory is used.
 var defaultPodSizes = []map[string]interface{}{
 	{"name": "xxsmall", "cpu": "50m", "memory": "64Mi", "cpuLimit": "100m", "memoryLimit": "128Mi"},
 	{"name": "xsmall", "cpu": "100m", "memory": "128Mi", "cpuLimit": "250m", "memoryLimit": "256Mi"},
@@ -21,6 +31,13 @@ var defaultPodSizes = []map[string]interface{}{
 	{"name": "medium", "cpu": "500m", "memory": "512Mi", "cpuLimit": "1", "memoryLimit": "1Gi"},
 	{"name": "large", "cpu": "1", "memory": "1Gi", "cpuLimit": "2", "memoryLimit": "2Gi"},
 	{"name": "xlarge", "cpu": "2", "memory": "2Gi", "cpuLimit": "4", "memoryLimit": "4Gi"},
+
+	// Memory-optimised: the memory of the next balanced size up, at a quarter of its CPU.
+	{"name": "mem-xsmall", "cpu": "62m", "memory": "256Mi", "cpuLimit": "125m", "memoryLimit": "512Mi"},
+	{"name": "mem-small", "cpu": "125m", "memory": "512Mi", "cpuLimit": "250m", "memoryLimit": "1Gi"},
+	{"name": "mem-medium", "cpu": "250m", "memory": "1Gi", "cpuLimit": "500m", "memoryLimit": "2Gi"},
+	{"name": "mem-large", "cpu": "500m", "memory": "2Gi", "cpuLimit": "1", "memoryLimit": "4Gi"},
+	{"name": "mem-xlarge", "cpu": "1", "memory": "4Gi", "cpuLimit": "2", "memoryLimit": "8Gi"},
 }
 
 func (h *Handler) ListPodSizes(c *gin.Context) {
