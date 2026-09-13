@@ -149,29 +149,46 @@ config:
       credentialsSecret: ""
     globalImagePullSecrets: []
 
+  # Resource presets apps choose from. Must match defaultPodSizes in
+  # api/internal/handlers/apps.go, which is what Vesta falls back to when no VestaConfig
+  # exists -- otherwise the sizes on offer depend on whether one happens to be installed.
+  #
+  # The balanced sizes run about one core per gigabyte. The mem- sizes run about one core
+  # per four, for workloads that hold far more in memory than they compute over.
   podSizeList:
-  - name: small
-    requests:
-      cpu: "250m"
-      memory: "256Mi"
-    limits:
-      cpu: "500m"
-      memory: "512Mi"
-  - name: medium
-    requests:
-      cpu: "500m"
-      memory: "512Mi"
-    limits:
-      cpu: "1000m"
-      memory: "1Gi"
-  - name: large
-    requests:
-      cpu: "1000m"
-      memory: "1Gi"
-    limits:
-      cpu: "2000m"
-      memory: "2Gi"
-
+    - name: xxsmall
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { cpu: 100m, memory: 128Mi }
+    - name: xsmall
+      requests: { cpu: 100m, memory: 128Mi }
+      limits: { cpu: 250m, memory: 256Mi }
+    - name: small
+      requests: { cpu: 250m, memory: 256Mi }
+      limits: { cpu: 500m, memory: 512Mi }
+    - name: medium
+      requests: { cpu: 500m, memory: 512Mi }
+      limits: { cpu: "1", memory: 1Gi }
+    - name: large
+      requests: { cpu: "1", memory: 1Gi }
+      limits: { cpu: "2", memory: 2Gi }
+    - name: xlarge
+      requests: { cpu: "2", memory: 2Gi }
+      limits: { cpu: "4", memory: 4Gi }
+    - name: mem-xsmall
+      requests: { cpu: 62m, memory: 256Mi }
+      limits: { cpu: 125m, memory: 512Mi }
+    - name: mem-small
+      requests: { cpu: 125m, memory: 512Mi }
+      limits: { cpu: 250m, memory: 1Gi }
+    - name: mem-medium
+      requests: { cpu: 250m, memory: 1Gi }
+      limits: { cpu: 500m, memory: 2Gi }
+    - name: mem-large
+      requests: { cpu: 500m, memory: 2Gi }
+      limits: { cpu: "1", memory: 4Gi }
+    - name: mem-xlarge
+      requests: { cpu: "1", memory: 4Gi }
+      limits: { cpu: "2", memory: 8Gi }
   autoscaleDefaults:
     minReplicas: 1
     maxReplicas: 5

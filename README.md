@@ -388,6 +388,34 @@ default chart and the dev proxy rewrites `Host`. Set `VESTA_ALLOWED_ORIGINS` to 
 browser origins may complete a ceremony; left unset, any syntactically valid domain is
 accepted.
 
+### Pod sizes
+
+Apps pick a resource preset rather than setting requests and limits by hand. Two families
+are built in:
+
+| | CPU | Memory | CPU limit | Memory limit |
+|---|---|---|---|---|
+| `xxsmall` | 50m | 64Mi | 100m | 128Mi |
+| `xsmall` | 100m | 128Mi | 250m | 256Mi |
+| `small` | 250m | 256Mi | 500m | 512Mi |
+| `medium` | 500m | 512Mi | 1 | 1Gi |
+| `large` | 1 | 1Gi | 2 | 2Gi |
+| `xlarge` | 2 | 2Gi | 4 | 4Gi |
+| `mem-xsmall` | 62m | 256Mi | 125m | 512Mi |
+| `mem-small` | 125m | 512Mi | 250m | 1Gi |
+| `mem-medium` | 250m | 1Gi | 500m | 2Gi |
+| `mem-large` | 500m | 2Gi | 1 | 4Gi |
+| `mem-xlarge` | 1 | 4Gi | 2 | 8Gi |
+
+The balanced sizes run roughly one core per gigabyte, which suits most request-handling
+services. The `mem-` sizes run about one core per four gigabytes, for workloads that hold
+far more in memory than they compute over — JVM services, in-process caches, anything that
+loads a large dataset at startup. Putting those on a balanced size means either paying for
+CPU that idles, or being throttled long before the memory is used.
+
+Replace them entirely with `config.podSizeList` in values.yaml; the names are yours to
+choose, and apps reference them by name.
+
 ### Copying env vars and secrets
 
 Every env var and revealed-secret panel has a **Copy as .env** button that puts the whole
