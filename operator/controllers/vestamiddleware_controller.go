@@ -115,7 +115,11 @@ func (r *VestaMiddlewareReconciler) namespacesReferencing(ctx context.Context, n
 	set := map[string]bool{}
 	for i := range apps.Items {
 		app := &apps.Items[i]
-		for _, env := range appEnvironments(app) {
+		envs, err := r.appEnvironments(ctx, app)
+		if err != nil {
+			return nil, err
+		}
+		for _, env := range envs {
 			for _, ref := range resolveAppMiddlewares(app, env) {
 				if strings.TrimSpace(ref) == name {
 					set[fmt.Sprintf("%s-%s", app.Spec.Project, env.Name)] = true
@@ -132,13 +136,30 @@ func (r *VestaMiddlewareReconciler) namespacesReferencing(ctx context.Context, n
 	return out, nil
 }
 
-// appEnvironments lists an app's environments. An app with no explicit environments
-// inherits its project's, but resolving those needs a project lookup the reconciler can
-// skip: an app that declares no environments also declares no per-environment middleware
-// override, so the app-level list applies to whatever environments exist. Returning the
-// declared ones is therefore exact whenever middlewares are involved.
-func appEnvironments(app *vestav1alpha1.VestaApp) []vestav1alpha1.AppEnvironmentConfig {
-	return app.Spec.Environments
+// appEnvironments lists the environments an app actually deploys to.
+//
+// It has to match VestaAppReconciler.resolveTargetNamespaces exactly, because that is what
+// decides where the Ingress naming this middleware is written. An app that declares no
+// spec.environments inherits its project's, and returning only the declared ones for such
+// an app meant the Ingress referenced a projection into a namespace this reconciler never
+// looked at -- a middleware that does not exist, which costs the whole router.
+func (r *VestaMiddlewareReconciler) appEnvironments(ctx context.Context, app *vestav1alpha1.VestaApp) ([]vestav1alpha1.AppEnvironmentConfig, error) {
+	if len(app.Spec.Environments) > 0 {
+		return app.Spec.Environments, nil
+	}
+
+	var envList vestav1alpha1.VestaEnvironmentList
+	if err := r.List(ctx, &envList, client.MatchingLabels{
+		"kubernetes.getvesta.sh/project": app.Spec.Project,
+	}); err != nil {
+		return nil, fmt.Errorf("list environments for project %s: %w", app.Spec.Project, err)
+	}
+
+	out := make([]vestav1alpha1.AppEnvironmentConfig, 0, len(envList.Items))
+	for _, env := range envList.Items {
+		out = append(out, vestav1alpha1.AppEnvironmentConfig{Name: env.Name})
+	}
+	return out, nil
 }
 
 func (r *VestaMiddlewareReconciler) project(ctx context.Context, mw *vestav1alpha1.VestaMiddleware, namespace string, compiled map[string]interface{}) error {
@@ -327,9 +348,18 @@ func (r *VestaMiddlewareReconciler) middlewaresReferencedBy(ctx context.Context,
 		return nil
 	}
 
+	// The mapper only needs the set of middleware names, and an app-level list is the
+	// same for every environment -- so a failure to resolve inherited environments must
+	// not lose the app-level references. Falling back to a synthetic empty environment
+	// resolves to exactly that list.
+	envs, err := r.appEnvironments(ctx, app)
+	if err != nil || len(envs) == 0 {
+		envs = append(app.Spec.Environments, vestav1alpha1.AppEnvironmentConfig{})
+	}
+
 	seen := map[string]bool{}
 	var reqs []ctrl.Request
-	for _, env := range appEnvironments(app) {
+	for _, env := range envs {
 		for _, ref := range resolveAppMiddlewares(app, env) {
 			ref = strings.TrimSpace(ref)
 			if ref == "" || seen[ref] {
