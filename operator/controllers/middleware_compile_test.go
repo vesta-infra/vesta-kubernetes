@@ -283,3 +283,79 @@ func TestTraefikMiddlewareRef(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// The failure this guards against, seen in production: Traefik logging
+//
+//	middleware "utility-prod-vesta-deploy-https-redirect@kubernetescrd" does not exist
+//
+// on every router for the app. The middleware had been withdrawn -- the ingress class
+// stopped resolving to Traefik -- while the annotation naming it was left in place, and
+// Traefik drops the whole router for a missing middleware rather than skipping it. So the
+// route returned 404 instead of merely losing its redirect.
+func TestVestaManagedReferencesAreWithdrawnNotCarriedForward(t *testing.T) {
+	const ns = "utility-prod"
+	const app = "vesta-deploy"
+
+	redirect := traefikMiddlewareRef(ns, app+"-https-redirect")
+	domainRedirect := traefikMiddlewareRef(ns, app)
+	projected := traefikMiddlewareRef(ns, projectedMiddlewareName("office-only"))
+	userOwned := traefikMiddlewareRef(ns, "hand-written-by-an-admin")
+	otherNamespace := traefikMiddlewareRef("shared", "corporate-waf")
+
+	t.Run("Vesta's own references are recognised", func(t *testing.T) {
+		for _, ref := range []string{redirect, domainRedirect, projected} {
+			if !isVestaManagedMiddlewareRef(ref, ns, app) {
+				t.Errorf("%q should be recognised as Vesta-managed, so it can be withdrawn", ref)
+			}
+		}
+	})
+
+	t.Run("a hand-added reference is left alone", func(t *testing.T) {
+		// Overwriting the annotation wholesale would delete work a user did deliberately.
+		if isVestaManagedMiddlewareRef(userOwned, ns, app) {
+			t.Errorf("%q is not Vesta's and must survive", userOwned)
+		}
+		if isVestaManagedMiddlewareRef(otherNamespace, ns, app) {
+			t.Errorf("%q points into another namespace and is not ours", otherNamespace)
+		}
+	})
+
+	t.Run("an app whose name prefixes another is not caught", func(t *testing.T) {
+		// "vesta" must not claim "vesta-deploy-https-redirect".
+		if isVestaManagedMiddlewareRef(redirect, ns, "vesta") {
+			t.Error("prefix matching would let one app withdraw another app's middleware")
+		}
+	})
+
+	t.Run("the dangling reference is dropped when TLS or Traefik goes away", func(t *testing.T) {
+		// Reproduces the production state: the annotation already names the redirect, and
+		// this reconcile has decided it should not exist. What survives is the user's.
+		existing := []string{}
+		for _, ref := range []string{redirect, userOwned} {
+			if !isVestaManagedMiddlewareRef(ref, ns, app) {
+				existing = append(existing, ref)
+			}
+		}
+		got := composeMiddlewareAnnotation(nil, nil, existing)
+		if strings.Contains(got, "https-redirect") {
+			t.Errorf("the withdrawn middleware is still referenced: %q", got)
+		}
+		if got != userOwned {
+			t.Errorf("got %q, want the user's own reference to survive alone", got)
+		}
+	})
+
+	t.Run("a reference that should exist is rebuilt, not duplicated", func(t *testing.T) {
+		existing := []string{}
+		for _, ref := range []string{redirect, userOwned} {
+			if !isVestaManagedMiddlewareRef(ref, ns, app) {
+				existing = append(existing, ref)
+			}
+		}
+		got := composeMiddlewareAnnotation([]string{redirect}, []string{projected}, existing)
+		want := redirect + "," + projected + "," + userOwned
+		if got != want {
+			t.Errorf("got  %q\nwant %q", got, want)
+		}
+	})
+}

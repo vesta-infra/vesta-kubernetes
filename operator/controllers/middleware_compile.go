@@ -226,3 +226,27 @@ func composeMiddlewareAnnotation(platform, app, existing []string) string {
 	}
 	return strings.Join(ordered, ",")
 }
+
+// isVestaManagedMiddlewareRef reports whether a router.middlewares entry is one Vesta
+// writes for itself: the app's HTTPS redirect, its domain-redirect middleware, or a
+// projection of a VestaMiddleware.
+//
+// It exists so the composer can rebuild its own references from scratch on every reconcile
+// while leaving alone anything a user added by hand. Without the distinction the two
+// choices are both wrong: carry every existing reference forward and a withdrawn middleware
+// is referenced forever, or overwrite the annotation wholesale and a hand-added reference
+// silently disappears.
+func isVestaManagedMiddlewareRef(ref, namespace, appName string) bool {
+	ref = strings.TrimSpace(ref)
+	prefix := namespace + "-"
+	if !strings.HasPrefix(ref, prefix) {
+		// A reference into another namespace is never one of ours: everything Vesta
+		// projects lands in the namespace of the Ingress that names it.
+		return false
+	}
+	name := strings.TrimSuffix(strings.TrimPrefix(ref, prefix), "@kubernetescrd")
+
+	return name == appName+"-https-redirect" ||
+		name == appName ||
+		strings.HasPrefix(name, middlewareProjectionPrefix)
+}
