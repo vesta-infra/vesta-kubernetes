@@ -1,0 +1,397 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: vestamiddlewares.kubernetes.getvesta.sh
+spec:
+  group: kubernetes.getvesta.sh
+  names:
+    kind: VestaMiddleware
+    listKind: VestaMiddlewareList
+    plural: vestamiddlewares
+    shortNames:
+    - vmw
+    - vmid
+    singular: vestamiddleware
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .status.appliedCount
+      name: Applied
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object.
+
+              Servers should convert recognized schemas to the latest internal value,
+              and
+
+              may reject unrecognized values.
+
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents.
+
+              Servers may infer this from the endpoint the client submits requests
+              to.
+
+              Cannot be updated.
+
+              In CamelCase.
+
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: 'VestaMiddlewareSpec describes one reusable ingress middleware.
+              Exactly one of the typed
+
+              config fields must be set, and it must be the one Type names -- the
+              operator refuses to
+
+              guess, because a middleware that silently does nothing is worse than
+              one that reports
+
+              itself broken.
+
+
+              Every field below carries omitempty deliberately. controller-gen marks
+              any field without
+
+              it as required in the generated schema, and a newly-required field rejects
+              resources an
+
+              earlier release accepted; that is the 0.7.1 defect, and hack/check-crd-compat.sh
+              exists
+
+              to catch its recurrence.'
+            properties:
+              app:
+                type: string
+              basicAuth:
+                description: 'BasicAuthMiddleware guards a route with HTTP basic auth.
+                  Credentials are never stored
+
+                  in this resource: SecretName points at a Kubernetes Secret holding
+                  htpasswd-format
+
+                  users, because a CRD is readable by anyone holding get on the type.'
+                properties:
+                  realm:
+                    type: string
+                  removeHeader:
+                    description: RemoveHeader drops the Authorization header before
+                      proxying to the app.
+                    type: boolean
+                  secretKey:
+                    type: string
+                  secretName:
+                    description: 'SecretName is a Secret in the same namespace as
+                      the app, with the htpasswd lines
+
+                      under the key named by SecretKey (default "users").'
+                    type: string
+                type: object
+              buffering:
+                description: 'BufferingMiddleware caps request and response body sizes,
+                  and is what most people
+
+                  reach for when they want the Traefik equivalent of nginx''s client_max_body_size.'
+                properties:
+                  maxRequestBodyBytes:
+                    format: int64
+                    type: integer
+                  maxResponseBodyBytes:
+                    format: int64
+                    type: integer
+                  memRequestBodyBytes:
+                    format: int64
+                    type: integer
+                  memResponseBodyBytes:
+                    format: int64
+                    type: integer
+                  retryExpression:
+                    type: string
+                type: object
+              circuitBreaker:
+                description: CircuitBreakerMiddleware stops sending traffic to a failing
+                  backend.
+                properties:
+                  checkPeriod:
+                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
+                    type: string
+                  expression:
+                    description: 'Expression is Traefik''s circuit-breaker expression,
+                      e.g.
+
+                      "NetworkErrorRatio() > 0.5" or "ResponseCodeRatio(500, 600,
+                      0, 600) > 0.25".'
+                    type: string
+                  fallbackDuration:
+                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
+                    type: string
+                  recoveryDuration:
+                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
+                    type: string
+                type: object
+              compress:
+                description: CompressMiddleware gzip/brotli-compresses responses.
+                properties:
+                  excludedContentTypes:
+                    items:
+                      type: string
+                    type: array
+                  minResponseBodyBytes:
+                    description: 'MinResponseBodyBytes skips compression for bodies
+                      smaller than this, where the
+
+                      CPU cost outweighs the saving.'
+                    format: int64
+                    type: integer
+                type: object
+              description:
+                type: string
+              displayName:
+                description: 'DisplayName is shown in the UI. The resource name stays
+                  the stable identifier that
+
+                  apps reference, so renaming for presentation cannot break an attachment.'
+                type: string
+              environment:
+                type: string
+              headers:
+                description: HeadersMiddleware sets request and response headers,
+                  including CORS.
+                properties:
+                  accessControlAllowCredentials:
+                    type: boolean
+                  accessControlAllowHeaders:
+                    items:
+                      type: string
+                    type: array
+                  accessControlAllowMethods:
+                    items:
+                      type: string
+                    type: array
+                  accessControlAllowOriginList:
+                    items:
+                      type: string
+                    type: array
+                  accessControlExposeHeaders:
+                    items:
+                      type: string
+                    type: array
+                  accessControlMaxAge:
+                    format: int64
+                    type: integer
+                  addVaryHeader:
+                    type: boolean
+                  browserXssFilter:
+                    type: boolean
+                  contentSecurityPolicy:
+                    type: string
+                  contentTypeNosniff:
+                    type: boolean
+                  customFrameOptionsValue:
+                    type: string
+                  customRequestHeaders:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  customResponseHeaders:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  forceSTSHeader:
+                    type: boolean
+                  frameDeny:
+                    type: boolean
+                  referrerPolicy:
+                    type: string
+                  stsIncludeSubdomains:
+                    type: boolean
+                  stsPreload:
+                    type: boolean
+                  stsSeconds:
+                    format: int64
+                    type: integer
+                type: object
+              ipAllowList:
+                description: IPAllowListMiddleware rejects requests from outside the
+                  listed CIDRs.
+                properties:
+                  ipStrategy:
+                    description: 'IPStrategy decides which address in X-Forwarded-For
+                      to test. Without it the check
+
+                      runs against the direct peer, which behind a load balancer allows
+                      everyone or no one.'
+                    properties:
+                      depth:
+                        type: integer
+                      excludedIPs:
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  sourceRange:
+                    description: SourceRange holds CIDRs or bare addresses, e.g. "10.0.0.0/8",
+                      "203.0.113.7".
+                    items:
+                      type: string
+                    type: array
+                type: object
+              project:
+                description: 'Project, App and Environment narrow who may reference
+                  this middleware. They do not
+
+                  auto-attach it: attachment is always an explicit, ordered list on
+                  the app, because
+
+                  the order middlewares run in changes what they do.'
+                type: string
+              rateLimit:
+                description: RateLimitMiddleware limits requests per source over a
+                  sliding period.
+                properties:
+                  average:
+                    description: Average is the sustained requests per Period allowed
+                      from one source.
+                    format: int64
+                    type: integer
+                  burst:
+                    description: Burst is how far above Average a short spike may
+                      go before requests are rejected.
+                    format: int64
+                    type: integer
+                  period:
+                    description: Period is a Go duration such as "1s" or "1m". Empty
+                      means Traefik's default of 1s.
+                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
+                    type: string
+                  sourceCriterion:
+                    description: 'SourceCriterion decides what counts as one client.
+                      Empty uses the request''s remote
+
+                      address, which behind a load balancer is the balancer -- set
+                      requestHeaderName to
+
+                      X-Forwarded-For there, or every client shares a single bucket.'
+                    properties:
+                      ipDepth:
+                        description: IPDepth is the position from the right of X-Forwarded-For
+                          to trust. 0 disables it.
+                        type: integer
+                      requestHeaderName:
+                        type: string
+                      requestHost:
+                        type: boolean
+                    type: object
+                type: object
+              raw:
+                description: 'Raw is the escape hatch: its contents become the Traefik
+                  Middleware spec verbatim,
+
+                  for plugins and middleware types Vesta ships no form for. Vesta
+                  validates only that
+
+                  it is a JSON object with exactly one key; what that key means is
+                  Traefik''s business.'
+                x-kubernetes-preserve-unknown-fields: true
+              retry:
+                description: 'RetryMiddleware retries a request when the backend closes
+                  the connection before
+
+                  responding. It never retries a response that arrived, so a 500 is
+                  not retried.'
+                properties:
+                  attempts:
+                    format: int64
+                    type: integer
+                  initialInterval:
+                    description: InitialInterval is a Go duration; the wait doubles
+                      between attempts.
+                    pattern: ^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$
+                    type: string
+                type: object
+              stripPrefix:
+                description: StripPrefixMiddleware removes path prefixes before the
+                  request reaches the app.
+                properties:
+                  forceSlash:
+                    type: boolean
+                  prefixes:
+                    items:
+                      type: string
+                    type: array
+                type: object
+              type:
+                enum:
+                - rateLimit
+                - basicAuth
+                - ipAllowList
+                - headers
+                - stripPrefix
+                - compress
+                - retry
+                - circuitBreaker
+                - buffering
+                - raw
+                type: string
+            required:
+            - type
+            type: object
+          status:
+            properties:
+              appliedCount:
+                type: integer
+              appliedNamespaces:
+                description: 'AppliedNamespaces lists namespaces currently holding
+                  a projection of this
+
+                  middleware. It is what the GC pass diffs against, and what the UI
+                  counts.'
+                items:
+                  type: string
+                type: array
+              lastSyncedAt:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              ready:
+                description: 'Ready is false whenever the operator could not project
+                  this middleware anywhere it
+
+                  was asked to -- an unsupported ingress class, a missing Traefik
+                  CRD, or a spec that
+
+                  does not match its Type.'
+                type: boolean
+              reason:
+                description: Reason explains a false Ready in terms the UI can show
+                  without interpretation.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

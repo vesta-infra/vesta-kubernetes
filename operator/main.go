@@ -85,6 +85,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&controllers.VestaMiddlewareReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		// The RESTMapper is how the reconciler discovers whether Traefik's CRD is
+		// installed. Without it the controller would report every middleware broken on a
+		// cluster that simply uses a different ingress controller.
+		Mapper: mgr.GetRESTMapper(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "VestaMiddleware")
+		os.Exit(1)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)

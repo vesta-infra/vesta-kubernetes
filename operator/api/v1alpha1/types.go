@@ -3,6 +3,7 @@ package v1alpha1
 import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -35,11 +36,11 @@ type VestaAppSpec struct {
 	Build *BuildConfig `json:"build,omitempty"`
 	Image *ImageConfig `json:"image,omitempty"`
 
-	Runtime      RuntimeConfig    `json:"runtime"`
-	Service      *ServiceConfig   `json:"service,omitempty"`
-	Resources    *ResourceConfig  `json:"resources,omitempty"`
-	HealthCheck  *HealthCheckConfig `json:"healthCheck,omitempty"`
-	Ingress      *IngressConfig   `json:"ingress,omitempty"`
+	Runtime     RuntimeConfig      `json:"runtime"`
+	Service     *ServiceConfig     `json:"service,omitempty"`
+	Resources   *ResourceConfig    `json:"resources,omitempty"`
+	HealthCheck *HealthCheckConfig `json:"healthCheck,omitempty"`
+	Ingress     *IngressConfig     `json:"ingress,omitempty"`
 
 	Cronjobs []CronjobConfig `json:"cronjobs,omitempty"`
 	Addons   []AddonConfig   `json:"addons,omitempty"`
@@ -78,6 +79,12 @@ type IngressOverride struct {
 	// TLSMode is empty for normal issuer resolution. See IngressConfig.TLSMode.
 	// +kubebuilder:validation:Enum=manual;custom-annotations
 	TLSMode string `json:"tlsMode,omitempty"`
+
+	// Middlewares replaces the app-level list for this environment. It is a pointer so
+	// that an empty list is distinguishable from an absent one: nil inherits the
+	// app-level middlewares, [] applies none, which is how an environment opts out of a
+	// platform-wide allowList without the app having to stop declaring it.
+	Middlewares *[]string `json:"middlewares,omitempty"`
 
 	Annotations     map[string]string `json:"annotations,omitempty"`
 	RedirectDomains []string          `json:"redirectDomains,omitempty"`
@@ -173,10 +180,10 @@ type ScalingConfig struct {
 }
 
 type AutoscaleConfig struct {
-	Enabled     bool                                            `json:"enabled"`
-	MinReplicas *int32                                          `json:"minReplicas,omitempty"`
-	MaxReplicas int32                                           `json:"maxReplicas"`
-	Metrics     []MetricSpec                                    `json:"metrics,omitempty"`
+	Enabled     bool                                           `json:"enabled"`
+	MinReplicas *int32                                         `json:"minReplicas,omitempty"`
+	MaxReplicas int32                                          `json:"maxReplicas"`
+	Metrics     []MetricSpec                                   `json:"metrics,omitempty"`
 	Behavior    *autoscalingv2.HorizontalPodAutoscalerBehavior `json:"behavior,omitempty"`
 }
 
@@ -189,9 +196,9 @@ type MetricSpec struct {
 }
 
 type ResourceConfig struct {
-	Size     string                 `json:"size,omitempty"`
-	Requests corev1.ResourceList   `json:"requests,omitempty"`
-	Limits   corev1.ResourceList   `json:"limits,omitempty"`
+	Size     string              `json:"size,omitempty"`
+	Requests corev1.ResourceList `json:"requests,omitempty"`
+	Limits   corev1.ResourceList `json:"limits,omitempty"`
 }
 
 type IngressConfig struct {
@@ -214,11 +221,23 @@ type IngressConfig struct {
 	// +kubebuilder:validation:Enum=manual;custom-annotations
 	TLSMode string `json:"tlsMode,omitempty"`
 
-	IngressClassName string            `json:"ingressClassName,omitempty"`
-	BasicAuth        bool              `json:"basicAuth,omitempty"`
-	Annotations      map[string]string `json:"annotations,omitempty"`
-	RedirectDomains  []string          `json:"redirectDomains,omitempty"`
-	RedirectTarget   string            `json:"redirectTarget,omitempty"`
+	IngressClassName string `json:"ingressClassName,omitempty"`
+
+	// BasicAuth is a no-op and has never been read by the operator. Use a VestaMiddleware
+	// of type "basicAuth" and list it in Middlewares instead. The field remains so that
+	// upgrading does not prune it from resources that already set it.
+	// Deprecated: superseded by VestaMiddleware.
+	BasicAuth bool `json:"basicAuth,omitempty"`
+
+	// Middlewares names VestaMiddleware resources to apply to every environment's ingress,
+	// in order. Traefik applies middlewares in the order listed and the order is
+	// semantic -- an allowList before an auth check rejects strangers without prompting
+	// for a password, the reverse prompts first -- so this list is ordered, not a set.
+	Middlewares []string `json:"middlewares,omitempty"`
+
+	Annotations     map[string]string `json:"annotations,omitempty"`
+	RedirectDomains []string          `json:"redirectDomains,omitempty"`
+	RedirectTarget  string            `json:"redirectTarget,omitempty"`
 }
 
 type HealthCheckConfig struct {
@@ -480,11 +499,11 @@ type VestaConfig struct {
 }
 
 type VestaConfigSpec struct {
-	Domain           string                 `json:"domain"`
-	DomainTemplate   string                 `json:"domainTemplate,omitempty"`
-	ClusterIssuer    string                 `json:"clusterIssuer,omitempty"`
-	IngressClassName string                 `json:"ingressClassName,omitempty"`
-	Registry         *RegistryConfig        `json:"registry,omitempty"`
+	Domain           string          `json:"domain"`
+	DomainTemplate   string          `json:"domainTemplate,omitempty"`
+	ClusterIssuer    string          `json:"clusterIssuer,omitempty"`
+	IngressClassName string          `json:"ingressClassName,omitempty"`
+	Registry         *RegistryConfig `json:"registry,omitempty"`
 
 	PodSizeList       []PodSizePreset        `json:"podSizeList,omitempty"`
 	AutoscaleDefaults *AutoscaleDefaults     `json:"autoscaleDefaults,omitempty"`
@@ -496,7 +515,7 @@ type VestaConfigSpec struct {
 }
 
 type RegistryConfig struct {
-	Build                  BuildRegistryConfig          `json:"build,omitempty"`
+	Build                  BuildRegistryConfig           `json:"build,omitempty"`
 	GlobalImagePullSecrets []corev1.LocalObjectReference `json:"globalImagePullSecrets,omitempty"`
 }
 
@@ -549,7 +568,7 @@ type VaultAuth struct {
 type AuthConfig struct {
 	Local     *LocalAuthConfig `json:"local,omitempty"`
 	OAuth2    *OAuth2Config    `json:"oauth2,omitempty"`
-	APITokens *APITokenConfig `json:"apiTokens,omitempty"`
+	APITokens *APITokenConfig  `json:"apiTokens,omitempty"`
 }
 
 type LocalAuthConfig struct {
@@ -662,4 +681,210 @@ type VestaSecretList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []VestaSecret `json:"items"`
+}
+
+// ============================================================================
+// VestaMiddleware
+// ============================================================================
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
+// +kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
+// +kubebuilder:printcolumn:name="Applied",type=integer,JSONPath=`.status.appliedCount`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// +kubebuilder:resource:shortName=vmw;vmid
+type VestaMiddleware struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   VestaMiddlewareSpec   `json:"spec,omitempty"`
+	Status VestaMiddlewareStatus `json:"status,omitempty"`
+}
+
+// VestaMiddlewareSpec describes one reusable ingress middleware. Exactly one of the typed
+// config fields must be set, and it must be the one Type names -- the operator refuses to
+// guess, because a middleware that silently does nothing is worse than one that reports
+// itself broken.
+//
+// Every field below carries omitempty deliberately. controller-gen marks any field without
+// it as required in the generated schema, and a newly-required field rejects resources an
+// earlier release accepted; that is the 0.7.1 defect, and hack/check-crd-compat.sh exists
+// to catch its recurrence.
+type VestaMiddlewareSpec struct {
+	// +kubebuilder:validation:Enum=rateLimit;basicAuth;ipAllowList;headers;stripPrefix;compress;retry;circuitBreaker;buffering;raw
+	Type string `json:"type"`
+
+	// DisplayName is shown in the UI. The resource name stays the stable identifier that
+	// apps reference, so renaming for presentation cannot break an attachment.
+	DisplayName string `json:"displayName,omitempty"`
+	Description string `json:"description,omitempty"`
+
+	// Project, App and Environment narrow who may reference this middleware. They do not
+	// auto-attach it: attachment is always an explicit, ordered list on the app, because
+	// the order middlewares run in changes what they do.
+	Project     string `json:"project,omitempty"`
+	App         string `json:"app,omitempty"`
+	Environment string `json:"environment,omitempty"`
+
+	RateLimit      *RateLimitMiddleware      `json:"rateLimit,omitempty"`
+	BasicAuth      *BasicAuthMiddleware      `json:"basicAuth,omitempty"`
+	IPAllowList    *IPAllowListMiddleware    `json:"ipAllowList,omitempty"`
+	Headers        *HeadersMiddleware        `json:"headers,omitempty"`
+	StripPrefix    *StripPrefixMiddleware    `json:"stripPrefix,omitempty"`
+	Compress       *CompressMiddleware       `json:"compress,omitempty"`
+	Retry          *RetryMiddleware          `json:"retry,omitempty"`
+	CircuitBreaker *CircuitBreakerMiddleware `json:"circuitBreaker,omitempty"`
+	Buffering      *BufferingMiddleware      `json:"buffering,omitempty"`
+
+	// Raw is the escape hatch: its contents become the Traefik Middleware spec verbatim,
+	// for plugins and middleware types Vesta ships no form for. Vesta validates only that
+	// it is a JSON object with exactly one key; what that key means is Traefik's business.
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Raw *apiextensionsv1.JSON `json:"raw,omitempty"`
+}
+
+// RateLimitMiddleware limits requests per source over a sliding period.
+type RateLimitMiddleware struct {
+	// Average is the sustained requests per Period allowed from one source.
+	Average int64 `json:"average,omitempty"`
+	// Burst is how far above Average a short spike may go before requests are rejected.
+	Burst int64 `json:"burst,omitempty"`
+	// Period is a Go duration such as "1s" or "1m". Empty means Traefik's default of 1s.
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$`
+	Period string `json:"period,omitempty"`
+
+	// SourceCriterion decides what counts as one client. Empty uses the request's remote
+	// address, which behind a load balancer is the balancer -- set requestHeaderName to
+	// X-Forwarded-For there, or every client shares a single bucket.
+	SourceCriterion *RateLimitSourceCriterion `json:"sourceCriterion,omitempty"`
+}
+
+type RateLimitSourceCriterion struct {
+	RequestHeaderName string `json:"requestHeaderName,omitempty"`
+	RequestHost       bool   `json:"requestHost,omitempty"`
+	// IPDepth is the position from the right of X-Forwarded-For to trust. 0 disables it.
+	IPDepth int `json:"ipDepth,omitempty"`
+}
+
+// BasicAuthMiddleware guards a route with HTTP basic auth. Credentials are never stored
+// in this resource: SecretName points at a Kubernetes Secret holding htpasswd-format
+// users, because a CRD is readable by anyone holding get on the type.
+type BasicAuthMiddleware struct {
+	// SecretName is a Secret in the same namespace as the app, with the htpasswd lines
+	// under the key named by SecretKey (default "users").
+	SecretName string `json:"secretName,omitempty"`
+	SecretKey  string `json:"secretKey,omitempty"`
+	Realm      string `json:"realm,omitempty"`
+	// RemoveHeader drops the Authorization header before proxying to the app.
+	RemoveHeader bool `json:"removeHeader,omitempty"`
+}
+
+// IPAllowListMiddleware rejects requests from outside the listed CIDRs.
+type IPAllowListMiddleware struct {
+	// SourceRange holds CIDRs or bare addresses, e.g. "10.0.0.0/8", "203.0.113.7".
+	SourceRange []string `json:"sourceRange,omitempty"`
+	// IPStrategy decides which address in X-Forwarded-For to test. Without it the check
+	// runs against the direct peer, which behind a load balancer allows everyone or no one.
+	IPStrategy *IPStrategy `json:"ipStrategy,omitempty"`
+}
+
+type IPStrategy struct {
+	Depth       int      `json:"depth,omitempty"`
+	ExcludedIPs []string `json:"excludedIPs,omitempty"`
+}
+
+// HeadersMiddleware sets request and response headers, including CORS.
+type HeadersMiddleware struct {
+	CustomRequestHeaders  map[string]string `json:"customRequestHeaders,omitempty"`
+	CustomResponseHeaders map[string]string `json:"customResponseHeaders,omitempty"`
+
+	AccessControlAllowMethods     []string `json:"accessControlAllowMethods,omitempty"`
+	AccessControlAllowHeaders     []string `json:"accessControlAllowHeaders,omitempty"`
+	AccessControlAllowOriginList  []string `json:"accessControlAllowOriginList,omitempty"`
+	AccessControlAllowCredentials bool     `json:"accessControlAllowCredentials,omitempty"`
+	AccessControlExposeHeaders    []string `json:"accessControlExposeHeaders,omitempty"`
+	AccessControlMaxAge           int64    `json:"accessControlMaxAge,omitempty"`
+	AddVaryHeader                 bool     `json:"addVaryHeader,omitempty"`
+
+	FrameDeny               bool   `json:"frameDeny,omitempty"`
+	ContentTypeNosniff      bool   `json:"contentTypeNosniff,omitempty"`
+	BrowserXSSFilter        bool   `json:"browserXssFilter,omitempty"`
+	ContentSecurityPolicy   string `json:"contentSecurityPolicy,omitempty"`
+	ReferrerPolicy          string `json:"referrerPolicy,omitempty"`
+	StsSeconds              int64  `json:"stsSeconds,omitempty"`
+	StsIncludeSubdomains    bool   `json:"stsIncludeSubdomains,omitempty"`
+	StsPreload              bool   `json:"stsPreload,omitempty"`
+	ForceSTSHeader          bool   `json:"forceSTSHeader,omitempty"`
+	CustomFrameOptionsValue string `json:"customFrameOptionsValue,omitempty"`
+}
+
+// StripPrefixMiddleware removes path prefixes before the request reaches the app.
+type StripPrefixMiddleware struct {
+	Prefixes   []string `json:"prefixes,omitempty"`
+	ForceSlash bool     `json:"forceSlash,omitempty"`
+}
+
+// CompressMiddleware gzip/brotli-compresses responses.
+type CompressMiddleware struct {
+	ExcludedContentTypes []string `json:"excludedContentTypes,omitempty"`
+	// MinResponseBodyBytes skips compression for bodies smaller than this, where the
+	// CPU cost outweighs the saving.
+	MinResponseBodyBytes int64 `json:"minResponseBodyBytes,omitempty"`
+}
+
+// RetryMiddleware retries a request when the backend closes the connection before
+// responding. It never retries a response that arrived, so a 500 is not retried.
+type RetryMiddleware struct {
+	Attempts int64 `json:"attempts,omitempty"`
+	// InitialInterval is a Go duration; the wait doubles between attempts.
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$`
+	InitialInterval string `json:"initialInterval,omitempty"`
+}
+
+// CircuitBreakerMiddleware stops sending traffic to a failing backend.
+type CircuitBreakerMiddleware struct {
+	// Expression is Traefik's circuit-breaker expression, e.g.
+	// "NetworkErrorRatio() > 0.5" or "ResponseCodeRatio(500, 600, 0, 600) > 0.25".
+	Expression string `json:"expression,omitempty"`
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$`
+	CheckPeriod string `json:"checkPeriod,omitempty"`
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$`
+	FallbackDuration string `json:"fallbackDuration,omitempty"`
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$`
+	RecoveryDuration string `json:"recoveryDuration,omitempty"`
+}
+
+// BufferingMiddleware caps request and response body sizes, and is what most people
+// reach for when they want the Traefik equivalent of nginx's client_max_body_size.
+type BufferingMiddleware struct {
+	MaxRequestBodyBytes  int64  `json:"maxRequestBodyBytes,omitempty"`
+	MemRequestBodyBytes  int64  `json:"memRequestBodyBytes,omitempty"`
+	MaxResponseBodyBytes int64  `json:"maxResponseBodyBytes,omitempty"`
+	MemResponseBodyBytes int64  `json:"memResponseBodyBytes,omitempty"`
+	RetryExpression      string `json:"retryExpression,omitempty"`
+}
+
+type VestaMiddlewareStatus struct {
+	// Ready is false whenever the operator could not project this middleware anywhere it
+	// was asked to -- an unsupported ingress class, a missing Traefik CRD, or a spec that
+	// does not match its Type.
+	Ready bool `json:"ready,omitempty"`
+	// Reason explains a false Ready in terms the UI can show without interpretation.
+	Reason string `json:"reason,omitempty"`
+
+	// AppliedNamespaces lists namespaces currently holding a projection of this
+	// middleware. It is what the GC pass diffs against, and what the UI counts.
+	AppliedNamespaces  []string `json:"appliedNamespaces,omitempty"`
+	AppliedCount       int      `json:"appliedCount,omitempty"`
+	ObservedGeneration int64    `json:"observedGeneration,omitempty"`
+	LastSyncedAt       string   `json:"lastSyncedAt,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+type VestaMiddlewareList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []VestaMiddleware `json:"items"`
 }

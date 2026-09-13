@@ -28,5 +28,6 @@ func init() {
 		&VestaEnvironment{}, &VestaEnvironmentList{},
 		&VestaConfig{}, &VestaConfigList{},
 		&VestaSecret{}, &VestaSecretList{},
+		&VestaMiddleware{}, &VestaMiddlewareList{},
 	)
 }

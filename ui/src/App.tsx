@@ -9,6 +9,7 @@ import ProjectDetailPage from './pages/ProjectDetailPage'
 import AppsPage from './pages/AppsPage'
 import AppDetailPage from './pages/AppDetailPage'
 import SecretsPage from './pages/SecretsPage'
+import MiddlewaresPage from './pages/MiddlewaresPage'
 import SettingsPage from './pages/SettingsPage'
 import TemplatesPage from './pages/TemplatesPage'
 import HealthPage from './pages/HealthPage'
@@ -26,6 +27,7 @@ export default function App() {
         <Route path="apps" element={<AppsPage />} />
         <Route path="apps/:appId" element={<AppDetailPage />} />
         <Route path="secrets" element={<SecretsPage />} />
+        <Route path="middlewares" element={<MiddlewaresPage />} />
         <Route path="templates" element={<TemplatesPage />} />
         <Route path="health" element={<HealthPage />} />
         <Route path="settings" element={<SettingsPage />} />
