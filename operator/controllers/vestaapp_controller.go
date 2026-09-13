@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -160,11 +161,16 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 
 		if app.Spec.Ingress != nil || target.Config.Ingress != nil {
+			// Before the Ingress, not after: the Ingress annotation names this middleware,
+			// and Traefik drops an entire router whose middleware is missing. Creating it
+			// second leaves a window -- and, when creation fails, a permanent dangling
+			// reference that takes the route down rather than degrading it.
+			if err := r.reconcileHTTPSRedirectMiddleware(ctx, &app, target); err != nil {
+				return r.updateStatusFailed(ctx, &app, err)
+			}
 			if err := r.reconcileIngress(ctx, &app, target); err != nil {
 				return r.updateStatusFailed(ctx, &app, err)
 			}
-			// Reconcile HTTPS redirect middleware for Traefik when TLS is enabled
-			r.reconcileHTTPSRedirectMiddleware(ctx, &app, target)
 		} else {
 			// Clean up orphaned Ingress if ingress config was removed
 			orphanIng := &networkingv1.Ingress{}
@@ -272,6 +278,18 @@ func (r *VestaAppReconciler) cleanupApp(ctx context.Context, app *vestav1alpha1.
 		}
 		if err := r.Delete(ctx, ing); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("delete ingress %s/%s: %w", target.Namespace, app.Name, err)
+		}
+
+		// Delete the HTTPS redirect Middleware. Without this, deleting an app left the
+		// middleware behind in a namespace with nothing referencing it -- and, worse,
+		// recreating an app of the same name adopted a stale object it never wrote.
+		redirectMW := &unstructured.Unstructured{}
+		redirectMW.SetGroupVersionKind(traefikMiddlewareGVK())
+		redirectMW.SetName(fmt.Sprintf("%s-https-redirect", app.Name))
+		redirectMW.SetNamespace(target.Namespace)
+		if err := r.Delete(ctx, redirectMW); err != nil && !errors.IsNotFound(err) && !meta.IsNoMatchError(err) {
+			logger.Error(err, "failed to delete HTTPS redirect middleware",
+				"namespace", target.Namespace, "name", redirectMW.GetName())
 		}
 
 		// Delete HPA
@@ -1392,40 +1410,49 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Spec.IngressClassName = existingClass
 			}
 
-			// Middlewares apply whether or not TLS is on, so this sits outside the TLS
-			// branch even though the HTTPS redirect that seeded it does not.
-			if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
-				var platform []string
+			// This runs for every ingress class, not only Traefik. Skipping it elsewhere
+			// is what let a dangling reference survive: when the class stopped resolving
+			// to Traefik, the redirect middleware was deleted while the annotation naming
+			// it was left untouched, and Traefik drops the entire router for a middleware
+			// that does not exist. So a non-Traefik class still has to withdraw the
+			// references Vesta put there.
+			isTraefik := strings.Contains(strings.ToLower(ingressClassName), "traefik")
+
+			var platform, appRefs []string
+			if isTraefik {
 				if tlsEnabled {
 					// redirectScheme is a no-op on requests that already arrived over
 					// HTTPS, so it is safe to list unconditionally once TLS is on.
 					platform = append(platform, traefikMiddlewareRef(
 						target.Namespace, fmt.Sprintf("%s-https-redirect", app.Name)))
 				}
-
-				var appRefs []string
 				for _, name := range resolveAppMiddlewares(app, target.Config) {
 					if name = strings.TrimSpace(name); name != "" {
 						appRefs = append(appRefs, traefikMiddlewareRef(
 							target.Namespace, projectedMiddlewareName(name)))
 					}
 				}
+			}
 
-				// Whatever is on the object now came from the user's own annotations,
-				// which are merged in last rather than overwritten.
-				var existing []string
-				if current := ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"]; current != "" {
-					existing = strings.Split(current, ",")
+			// Everything already on the object that Vesta does not manage is the user's
+			// own, and is merged rather than overwritten. Vesta-managed references are
+			// dropped from this group and re-added above only when they should exist, so
+			// one that should not is removed rather than carried forward forever.
+			var existing []string
+			if current := ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"]; current != "" {
+				for _, ref := range strings.Split(current, ",") {
+					if !isVestaManagedMiddlewareRef(ref, target.Namespace, app.Name) {
+						existing = append(existing, ref)
+					}
 				}
+			}
 
-				if composed := composeMiddlewareAnnotation(platform, appRefs, existing); composed != "" {
-					ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = composed
-				} else {
-					// Removing the last middleware has to clear the annotation; leaving a
-					// stale value would keep routing through a Middleware that no longer exists,
-					// and Traefik drops the whole router when a referenced middleware is missing.
-					delete(ing.Annotations, "traefik.ingress.kubernetes.io/router.middlewares")
-				}
+			if composed := composeMiddlewareAnnotation(platform, appRefs, existing); composed != "" {
+				ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = composed
+			} else {
+				// Removing the last middleware has to clear the annotation; leaving a
+				// stale value would keep routing through a Middleware that no longer exists.
+				delete(ing.Annotations, "traefik.ingress.kubernetes.io/router.middlewares")
 			}
 
 			if tlsEnabled {
@@ -1701,7 +1728,13 @@ func traefikMiddlewareGVK() schema.GroupVersionKind {
 // reconcileHTTPSRedirectMiddleware creates or deletes the HTTPS redirect middleware per app/env.
 // When TLS is enabled and ingress class is Traefik, it creates a redirectScheme middleware.
 // When TLS is not enabled, it cleans up any existing middleware.
-func (r *VestaAppReconciler) reconcileHTTPSRedirectMiddleware(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) {
+// reconcileHTTPSRedirectMiddleware creates or removes the per-app HTTPS redirect.
+//
+// It returns an error rather than logging one. The Ingress written immediately after names
+// this middleware, and Traefik drops the whole router when a referenced middleware does not
+// exist -- so a swallowed failure here is not a missing redirect, it is a 404 on every
+// request to the app.
+func (r *VestaAppReconciler) reconcileHTTPSRedirectMiddleware(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
 	logger := log.FromContext(ctx)
 	middlewareName := fmt.Sprintf("%s-https-redirect", app.Name)
 
@@ -1738,25 +1771,33 @@ func (r *VestaAppReconciler) reconcileHTTPSRedirectMiddleware(ctx context.Contex
 		err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: middlewareName}, existing)
 		if errors.IsNotFound(err) {
 			if err := r.Client.Create(ctx, middleware); err != nil {
-				logger.Error(err, "failed to create HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
+				return fmt.Errorf("create HTTPS redirect middleware %s/%s: %w", target.Namespace, middlewareName, err)
 			}
-		} else if err == nil {
-			existing.Object["spec"] = middleware.Object["spec"]
-			existing.SetLabels(middleware.GetLabels())
-			if err := r.Client.Update(ctx, existing); err != nil {
-				logger.Error(err, "failed to update HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
-			}
+			return nil
 		}
-	} else {
-		// Cleanup: delete the middleware if it exists (TLS was disabled or not Traefik)
-		mw := &unstructured.Unstructured{}
-		mw.SetGroupVersionKind(traefikMiddlewareGVK())
-		if err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: middlewareName}, mw); err == nil {
-			if err := r.Client.Delete(ctx, mw); err != nil {
-				logger.Error(err, "failed to delete HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
-			}
+		if err != nil {
+			return fmt.Errorf("read HTTPS redirect middleware %s/%s: %w", target.Namespace, middlewareName, err)
+		}
+		existing.Object["spec"] = middleware.Object["spec"]
+		existing.SetLabels(middleware.GetLabels())
+		if err := r.Client.Update(ctx, existing); err != nil {
+			return fmt.Errorf("update HTTPS redirect middleware %s/%s: %w", target.Namespace, middlewareName, err)
+		}
+		return nil
+	}
+
+	// TLS is off, or this is not Traefik. Remove the middleware -- and note that the
+	// Ingress reconcile below is what removes the annotation naming it. The two must agree
+	// on the ingress class, which is why both ask resolveIngressClassName rather than
+	// deciding separately.
+	mw := &unstructured.Unstructured{}
+	mw.SetGroupVersionKind(traefikMiddlewareGVK())
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: middlewareName}, mw); err == nil {
+		if err := r.Client.Delete(ctx, mw); err != nil && !errors.IsNotFound(err) {
+			logger.Error(err, "failed to delete HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
 		}
 	}
+	return nil
 }
 
 func (r *VestaAppReconciler) reconcileHPA(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
