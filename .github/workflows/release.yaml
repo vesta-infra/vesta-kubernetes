@@ -29,6 +29,13 @@ jobs:
           - component: ui
             image: kubernetes-ui
             context: ui
+          # Built from the operator's context because it shares its module, but shipped
+          # separately: it runs in application namespaces with a much narrower
+          # ServiceAccount than the operator's.
+          - component: activator
+            image: kubernetes-activator
+            context: operator
+            dockerfile: operator/Dockerfile.activator
 
     steps:
       - name: Checkout
@@ -63,6 +70,8 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
+          # Defaults to <context>/Dockerfile when a matrix entry does not name one.
+          file: ${{ matrix.dockerfile || format('{0}/Dockerfile', matrix.context) }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
