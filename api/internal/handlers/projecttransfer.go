@@ -209,7 +209,10 @@ func (h *Handler) collectRegistrySecrets(c *gin.Context, wanted map[string]bool)
 			Name:     item.GetName(),
 			Registry: getNestedString(cfg, "registry"),
 			Username: getNestedString(cfg, "username"),
-			Password: getNestedString(cfg, "password"),
+			// Resolved rather than read off the spec, which is empty once the operator
+			// has migrated the credential. Reading the raw field would export a bundle
+			// whose credentials silently do not work.
+			Password: h.readRegistryPassword(c.Request.Context(), cfg),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -302,6 +305,14 @@ func (h *Handler) applyPayload(c *gin.Context, payload *bundle.Payload, projectI
 		if _, err := h.K8s.GetResource(ctx, k8s.VestaSecretGVR, vestaSystemNS, reg.Name); err == nil {
 			continue // Instance-level and possibly shared with other projects; leave it.
 		}
+		// The imported password goes straight into a Secret, the same as one entered
+		// through the UI. An import must not be a way to put plaintext back into a CRD
+		// that the operator just finished clearing.
+		passwordRef, err := h.writeRegistryPassword(ctx, reg.Name, reg.Password)
+		if err != nil {
+			return created, fmt.Errorf("storing password for registry secret %q: %w", reg.Name, err)
+		}
+
 		obj := map[string]interface{}{
 			"apiVersion": "kubernetes.getvesta.sh/v1alpha1",
 			"kind":       "VestaSecret",
@@ -313,9 +324,9 @@ func (h *Handler) applyPayload(c *gin.Context, payload *bundle.Payload, projectI
 			"spec": map[string]interface{}{
 				"type": "kubernetes.io/dockerconfigjson",
 				"dockerConfig": map[string]interface{}{
-					"registry": reg.Registry,
-					"username": reg.Username,
-					"password": reg.Password,
+					"registry":          reg.Registry,
+					"username":          reg.Username,
+					"passwordSecretRef": passwordRef,
 				},
 			},
 		}
