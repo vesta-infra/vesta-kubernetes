@@ -293,14 +293,20 @@ spec:
 
                   derived from one commodity node, which is an estimate and says so.'
                 properties:
-                  cpuCoreHour: {}
+                  cpuCoreHour:
+                    type: number
                   currency:
                     type: string
-                  memoryGiBHour: {}
-                  nodeMemoryGiB: {}
-                  nodeMonthlyCost: {}
-                  nodeVCPUs: {}
-                  storageGiBMonth: {}
+                  memoryGiBHour:
+                    type: number
+                  nodeMemoryGiB:
+                    type: number
+                  nodeMonthlyCost:
+                    type: number
+                  nodeVCPUs:
+                    type: number
+                  storageGiBMonth:
+                    type: number
                 type: object
               security:
                 description: 'Security hardens what apps run as, and whether environments

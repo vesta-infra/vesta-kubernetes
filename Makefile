@@ -169,6 +169,11 @@ sync-crds: ## Add newly generated properties to the chart's CRDs (then run check
 
 check-crds: ## Fail if the chart's CRDs would reject data an earlier release accepted
 	@for v in $(CHART_BASELINES); do ./hack/check-crd-compat.sh $$v || exit 1; done
+	@# Compatibility is not the only way a CRD can be wrong. A property with no type makes
+	@# the API server reject the whole file, and nothing else here notices: helm lint does
+	@# not validate CRD schemas and helm template renders it happily.
+	./hack/check-crd-structural.sh deploy/helm/vesta/crds
+	./hack/check-crd-structural.sh operator/config/crd/bases
 
 helm-lint: ## Lint and render the chart the way CI does
 	helm lint deploy/helm/vesta

@@ -144,6 +144,14 @@ jobs:
           ./hack/check-crd-compat.sh 0.6.3
           ./hack/check-crd-compat.sh 0.9.1
 
+      # A property with no type makes the API server reject the entire CRD, so every kind in
+      # that file fails to apply. helm lint does not validate CRD schemas, so nothing else
+      # in this job would notice. 0.10.0 shipped that for the cost rate card.
+      - name: Check the CRD schemas are structurally valid
+        run: |
+          ./hack/check-crd-structural.sh deploy/helm/vesta/crds
+          ./hack/check-crd-structural.sh operator/config/crd/bases
+
       # The upgrade Job runs helm as vesta-upgrader, so that account needs every verb the
       # chart's own resources require. 0.7.3 shipped without delete on RBAC resources and
       # the pre-upgrade hook failed with a forbidden error.

@@ -1238,6 +1238,7 @@ spec:
                     items:
                       type: object
                       x-kubernetes-preserve-unknown-fields: true
+                    x-kubernetes-preserve-unknown-fields: true
               desiredState:
                 description: 'DesiredState is what the operator should be driving
                   the app toward. Status reports
