@@ -48,11 +48,28 @@ def merge(old, new, path, added):
 
 def main(src_dir, dst_dir):
     added = []
+    copied = []
+
+    # A CRD the chart does not have yet is copied wholesale, minus its `required` lists.
+    # Iterating the destination alone silently skipped brand-new kinds, so adding one
+    # produced "added 0 properties" and a chart that shipped without the CRD at all --
+    # which surfaces much later, as the operator failing to watch a kind nobody installed.
+    for f in sorted(os.listdir(src_dir)):
+        if not f.endswith(".yaml") or os.path.exists(os.path.join(dst_dir, f)):
+            continue
+        doc = yaml.safe_load(open(os.path.join(src_dir, f)))
+        strip_required(doc["spec"]["versions"][0]["schema"]["openAPIV3Schema"])
+        yaml.safe_dump(doc, open(os.path.join(dst_dir, f), "w"),
+                       default_flow_style=False, sort_keys=False)
+        copied.append(f)
+
     for f in sorted(os.listdir(dst_dir)):
         if not f.endswith(".yaml"):
             continue
         src = os.path.join(src_dir, f)
         if not os.path.exists(src):
+            continue
+        if f in copied:
             continue
         dst = os.path.join(dst_dir, f)
         old, new = yaml.safe_load(open(dst)), yaml.safe_load(open(src))
@@ -60,7 +77,9 @@ def main(src_dir, dst_dir):
               new["spec"]["versions"][0]["schema"]["openAPIV3Schema"],
               f.replace("kubernetes.getvesta.sh_", "").replace(".yaml", ""), added)
         yaml.safe_dump(old, open(dst, "w"), default_flow_style=False, sort_keys=False)
-    print(f"added {len(added)} properties")
+    for c in copied:
+        print(f"  copied new CRD {c}")
+    print(f"added {len(added)} properties, copied {len(copied)} new CRDs")
     for a in added:
         print("  " + a)
     print("\nNow run: make check-crds")

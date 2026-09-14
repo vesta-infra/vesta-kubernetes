@@ -65,6 +65,60 @@ spec:
                 type: integer
               project:
                 type: string
+              quota:
+                description: |-
+                  Quota bounds what this environment may consume. Empty inherits the project's, then
+                  the platform default.
+                properties:
+                  defaultLimitCpu:
+                    type: string
+                  defaultLimitMemory:
+                    type: string
+                  defaultRequestCpu:
+                    description: |-
+                      Defaults for the LimitRange that ships alongside the quota. Once a quota names
+                      requests.cpu, Kubernetes requires every new pod to set one; these are what pods that
+                      do not get.
+                    type: string
+                  defaultRequestMemory:
+                    type: string
+                  enforce:
+                    description: |-
+                      Enforce is a pointer so absent is distinguishable from false. Absent means
+                      report-only: the controller creates no ResourceQuota at all and only computes what
+                      one would do.
+
+                      That default is the whole safety story. A ResourceQuota is not applied retroactively
+                      to pods that already exist -- it blocks the NEXT admission, which means the failure
+                      lands in the middle of somebody's deploy rather than when the quota was set. Working
+                      out the answer first, and showing it, turns that into a decision.
+                    type: boolean
+                  limitsCpu:
+                    description: |-
+                      Limits are opt-in and sharper than they look: a limits.* quota makes every pod
+                      without that limit set unadmittable, and most pods do not set one.
+                    type: string
+                  limitsMemory:
+                    type: string
+                  maxDeployments:
+                    format: int32
+                    type: integer
+                  maxPods:
+                    format: int32
+                    type: integer
+                  maxPvcs:
+                    format: int32
+                    type: integer
+                  maxServices:
+                    format: int32
+                    type: integer
+                  requestsCpu:
+                    type: string
+                  requestsMemory:
+                    type: string
+                  storageTotal:
+                    type: string
+                type: object
               requireApproval:
                 type: boolean
             required:
@@ -130,6 +184,64 @@ spec:
                   - type
                   type: object
                 type: array
+              networkIsolation:
+                description: |-
+                  NetworkIsolation reports whether the environment is actually isolated, which is not
+                  the same question as whether isolation was turned on.
+                properties:
+                  enabled:
+                    type: boolean
+                  enforced:
+                    description: Enforced is whether this cluster's CNI is believed
+                      to implement NetworkPolicy.
+                    type: boolean
+                  enforcementKnown:
+                    description: |-
+                      EnforcementKnown distinguishes "we determined it is not enforced" from "we could not
+                      tell". Reporting an unknown as "not enforced" would cry wolf on every unrecognised
+                      plugin; reporting it as enforced would be the dangerous direction.
+                    type: boolean
+                  lastApplied:
+                    format: date-time
+                    type: string
+                  note:
+                    type: string
+                  policyCount:
+                    format: int32
+                    type: integer
+                  trustedFrom:
+                    items:
+                      type: string
+                    type: array
+                type: object
+              quota:
+                description: Quota reports what the environment is consuming and whether
+                  a quota is in force.
+                properties:
+                  committed:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      Committed is what the environment's apps add up to at their configured maximum --
+                      autoscaling ceilings included, because a quota that fits today's replicas and not
+                      tomorrow's blocks a scale-up with no warning.
+                    type: object
+                  enforced:
+                    description: Enforced is whether a ResourceQuota object exists.
+                    type: boolean
+                  reason:
+                    type: string
+                  used:
+                    additionalProperties:
+                      type: string
+                    description: Used is what is actually running now.
+                    type: object
+                  wouldExceed:
+                    description: |-
+                      WouldExceed is set when the configured quota is below what is already committed.
+                      Applying it then would refuse the next deploy, so it is reported instead.
+                    type: boolean
+                type: object
             type: object
         type: object
     served: true
