@@ -168,19 +168,25 @@ sync-crds: ## Add newly generated properties to the chart's CRDs (then run check
 	python3 hack/merge-crd-properties.py operator/config/crd/bases deploy/helm/vesta/crds
 
 check-crds: ## Fail if the chart's CRDs would reject data an earlier release accepted
-	./hack/check-crd-compat.sh $(CHART_BASELINE)
+	@for v in $(CHART_BASELINES); do ./hack/check-crd-compat.sh $$v || exit 1; done
 
 helm-lint: ## Lint and render the chart the way CI does
 	helm lint deploy/helm/vesta
 	helm template vesta deploy/helm/vesta -n vesta-system >/dev/null
 	helm template vesta deploy/helm/vesta -n vesta-system --set postgres.enabled=true >/dev/null
 
-# CHART_BASELINE is the last release whose rendered resources this chart must still
-# cover. Bump it only when you have confirmed the upgrade path from that version.
-CHART_BASELINE ?= 0.6.3
+# CHART_BASELINES are the releases whose rendered resources this chart must still cover.
+#
+# More than one, because they catch different things. 0.6.3 is the oldest upgrade path
+# still supported, and 0.9.1 is the last release -- checking only the old one meant the
+# guard rendered 11 resources while the chart had grown to 21, so everything added since
+# 0.6.3 could have been dropped without the check noticing.
+#
+# Add a version only once you have confirmed the upgrade path from it.
+CHART_BASELINES ?= 0.6.3 0.9.1
 
 helm-upgrade-safety: ## Fail if this chart drops a resource an earlier release rendered
-	./hack/check-no-dropped-resources.sh $(CHART_BASELINE)
+	@for v in $(CHART_BASELINES); do ./hack/check-no-dropped-resources.sh $$v || exit 1; done
 
 check-upgrader-rbac: ## Fail if self-update cannot apply everything the chart renders
 	./hack/check-upgrader-rbac.sh
