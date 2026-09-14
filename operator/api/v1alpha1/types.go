@@ -920,3 +920,199 @@ type VestaMiddlewareList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []VestaMiddleware `json:"items"`
 }
+
+// ============================================================================
+// VestaLogDrain
+// ============================================================================
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
+// +kubebuilder:printcolumn:name="Scope",type=string,JSONPath=`.status.scope`
+// +kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
+// +kubebuilder:printcolumn:name="Delivered",type=integer,JSONPath=`.status.recordsDelivered`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// +kubebuilder:resource:shortName=vld;drain
+type VestaLogDrain struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   VestaLogDrainSpec   `json:"spec,omitempty"`
+	Status VestaLogDrainStatus `json:"status,omitempty"`
+}
+
+// VestaLogDrainSpec describes one destination for app logs.
+//
+// Scope is the attachment: a drain with no Project applies to every app, one with a Project
+// to that project's apps, and so on. That differs from VestaMiddleware, where order was
+// semantic and attachment had to be an explicit ordered list on the app -- log delivery is
+// a set, so a record simply reaches every drain whose scope covers it.
+//
+// Every field carries omitempty deliberately. controller-gen marks a field without it as
+// required in the generated schema, and a newly-required field rejects resources an earlier
+// release accepted; that is the 0.7.1 defect, and hack/check-crd-compat.sh guards it.
+type VestaLogDrainSpec struct {
+	// +kubebuilder:validation:Enum=http;loki;syslog;elasticsearch;datadog;s3
+	Type string `json:"type"`
+
+	DisplayName string `json:"displayName,omitempty"`
+	Description string `json:"description,omitempty"`
+
+	// Enabled is a pointer so that absent and false are distinguishable. Absent means on;
+	// an explicitly disabled drain scoped to one app suppresses a broader drain of the same
+	// name, which is how a single app opts out of platform-wide shipping.
+	Enabled *bool `json:"enabled,omitempty"`
+
+	// Project, App and Environment narrow which apps ship here. All empty is platform-wide.
+	Project     string `json:"project,omitempty"`
+	App         string `json:"app,omitempty"`
+	Environment string `json:"environment,omitempty"`
+
+	HTTP          *HTTPDrain          `json:"http,omitempty"`
+	Loki          *LokiDrain          `json:"loki,omitempty"`
+	Syslog        *SyslogDrain        `json:"syslog,omitempty"`
+	Elasticsearch *ElasticsearchDrain `json:"elasticsearch,omitempty"`
+	Datadog       *DatadogDrain       `json:"datadog,omitempty"`
+	S3            *S3Drain            `json:"s3,omitempty"`
+
+	Retry *LogRetryPolicy `json:"retry,omitempty"`
+}
+
+// DrainSecretRef names a key in a Secret in the release namespace. Credentials are never
+// written to a VestaLogDrain: a CRD is readable by anyone holding get on the type, so an
+// API key stored there is a leak however it arrived. The operator mounts the Secret into
+// the collector and the generated config references it by environment variable.
+type DrainSecretRef struct {
+	Name string `json:"name"`
+	Key  string `json:"key,omitempty"`
+}
+
+type HTTPDrain struct {
+	URI string `json:"uri"`
+	// +kubebuilder:validation:Enum=json;json_stream;json_lines;gelf;msgpack
+	Format  string            `json:"format,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	// AuthHeader names a Secret key whose value becomes the Authorization header.
+	AuthHeader *DrainSecretRef `json:"authHeader,omitempty"`
+	TLSVerify  *bool           `json:"tlsVerify,omitempty"`
+	Compress   string          `json:"compress,omitempty"`
+
+	// DateKey names the field the event timestamp is written to. Empty sends "timestamp".
+	// Destinations that key on a specific field need it set to theirs -- OpenObserve reads
+	// "_timestamp" and otherwise stamps every record with its ingestion time, which looks
+	// fine until a backlog drains and an hour of logs all share one timestamp.
+	DateKey string `json:"dateKey,omitempty"`
+}
+
+type LokiDrain struct {
+	Host string `json:"host"`
+	Port int32  `json:"port,omitempty"`
+	// Labels become Loki stream labels. The collector always adds project, environment and
+	// app; these are extra.
+	Labels    map[string]string `json:"labels,omitempty"`
+	TenantID  string            `json:"tenantId,omitempty"`
+	BasicAuth *DrainSecretRef   `json:"basicAuth,omitempty"`
+	TLS       *bool             `json:"tls,omitempty"`
+	TLSVerify *bool             `json:"tlsVerify,omitempty"`
+}
+
+type SyslogDrain struct {
+	Host string `json:"host"`
+	Port int32  `json:"port,omitempty"`
+	// +kubebuilder:validation:Enum=tcp;udp;tls
+	Mode string `json:"mode,omitempty"`
+	// +kubebuilder:validation:Enum=rfc5424;rfc3164
+	Format       string `json:"format,omitempty"`
+	AppNameKey   string `json:"appNameKey,omitempty"`
+	HostnameKey  string `json:"hostnameKey,omitempty"`
+	MessageKey   string `json:"messageKey,omitempty"`
+	SeverityKey  string `json:"severityKey,omitempty"`
+	FacilityKey  string `json:"facilityKey,omitempty"`
+	TLSVerify    *bool  `json:"tlsVerify,omitempty"`
+	MaxSizeBytes int32  `json:"maxSizeBytes,omitempty"`
+}
+
+type ElasticsearchDrain struct {
+	Host string `json:"host"`
+	Port int32  `json:"port,omitempty"`
+	// Index is the target index; IndexPrefix with LogstashFormat produces dated indices.
+	Index          string          `json:"index,omitempty"`
+	LogstashFormat *bool           `json:"logstashFormat,omitempty"`
+	LogstashPrefix string          `json:"logstashPrefix,omitempty"`
+	Type           string          `json:"type,omitempty"`
+	BasicAuth      *DrainSecretRef `json:"basicAuth,omitempty"`
+	CloudID        *DrainSecretRef `json:"cloudId,omitempty"`
+	TLS            *bool           `json:"tls,omitempty"`
+	TLSVerify      *bool           `json:"tlsVerify,omitempty"`
+	// SuppressTypeName is required for Elasticsearch 8 and above, which removed mapping
+	// types; sending one makes it reject the whole batch.
+	SuppressTypeName *bool `json:"suppressTypeName,omitempty"`
+}
+
+type DatadogDrain struct {
+	// APIKey is required and always a Secret reference.
+	APIKey *DrainSecretRef `json:"apiKey,omitempty"`
+	// Site is the Datadog region host, e.g. datadoghq.com or datadoghq.eu. Sending EU data
+	// to the US endpoint is silently accepted and lands in the wrong account.
+	Site          string            `json:"site,omitempty"`
+	Service       string            `json:"service,omitempty"`
+	Source        string            `json:"source,omitempty"`
+	Tags          map[string]string `json:"tags,omitempty"`
+	IncludeTagKey *bool             `json:"includeTagKey,omitempty"`
+	Compress      string            `json:"compress,omitempty"`
+}
+
+type S3Drain struct {
+	Bucket string `json:"bucket"`
+	Region string `json:"region,omitempty"`
+	// Credentials may be omitted entirely when the node or a service account provides them
+	// through IRSA or an instance role.
+	Credentials   *DrainSecretRef `json:"credentials,omitempty"`
+	Endpoint      string          `json:"endpoint,omitempty"`
+	TotalFileSize string          `json:"totalFileSize,omitempty"`
+	UploadTimeout string          `json:"uploadTimeout,omitempty"`
+	S3KeyFormat   string          `json:"s3KeyFormat,omitempty"`
+	UsePutObject  *bool           `json:"usePutObject,omitempty"`
+	Compression   string          `json:"compression,omitempty"`
+	StorageClass  string          `json:"storageClass,omitempty"`
+}
+
+// LogRetryPolicy controls what the collector does with records it cannot deliver.
+type LogRetryPolicy struct {
+	// Limit is the number of attempts before a batch is dropped. "false" retries forever,
+	// which risks the buffer filling and blocking newer records -- that is why it is not
+	// the default.
+	Limit string `json:"limit,omitempty"`
+	// StorageType "filesystem" survives a collector restart; "memory" does not but is
+	// faster and is Fluent Bit's default.
+	// +kubebuilder:validation:Enum=memory;filesystem
+	StorageType string `json:"storageType,omitempty"`
+}
+
+type VestaLogDrainStatus struct {
+	// Ready is false when the collector reports errors delivering to this drain, or when
+	// the spec cannot be rendered at all.
+	Ready  bool   `json:"ready,omitempty"`
+	Reason string `json:"reason,omitempty"`
+
+	// Scope is the resolved tag pattern the collector matches for this drain, surfaced so
+	// that "why is this app not shipping" can be answered without reading the ConfigMap.
+	Scope string `json:"scope,omitempty"`
+
+	// RecordsDelivered and Errors come from the collector's own metrics endpoint. Without
+	// them a misconfigured drain is indistinguishable from an app that logged nothing, and
+	// the first sign of trouble is an empty dashboard during an incident.
+	RecordsDelivered   int64  `json:"recordsDelivered,omitempty"`
+	Errors             int64  `json:"errors,omitempty"`
+	RetriesFailed      int64  `json:"retriesFailed,omitempty"`
+	LastDeliveryAt     string `json:"lastDeliveryAt,omitempty"`
+	ObservedGeneration int64  `json:"observedGeneration,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+type VestaLogDrainList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []VestaLogDrain `json:"items"`
+}

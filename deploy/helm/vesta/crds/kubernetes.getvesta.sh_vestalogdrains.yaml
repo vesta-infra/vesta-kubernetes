@@ -1,0 +1,454 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: vestalogdrains.kubernetes.getvesta.sh
+spec:
+  group: kubernetes.getvesta.sh
+  names:
+    kind: VestaLogDrain
+    listKind: VestaLogDrainList
+    plural: vestalogdrains
+    shortNames:
+    - vld
+    - drain
+    singular: vestalogdrain
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.type
+      name: Type
+      type: string
+    - jsonPath: .status.scope
+      name: Scope
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .status.recordsDelivered
+      name: Delivered
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: 'APIVersion defines the versioned schema of this representation
+              of an object.
+
+              Servers should convert recognized schemas to the latest internal value,
+              and
+
+              may reject unrecognized values.
+
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources'
+            type: string
+          kind:
+            description: 'Kind is a string value representing the REST resource this
+              object represents.
+
+              Servers may infer this from the endpoint the client submits requests
+              to.
+
+              Cannot be updated.
+
+              In CamelCase.
+
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: 'VestaLogDrainSpec describes one destination for app logs.
+
+
+              Scope is the attachment: a drain with no Project applies to every app,
+              one with a Project
+
+              to that project''s apps, and so on. That differs from VestaMiddleware,
+              where order was
+
+              semantic and attachment had to be an explicit ordered list on the app
+              -- log delivery is
+
+              a set, so a record simply reaches every drain whose scope covers it.
+
+
+              Every field carries omitempty deliberately. controller-gen marks a field
+              without it as
+
+              required in the generated schema, and a newly-required field rejects
+              resources an earlier
+
+              release accepted; that is the 0.7.1 defect, and hack/check-crd-compat.sh
+              guards it.'
+            properties:
+              app:
+                type: string
+              datadog:
+                properties:
+                  apiKey:
+                    description: APIKey is required and always a Secret reference.
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  compress:
+                    type: string
+                  includeTagKey:
+                    type: boolean
+                  service:
+                    type: string
+                  site:
+                    description: 'Site is the Datadog region host, e.g. datadoghq.com
+                      or datadoghq.eu. Sending EU data
+
+                      to the US endpoint is silently accepted and lands in the wrong
+                      account.'
+                    type: string
+                  source:
+                    type: string
+                  tags:
+                    additionalProperties:
+                      type: string
+                    type: object
+                type: object
+              description:
+                type: string
+              displayName:
+                type: string
+              elasticsearch:
+                properties:
+                  basicAuth:
+                    description: 'DrainSecretRef names a key in a Secret in the release
+                      namespace. Credentials are never
+
+                      written to a VestaLogDrain: a CRD is readable by anyone holding
+                      get on the type, so an
+
+                      API key stored there is a leak however it arrived. The operator
+                      mounts the Secret into
+
+                      the collector and the generated config references it by environment
+                      variable.'
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  cloudId:
+                    description: 'DrainSecretRef names a key in a Secret in the release
+                      namespace. Credentials are never
+
+                      written to a VestaLogDrain: a CRD is readable by anyone holding
+                      get on the type, so an
+
+                      API key stored there is a leak however it arrived. The operator
+                      mounts the Secret into
+
+                      the collector and the generated config references it by environment
+                      variable.'
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  host:
+                    type: string
+                  index:
+                    description: Index is the target index; IndexPrefix with LogstashFormat
+                      produces dated indices.
+                    type: string
+                  logstashFormat:
+                    type: boolean
+                  logstashPrefix:
+                    type: string
+                  port:
+                    format: int32
+                    type: integer
+                  suppressTypeName:
+                    description: 'SuppressTypeName is required for Elasticsearch 8
+                      and above, which removed mapping
+
+                      types; sending one makes it reject the whole batch.'
+                    type: boolean
+                  tls:
+                    type: boolean
+                  tlsVerify:
+                    type: boolean
+                  type:
+                    type: string
+                required:
+                - host
+                type: object
+              enabled:
+                description: 'Enabled is a pointer so that absent and false are distinguishable.
+                  Absent means on;
+
+                  an explicitly disabled drain scoped to one app suppresses a broader
+                  drain of the same
+
+                  name, which is how a single app opts out of platform-wide shipping.'
+                type: boolean
+              environment:
+                type: string
+              http:
+                properties:
+                  authHeader:
+                    description: AuthHeader names a Secret key whose value becomes
+                      the Authorization header.
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  compress:
+                    type: string
+                  format:
+                    enum:
+                    - json
+                    - json_stream
+                    - json_lines
+                    - gelf
+                    - msgpack
+                    type: string
+                  headers:
+                    additionalProperties:
+                      type: string
+                    type: object
+                  tlsVerify:
+                    type: boolean
+                  uri:
+                    type: string
+                  dateKey:
+                    description: 'DateKey names the field the event timestamp is written
+                      to. Empty sends "timestamp".
+
+                      Destinations that key on a specific field need it set to theirs
+                      -- OpenObserve reads
+
+                      "_timestamp" and otherwise stamps every record with its ingestion
+                      time, which looks
+
+                      fine until a backlog drains and an hour of logs all share one
+                      timestamp.'
+                    type: string
+                required:
+                - uri
+                type: object
+              loki:
+                properties:
+                  basicAuth:
+                    description: 'DrainSecretRef names a key in a Secret in the release
+                      namespace. Credentials are never
+
+                      written to a VestaLogDrain: a CRD is readable by anyone holding
+                      get on the type, so an
+
+                      API key stored there is a leak however it arrived. The operator
+                      mounts the Secret into
+
+                      the collector and the generated config references it by environment
+                      variable.'
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  host:
+                    type: string
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: 'Labels become Loki stream labels. The collector
+                      always adds project, environment and
+
+                      app; these are extra.'
+                    type: object
+                  port:
+                    format: int32
+                    type: integer
+                  tenantId:
+                    type: string
+                  tls:
+                    type: boolean
+                  tlsVerify:
+                    type: boolean
+                required:
+                - host
+                type: object
+              project:
+                description: Project, App and Environment narrow which apps ship here.
+                  All empty is platform-wide.
+                type: string
+              retry:
+                description: LogRetryPolicy controls what the collector does with
+                  records it cannot deliver.
+                properties:
+                  limit:
+                    description: 'Limit is the number of attempts before a batch is
+                      dropped. "false" retries forever,
+
+                      which risks the buffer filling and blocking newer records --
+                      that is why it is not
+
+                      the default.'
+                    type: string
+                  storageType:
+                    description: 'StorageType "filesystem" survives a collector restart;
+                      "memory" does not but is
+
+                      faster and is Fluent Bit''s default.'
+                    enum:
+                    - memory
+                    - filesystem
+                    type: string
+                type: object
+              s3:
+                properties:
+                  bucket:
+                    type: string
+                  compression:
+                    type: string
+                  credentials:
+                    description: 'Credentials may be omitted entirely when the node
+                      or a service account provides them
+
+                      through IRSA or an instance role.'
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  endpoint:
+                    type: string
+                  region:
+                    type: string
+                  s3KeyFormat:
+                    type: string
+                  storageClass:
+                    type: string
+                  totalFileSize:
+                    type: string
+                  uploadTimeout:
+                    type: string
+                  usePutObject:
+                    type: boolean
+                required:
+                - bucket
+                type: object
+              syslog:
+                properties:
+                  appNameKey:
+                    type: string
+                  facilityKey:
+                    type: string
+                  format:
+                    enum:
+                    - rfc5424
+                    - rfc3164
+                    type: string
+                  host:
+                    type: string
+                  hostnameKey:
+                    type: string
+                  maxSizeBytes:
+                    format: int32
+                    type: integer
+                  messageKey:
+                    type: string
+                  mode:
+                    enum:
+                    - tcp
+                    - udp
+                    - tls
+                    type: string
+                  port:
+                    format: int32
+                    type: integer
+                  severityKey:
+                    type: string
+                  tlsVerify:
+                    type: boolean
+                required:
+                - host
+                type: object
+              type:
+                enum:
+                - http
+                - loki
+                - syslog
+                - elasticsearch
+                - datadog
+                - s3
+                type: string
+            required:
+            - type
+            type: object
+          status:
+            properties:
+              errors:
+                format: int64
+                type: integer
+              lastDeliveryAt:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              ready:
+                description: 'Ready is false when the collector reports errors delivering
+                  to this drain, or when
+
+                  the spec cannot be rendered at all.'
+                type: boolean
+              reason:
+                type: string
+              recordsDelivered:
+                description: 'RecordsDelivered and Errors come from the collector''s
+                  own metrics endpoint. Without
+
+                  them a misconfigured drain is indistinguishable from an app that
+                  logged nothing, and
+
+                  the first sign of trouble is an empty dashboard during an incident.'
+                format: int64
+                type: integer
+              retriesFailed:
+                format: int64
+                type: integer
+              scope:
+                description: 'Scope is the resolved tag pattern the collector matches
+                  for this drain, surfaced so
+
+                  that "why is this app not shipping" can be answered without reading
+                  the ConfigMap.'
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

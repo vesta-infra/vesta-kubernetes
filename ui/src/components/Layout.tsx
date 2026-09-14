@@ -51,6 +51,15 @@ const mainNavItems = [
     ),
   },
   {
+    to: '/log-drains',
+    label: 'Log Drains',
+    icon: (
+      <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.6}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16M6 12h12M9 17h6M12 20v1" />
+      </svg>
+    ),
+  },
+  {
     to: '/templates',
     label: 'Templates',
     icon: (

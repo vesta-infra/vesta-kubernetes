@@ -1,0 +1,156 @@
+{{- if .Values.logging.enabled }}
+# The log collector. Off by default: a cluster that already runs a logging stack should not
+# get a second agent tailing the same files, and an existing install must not gain a
+# DaemonSet it never asked for on upgrade.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vesta-logs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: logs
+---
+# Its own ClusterRole rather than the operator's. The collector needs only to read pod
+# metadata for the kubernetes filter, and the operator's role is broad enough that reusing
+# it would hand every node a token that can write workloads.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Release.Name }}-logs
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Release.Name }}-logs
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Release.Name }}-logs
+subjects:
+  - kind: ServiceAccount
+    name: vesta-logs
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vesta-logs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: logs
+spec:
+  # Headless: the operator scrapes the metrics of whichever pod answers, and the numbers
+  # are per-node anyway. A load-balanced VIP would give a different node each poll and make
+  # the reported counters jump around.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: vesta-logs
+  ports:
+    - name: metrics
+      port: 2020
+      targetPort: 2020
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: vesta-logs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: logs
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vesta-logs
+  template:
+    metadata:
+      labels:
+        {{- include "vesta.labels" . | nindent 8 }}
+        app.kubernetes.io/name: vesta-logs
+        app.kubernetes.io/component: logs
+      annotations:
+        # Stamped by the operator with the hash of the generated configuration. Changing a
+        # drain rolls this DaemonSet; Helm leaves the value alone on upgrade.
+        checksum/config: "pending"
+    spec:
+      serviceAccountName: vesta-logs
+      # Logs must keep flowing while a node is draining or tainted, which is exactly when
+      # the interesting ones are produced.
+      tolerations:
+        - operator: Exists
+      priorityClassName: {{ .Values.logging.priorityClassName | default "" | quote }}
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: fluent-bit
+          image: "{{ .Values.logging.image.repository }}:{{ .Values.logging.image.tag }}"
+          imagePullPolicy: {{ .Values.logging.image.pullPolicy }}
+          ports:
+            - name: metrics
+              containerPort: 2020
+          env:
+            {{- range .Values.logging.secretRefs }}
+            - name: {{ .env }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secret }}
+                  key: {{ .key }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.logging.resources | nindent 12 }}
+          securityContext:
+            # The container log files are root-owned on the node, so reading them needs
+            # root; everything else is dropped.
+            runAsUser: 0
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: config
+              mountPath: /fluent-bit/etc/
+            # Read-only, and it must stay that way: a logging agent that can write to the
+            # node's log directory can corrupt what every other agent reads.
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+            - name: storage
+              mountPath: /var/log/flb-storage
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 2020
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: 2020
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: vesta-logs-config
+            optional: true
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers
+        - name: storage
+          emptyDir: {}
+{{- end }}

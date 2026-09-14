@@ -293,6 +293,15 @@ func main() {
 		auth.POST("/middlewares", dv, middleware.RequireScope("write"), h.CreateMiddleware)
 		auth.PUT("/middlewares/:name", dv, middleware.RequireScope("write"), h.UpdateMiddleware)
 		auth.DELETE("/middlewares/:name", dv, middleware.RequireScope("write"), h.DeleteMiddleware)
+		// Log drains ship app logs to external destinations. Scope decides which apps ship
+		// where, so there is no per-app attach endpoint -- an app-scoped drain is the
+		// attachment.
+		auth.GET("/log-drains", middleware.RequireScope("read"), h.ListLogDrains)
+		auth.GET("/log-drains/:name", middleware.RequireScope("read"), h.GetLogDrain)
+		auth.POST("/log-drains", dv, middleware.RequireScope("write"), h.CreateLogDrain)
+		auth.PUT("/log-drains/:name", dv, middleware.RequireScope("write"), h.UpdateLogDrain)
+		auth.DELETE("/log-drains/:name", dv, middleware.RequireScope("write"), h.DeleteLogDrain)
+
 		auth.GET("/apps/:appId/middlewares", middleware.RequireScope("read"), h.GetAppMiddlewares)
 		auth.PUT("/apps/:appId/middlewares", dv, middleware.RequireScope("write"), h.UpdateAppMiddlewares)
 
