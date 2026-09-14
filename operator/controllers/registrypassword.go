@@ -61,7 +61,9 @@ func (r *VestaSecretReconciler) ResolveRegistryPassword(
 	}
 
 	var secret corev1.Secret
-	err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: dc.PasswordSecretRef.Name}, &secret)
+	// Uncached: a credential read moments after its Secret was written would otherwise miss
+	// it and fall back to a plaintext field the migration has just emptied.
+	err := r.reader().Get(ctx, client.ObjectKey{Namespace: namespace, Name: dc.PasswordSecretRef.Name}, &secret)
 	if err != nil {
 		if apierrors.IsNotFound(err) && dc.Password != "" {
 			// A ref pointing at nothing, with the plaintext still present: this is a
@@ -123,7 +125,7 @@ func (r *VestaSecretReconciler) MigrateRegistryPassword(
 		// Already there from an interrupted pass. Overwrite it with the value we are about
 		// to clear, so the two cannot disagree.
 		var existing corev1.Secret
-		if err := r.Get(ctx, client.ObjectKey{Namespace: vs.Namespace, Name: name}, &existing); err != nil {
+		if err := r.reader().Get(ctx, client.ObjectKey{Namespace: vs.Namespace, Name: name}, &existing); err != nil {
 			return false, err
 		}
 		existing.Data = map[string][]byte{RegistryPasswordKey: []byte(dc.Password)}
@@ -136,7 +138,7 @@ func (r *VestaSecretReconciler) MigrateRegistryPassword(
 	// server accepted but that is not readable would otherwise be enough to destroy the
 	// only copy of the password.
 	var written corev1.Secret
-	if err := r.Get(ctx, client.ObjectKey{Namespace: vs.Namespace, Name: name}, &written); err != nil {
+	if err := r.reader().Get(ctx, client.ObjectKey{Namespace: vs.Namespace, Name: name}, &written); err != nil {
 		return false, fmt.Errorf("verifying password Secret: %w", err)
 	}
 	if string(written.Data[RegistryPasswordKey]) != dc.Password {
@@ -156,6 +158,11 @@ func (r *VestaSecretReconciler) MigrateRegistryPassword(
 		// simply still there and the next pass will try again.
 		return false, fmt.Errorf("clearing plaintext password: %w", err)
 	}
+
+	// Hand the caller the object as it now stands, so nothing downstream reads a password
+	// field this call just emptied, and nothing re-reads through a cache that has not caught
+	// up with the patch.
+	patched.DeepCopyInto(vs)
 
 	return true, nil
 }

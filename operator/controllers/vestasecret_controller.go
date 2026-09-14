@@ -23,6 +23,25 @@ import (
 type VestaSecretReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// APIReader reads straight from the API server, bypassing the informer cache.
+	//
+	// Required for the password migration, which creates a Secret and then reads it back to
+	// confirm the value is durably stored before clearing the original. The cached client
+	// cannot do that: the informer has not observed the write yet, so the read returns
+	// NotFound, the verification fails, and the migration errors on every reconcile forever
+	// without ever completing.
+	//
+	// Nil falls back to the cached client, which keeps the zero value usable in tests.
+	APIReader client.Reader
+}
+
+// reader returns the uncached reader when one is configured.
+func (r *VestaSecretReconciler) reader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 // +kubebuilder:rbac:groups=kubernetes.getvesta.sh,resources=vestasecrets,verbs=get;list;watch;create;update;patch;delete
@@ -49,11 +68,10 @@ func (r *VestaSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	} else if migrated {
 		logger.Info("moved registry password into a Secret", "secret", vs.Name,
 			"passwordSecret", registryPasswordSecretName(vs.Name))
-		// Re-read: the patch changed spec, and continuing with the stale copy would
-		// materialise from a password field that is now empty.
-		if err := r.Get(ctx, req.NamespacedName, &vs); err != nil {
-			return ctrl.Result{}, err
-		}
+		// MigrateRegistryPassword updated vs in place from the object it patched, so there
+		// is nothing to re-read. Re-reading through the cache is what produced
+		// "the object has been modified" on the status update below: the cache still held
+		// the pre-patch resourceVersion.
 	}
 
 	logger.Info("reconciling VestaSecret", "name", vs.Name, "namespace", vs.Namespace)
