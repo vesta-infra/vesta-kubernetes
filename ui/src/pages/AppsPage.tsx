@@ -2,6 +2,8 @@ import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../lib/api'
+import { ImageRepositoryInput, ImageTagInput } from '../components/RegistryPicker'
+import { RepositoryPicker } from '../components/RepositoryPicker'
 import { useUserRole } from '../lib/useRole'
 
 export default function AppsPage() {
@@ -280,6 +282,10 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
   const [pullPolicy, setPullPolicy] = useState('IfNotPresent')
   const [port, setPort] = useState('3000')
   const [pullSecrets, setPullSecrets] = useState<string[]>([])
+  const [linkingRepo, setLinkingRepo] = useState(false)
+  const [manualRepo, setManualRepo] = useState(false)
+  const [gitHost, setGitHost] = useState('')
+  const [gitConnectionId, setGitConnectionId] = useState('')
   const [cronjobs, setCronjobs] = useState<{ name: string; schedule: string; command: string; size: string; environments: { name: string; enabled: boolean; schedule: string }[] }[]>([])
 
   // Git source
@@ -346,6 +352,11 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
           branch: gitBranch || 'main',
           autoDeployOnPush: gitAutoDeploy,
           ...(gitTokenSecret && { tokenSecret: gitTokenSecret }),
+          // Identity, not decoration: the webhook matcher compares provider, host and path,
+          // so a host recorded here is what lets a self-managed server be told apart from
+          // its SaaS namesake.
+          ...(gitHost && { host: gitHost }),
+          ...(gitConnectionId && { connectionId: gitConnectionId }),
         },
       }),
       ...(buildStrategy && buildStrategy !== 'image' && {
@@ -417,11 +428,26 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
       <div className="grid grid-cols-3 gap-4">
         <div className="col-span-2">
           <label className="label">Image Repository</label>
-          <input value={imageRepo} onChange={(e) => setImageRepo(e.target.value)} className="input-field" placeholder="registry.example.com/org/app" />
+          {/* Offers what the selected pull secret can see; typing something it cannot is
+              still valid, since a credential need not see every repository. */}
+          <ImageRepositoryInput
+            secretName={pullSecrets[0]}
+            value={imageRepo}
+            onChange={setImageRepo}
+            className="input-field w-full"
+            placeholder="registry.example.com/org/app"
+          />
         </div>
         <div>
           <label className="label">Tag</label>
-          <input value={imageTag} onChange={(e) => setImageTag(e.target.value)} className="input-field" placeholder="latest" />
+          <ImageTagInput
+            secretName={pullSecrets[0]}
+            repository={imageRepo}
+            value={imageTag}
+            onChange={setImageTag}
+            className="input-field w-full"
+            placeholder="latest"
+          />
         </div>
       </div>
 
@@ -463,10 +489,10 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
         <div className="flex items-center justify-between">
           <label className="label mb-0">Git Source</label>
           {!gitRepo && (
-            <button type="button" onClick={() => setGitRepo('org/repo')} className="text-xs text-accent hover:text-accent-glow">+ Link Repository</button>
+            <button type="button" onClick={() => setLinkingRepo(true)} className="text-xs text-accent hover:text-accent-glow">+ Link Repository</button>
           )}
         </div>
-        {gitRepo && (
+        {(gitRepo || linkingRepo) && (
           <div className="rounded-lg border border-border bg-surface-1 p-4 space-y-3">
             <div className="grid grid-cols-3 gap-3">
               <div>
@@ -479,7 +505,30 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
               </div>
               <div className="col-span-2">
                 <label className="text-xs text-text-tertiary mb-1 block">Repository</label>
-                <input value={gitRepo} onChange={e => setGitRepo(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="org/repo-name" />
+                {manualRepo ? (
+                  <input
+                    value={gitRepo}
+                    onChange={e => setGitRepo(e.target.value)}
+                    className="input-field font-mono text-xs w-full"
+                    placeholder="org/repo-name"
+                  />
+                ) : (
+                  <RepositoryPicker
+                    value={gitRepo}
+                    provider={gitProvider}
+                    onSelect={sel => {
+                      // Provider, host and connection are recorded together with the name.
+                      // Set apart they can disagree, and a repository whose provider says
+                      // GitHub while its host says gitlab.internal matches no push at all.
+                      setGitRepo(sel.repository)
+                      setGitProvider(sel.provider)
+                      setGitHost(sel.host)
+                      setGitConnectionId(sel.connectionId)
+                      if (sel.defaultBranch && !gitBranch) setGitBranch(sel.defaultBranch)
+                    }}
+                    onClear={() => setManualRepo(true)}
+                  />
+                )}
               </div>
             </div>
             <div className="grid grid-cols-3 gap-3">

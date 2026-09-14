@@ -33,6 +33,16 @@ spec:
             {{- if .Values.operator.leaderElect }}
             - --leader-elect
             {{- end }}
+          env:
+            # Wake-on-traffic. Empty disables it: no activator is created, and a sleeping
+            # app simply stays down rather than being answered by something that does not
+            # exist.
+            - name: VESTA_ACTIVATOR_IMAGE
+              value: {{ if .Values.activator.enabled }}"{{ .Values.activator.image.repository }}:{{ .Values.activator.image.tag | default .Chart.AppVersion }}"{{ else }}""{{ end }}
+            - name: VESTA_ACTIVATOR_NAMESPACE_ROLE
+              value: {{ include "vesta.fullname" . }}-activator-namespace
+            - name: VESTA_ACTIVATOR_WAKE_ROLE
+              value: {{ include "vesta.fullname" . }}-activator-wake
           ports:
             - containerPort: 8080
               name: metrics

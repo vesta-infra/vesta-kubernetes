@@ -32,10 +32,10 @@ type TeamMember struct {
 }
 
 type ProjectMember struct {
-	ProjectID   string    `json:"projectId"`
-	UserID      string    `json:"userId"`
-	Role        string    `json:"role"`
-	CreatedAt   time.Time `json:"createdAt"`
+	ProjectID string    `json:"projectId"`
+	UserID    string    `json:"userId"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"createdAt"`
 	// Populated by joins
 	Username    string `json:"username,omitempty"`
 	Email       string `json:"email,omitempty"`

@@ -9,6 +9,7 @@ import { parseEnvContent, secretKeyError, truncateSecretKey } from '../lib/secre
 import CopyEnvButton from '../components/CopyEnvButton'
 import RevealableInput from '../components/RevealableInput'
 import AppDiagnostics from '../components/AppDiagnostics'
+import { ImageRepositoryInput, ImageTagInput } from '../components/RegistryPicker'
 import { providerKindLabel } from '../components/SSLProviders'
 
 // The cert-manager annotation that used to be the only way to pick an issuer. It is now
@@ -50,6 +51,12 @@ export default function AppDetailPage() {
 
   const [tag, setTag] = useState('')
   const [reason, setReason] = useState('')
+
+  // The credential the tag picker lists through. Taken from the app's own pull secrets
+  // rather than inferred from the image's host, which would mean a second copy of the host
+  // normalisation rule living in TypeScript.
+  const appPullSecret: string | undefined =
+    app?.spec?.image?.imagePullSecrets?.[0]?.name
   const [deployEnv, setDeployEnv] = useState('')
   const [secretEnv, setSecretEnv] = useState('')
   const [editing, setEditing] = useState(false)
@@ -359,11 +366,30 @@ export default function AppDetailPage() {
                 </InfoItem>
                 {app.spec?.sleep?.enabled && (
                   <InfoItem label="Sleep Mode">
-                    <span className="text-xs font-mono text-status-pending">
-                      {phase === 'Sleeping' ? 'Sleeping' : `Active (timeout: ${app.spec.sleep.inactivityTimeout || '30m'})`}
-                    </span>
+                    <div className="min-w-0">
+                      <span className="text-xs font-mono text-status-pending">
+                        {phase === 'Sleeping'
+                          ? 'Sleeping'
+                          : app.spec.sleep.autoSleep
+                          ? `Auto (idle ${app.spec.sleep.inactivityTimeout || '30m'})`
+                          : 'Manual'}
+                      </span>
+                      {/*
+                        Why it is or is not sleeping, written by the sweeper on every pass.
+                        Without it the feature is invisible while idle: somebody who turned
+                        on auto-sleep and sees the app still running cannot tell whether it
+                        is busy, whether Prometheus is missing, or whether Vesta is simply
+                        not looking.
+                      */}
+                      {app.status?.sleepReason && (
+                        <p className="text-[11px] text-text-tertiary mt-0.5 break-words">
+                          {app.status.sleepReason}
+                        </p>
+                      )}
+                    </div>
                   </InfoItem>
                 )}
+                <AppSecurityProfile appId={appId!} app={app} role={role} />
               </div>
             </section>
 
@@ -628,12 +654,17 @@ export default function AppDetailPage() {
                 </div>
                 <div>
                   <label className="label">Image Tag</label>
-                  <input
+                  {/*
+                    The highest-value picker in the product: this field decides what
+                    actually runs, and nothing validated it. A typo here was only
+                    discovered as ImagePullBackOff, minutes later, blaming the image.
+                  */}
+                  <ImageTagInput
+                    secretName={appPullSecret}
+                    repository={app?.spec?.image?.repository}
                     value={tag}
-                    onChange={(e) => setTag(e.target.value)}
-                    placeholder="v1.2.3"
+                    onChange={setTag}
                     className="input-field"
-                    required
                   />
                 </div>
                 <div>
@@ -871,9 +902,74 @@ export default function AppDetailPage() {
       )}
 
       {activeTab === 'schedule' && (
-        <ScheduledDeploymentsTab appId={appId!} projectId={app?.spec?.project || app?.metadata?.labels?.['kubernetes.getvesta.sh/project'] || ''} environments={appEnvironments} />
+        <ScheduledDeploymentsTab appId={appId!} projectId={app?.spec?.project || app?.metadata?.labels?.['kubernetes.getvesta.sh/project'] || ''} environments={appEnvironments} pullSecret={appPullSecret} appRepository={app?.spec?.image?.repository} />
       )}
     </div>
+  )
+}
+
+/**
+ * This app's hardening profile.
+ *
+ * The override is what makes "restricted" usable as a platform setting at all: without it,
+ * one image that writes to its own filesystem forces the entire instance back down to the
+ * weakest profile. Shown only once the platform has been hardened, because on a legacy
+ * instance there is nothing here to override and the control would be noise.
+ */
+function AppSecurityProfile({ appId, app, role }: { appId: string; app: any; role: string }) {
+  const queryClient = useQueryClient()
+
+  const { data: posture } = useQuery({
+    queryKey: ['securityPosture'],
+    queryFn: () => api.getSecurityPosture(),
+    // Every viewer can read the app page; only an admin can read the platform posture, and
+    // a 403 here is expected rather than a problem worth reporting.
+    retry: false,
+  })
+
+  const update = useMutation({
+    mutationFn: (profile: string) => api.updateApp(appId, { securityProfile: profile || null }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['app', appId] }),
+  })
+
+  const platform = posture?.profile ?? 'legacy'
+  const own = app?.spec?.securityProfile ?? ''
+  const effective = own || platform
+
+  // Nothing to say on an instance that has not been hardened.
+  if (platform === 'legacy' && !own) return null
+
+  return (
+    <InfoItem label="Security">
+      <div className="min-w-0">
+        {role === 'viewer' ? (
+          <span className="text-xs font-mono text-text-secondary">{effective}</span>
+        ) : (
+          <select
+            value={own}
+            onChange={e => update.mutate(e.target.value)}
+            disabled={update.isPending}
+            className="input-field text-xs py-1"
+          >
+            <option value="">Platform default ({platform})</option>
+            <option value="legacy">Legacy — no hardening</option>
+            <option value="baseline">Baseline</option>
+            <option value="restricted">Restricted</option>
+          </select>
+        )}
+        {effective === 'restricted' && (
+          <p className="text-[11px] text-text-tertiary mt-0.5">
+            Runs as a non-root user with a read-only filesystem. /tmp and /var/run are
+            writable; anywhere else needs a volume.
+          </p>
+        )}
+        {own && own !== platform && (
+          <p className="text-[11px] text-text-tertiary mt-0.5">
+            Overrides the platform default of {platform}.
+          </p>
+        )}
+      </div>
+    </InfoItem>
   )
 }
 
@@ -1206,6 +1302,10 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   // Sleep / Scale-to-Zero
   const [sleepEnabled, setSleepEnabled] = useState(app.spec?.sleep?.enabled || false)
   const [sleepTimeout, setSleepTimeout] = useState(app.spec?.sleep?.inactivityTimeout || '30m')
+  const [autoSleep, setAutoSleep] = useState(app.spec?.sleep?.autoSleep ?? false)
+  const [wakeOnTraffic, setWakeOnTraffic] = useState(app.spec?.sleep?.wakeOnTraffic ?? false)
+  const [minAwake, setMinAwake] = useState(app.spec?.sleep?.minAwake || '5m')
+  const [noWakePaths, setNoWakePaths] = useState((app.spec?.sleep?.noWakePaths || []).join('\n'))
 
   const mutation = useMutation({
     mutationFn: async (data: any) => {
@@ -1417,7 +1517,17 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
     // Sleep / Scale-to-Zero
     if (sleepEnabled) {
-      patch.sleep = { enabled: true, inactivityTimeout: sleepTimeout }
+      patch.sleep = {
+        enabled: true,
+        inactivityTimeout: sleepTimeout,
+        // Sent explicitly rather than omitted when false: these are pointers on the server
+        // so that absent means "never opted in", and omitting them on save would leave an
+        // app that turned one off looking like one that never chose.
+        autoSleep,
+        wakeOnTraffic,
+        minAwake,
+        noWakePaths: noWakePaths.split('\n').map((p: string) => p.trim()).filter(Boolean),
+      }
     } else {
       patch.sleep = { enabled: false }
     }
@@ -1503,7 +1613,13 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       <div className="grid grid-cols-3 gap-4">
         <div className="col-span-2">
           <label className="label">Image Repository</label>
-          <input value={imageRepo} onChange={e => setImageRepo(e.target.value)} className="input-field" placeholder="registry/org/app" />
+          <ImageRepositoryInput
+            secretName={pullSecrets[0]}
+            value={imageRepo}
+            onChange={setImageRepo}
+            className="input-field"
+            placeholder="registry/org/app"
+          />
         </div>
         <div>
           <label className="label">Pull Policy</label>
@@ -1721,23 +1837,96 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           <span className="label mb-0">Scale-to-Zero (Sleep Mode)</span>
         </label>
         <p className="text-[11px] text-text-tertiary mt-1 ml-6">
-          Allow this app to be scaled to zero. Use Sleep and Wake on the overview tab to do it.
-          Sleeping on inactivity and waking on traffic are not active yet, so an app that is
-          asleep stays asleep until it is woken.
+          Allow this app to be scaled to zero. On its own this only enables the Sleep and Wake
+          buttons — the two options below are what make it happen by itself.
         </p>
+
         {sleepEnabled && (
-          <div className="mt-3 ml-6">
-            <label className="text-xs text-text-tertiary">Inactivity Timeout</label>
-            <select value={sleepTimeout} onChange={(e) => setSleepTimeout(e.target.value)} className="input-field w-36 mt-1">
-              <option value="5m">5 minutes</option>
-              <option value="15m">15 minutes</option>
-              <option value="30m">30 minutes</option>
-              <option value="1h">1 hour</option>
-              <option value="2h">2 hours</option>
-              <option value="6h">6 hours</option>
-              <option value="12h">12 hours</option>
-              <option value="24h">24 hours</option>
-            </select>
+          <div className="mt-3 ml-6 space-y-4">
+            <div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoSleep}
+                  onChange={(e) => setAutoSleep(e.target.checked)}
+                  className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                />
+                <span className="text-xs text-text-secondary">Sleep automatically when idle</span>
+              </label>
+              <p className="text-[11px] text-text-tertiary mt-1 ml-6">
+                Needs Prometheus. Without a request metric for this app Vesta cannot tell idle
+                from unmeasured, and deliberately does nothing rather than guess — the reason
+                is shown on the overview tab.
+              </p>
+            </div>
+
+            {autoSleep && (
+              <div className="ml-6 grid grid-cols-2 gap-3 max-w-lg">
+                <div>
+                  <label className="text-xs text-text-tertiary">Idle for</label>
+                  <select value={sleepTimeout} onChange={(e) => setSleepTimeout(e.target.value)} className="input-field w-full mt-1 text-xs">
+                    <option value="5m">5 minutes</option>
+                    <option value="15m">15 minutes</option>
+                    <option value="30m">30 minutes</option>
+                    <option value="1h">1 hour</option>
+                    <option value="2h">2 hours</option>
+                    <option value="6h">6 hours</option>
+                    <option value="12h">12 hours</option>
+                    <option value="24h">24 hours</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-text-tertiary">Stay up at least</label>
+                  <select value={minAwake} onChange={(e) => setMinAwake(e.target.value)} className="input-field w-full mt-1 text-xs">
+                    <option value="1m">1 minute</option>
+                    <option value="5m">5 minutes</option>
+                    <option value="15m">15 minutes</option>
+                    <option value="30m">30 minutes</option>
+                  </select>
+                  <p className="text-[11px] text-text-tertiary mt-1">
+                    After waking. Stops the request that woke it being the only traffic in the
+                    window, which would put it straight back to sleep.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={wakeOnTraffic}
+                  onChange={(e) => setWakeOnTraffic(e.target.checked)}
+                  className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                />
+                <span className="text-xs text-text-secondary">Wake on the next request</span>
+              </label>
+              <p className="text-[11px] text-text-tertiary mt-1 ml-6">
+                Routes this app through a small proxy while it is down, which starts it and
+                holds the request until it can answer. Without this a sleeping app's requests
+                simply fail.
+              </p>
+            </div>
+
+            {wakeOnTraffic && (
+              <div className="ml-6 max-w-lg">
+                <label className="text-xs text-text-tertiary">Paths that should not wake it</label>
+                <textarea
+                  value={noWakePaths}
+                  onChange={(e) => setNoWakePaths(e.target.value)}
+                  rows={3}
+                  className="input-field font-mono text-xs w-full mt-1"
+                  placeholder={'/healthz\n/status\n/internal/*'}
+                />
+                <p className="text-[11px] text-text-tertiary mt-1">
+                  One per line, with a trailing * for a prefix. Answered by the proxy while the
+                  app is down, and proxied through normally once it is up. Without this an
+                  uptime check wakes the app on every poll and it never sleeps again. A path
+                  listed here is one the app will never be woken for, so listing / turns
+                  wake-on-request off entirely.
+                </p>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1770,18 +1959,28 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                 <div className="mt-3 mb-2 p-2.5 rounded-md border border-accent/20 bg-accent/5">
                   <label className="text-xs font-medium text-accent">Image Tag</label>
                   <div className="flex gap-2 mt-1.5">
-                    <input
-                      value={cfg.imageRepo}
-                      onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageRepo: e.target.value } }))}
-                      className="input-field flex-1 font-mono text-xs"
-                      placeholder={imageRepo || 'repository (inherits from app)'}
-                    />
-                    <input
-                      value={cfg.imageTag}
-                      onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageTag: e.target.value } }))}
-                      className="input-field w-36 font-mono text-xs"
-                      placeholder={app.spec?.image?.tag || 'tag (inherits from app)'}
-                    />
+                    <div className="flex-1">
+                      <ImageRepositoryInput
+                        secretName={pullSecrets[0]}
+                        value={cfg.imageRepo}
+                        onChange={v => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageRepo: v } }))}
+                        className="input-field w-full font-mono text-xs"
+                        placeholder={imageRepo || 'repository (inherits from app)'}
+                      />
+                    </div>
+                    <div className="w-44">
+                      {/* Tags come from this environment's own repository when it overrides
+                          one, and from the app's otherwise -- which is what the field
+                          inherits when left blank. */}
+                      <ImageTagInput
+                        secretName={pullSecrets[0]}
+                        repository={cfg.imageRepo || imageRepo}
+                        value={cfg.imageTag}
+                        onChange={v => setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], imageTag: v } }))}
+                        className="input-field w-full font-mono text-xs"
+                        placeholder={app.spec?.image?.tag || 'tag (inherits)'}
+                      />
+                    </div>
                   </div>
                 </div>
                 <div className="mt-2 mb-2 p-2.5 rounded-md border border-border bg-surface-2">
@@ -3875,6 +4074,71 @@ function BuildLogViewer({ appId, buildId, onClose }: { appId: string; buildId: s
   )
 }
 
+/**
+ * What this app costs.
+ *
+ * Sits with the metrics because the two answer one question between them: metrics say what an
+ * app is using, cost says what it is reserving, and the gap between those is the only number
+ * that suggests an action. A cost figure on its own invites nothing but resignation.
+ */
+function AppCostCard({ appId }: { appId: string }) {
+  const { data, error } = useQuery({
+    queryKey: ['appCosts', appId],
+    queryFn: () => api.getAppCosts(appId, '30d'),
+  })
+
+  // Absent Prometheus, absent samples, or an app that has never run: say nothing rather than
+  // occupying the page with an authoritative-looking zero.
+  if (error || !data || data.entries.length === 0) return null
+
+  const currency = data.total.currency
+  const symbol = currency === 'USD' ? '$' : ''
+  const fmt = (v: number) => `${symbol}${v.toFixed(v > 0 && v < 1 ? 4 : 2)}${symbol ? '' : ` ${currency}`}`
+
+  return (
+    <div className="bg-surface-1 border border-border rounded-lg p-4">
+      <div className="flex items-baseline justify-between mb-3">
+        <h4 className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider">Cost</h4>
+        <span className="text-[10px] text-text-tertiary">last 30 days</span>
+      </div>
+
+      <div className="flex items-baseline gap-6 mb-3">
+        <div>
+          <div className="text-base font-mono text-text-primary">{fmt(data.total.total)}</div>
+          <div className="text-[10px] text-text-tertiary">measured</div>
+        </div>
+        <div>
+          <div className="text-base font-mono text-text-secondary">{fmt(data.projectedMonthly.total)}</div>
+          <div className="text-[10px] text-text-tertiary">projected monthly</div>
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        {data.entries.map((e) => (
+          <div key={e.key + (e.environment ?? '')} className="flex items-center justify-between text-[11px]">
+            <span className="text-text-secondary font-mono">{e.environment || e.key}</span>
+            <div className="flex items-center gap-4">
+              {e.cpuEfficiency !== undefined && (
+                <span className={e.cpuEfficiency < 0.15 ? 'text-status-degraded' : 'text-text-tertiary'}>
+                  {Math.round(e.cpuEfficiency * 100)}% of reserved cpu used
+                </span>
+              )}
+              <span className="font-mono text-text-primary">{fmt(e.cost.total)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {data.estimated && (
+        <p className="text-[10px] text-text-tertiary mt-3">
+          Estimated at default rates. Set your node's monthly cost in the platform config to
+          price this cluster.
+        </p>
+      )}
+    </div>
+  )
+}
+
 function AppMetrics({ appId, environments, selectedEnv, onEnvChange }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
   const env = selectedEnv || environments[0] || ''
   const setEnv = onEnvChange
@@ -3943,6 +4207,8 @@ function AppMetrics({ appId, environments, selectedEnv, onEnvChange }: { appId: 
               <MetricCard label="Updated" value={data.deployment.updatedReplicas ?? 0} />
             </div>
           )}
+
+          <AppCostCard appId={appId} />
 
           {/* Resource usage summary */}
           {data.summary && (
@@ -5208,7 +5474,15 @@ function Spinner() {
   )
 }
 
-function ScheduledDeploymentsTab({ appId, projectId, environments }: { appId: string; projectId: string; environments: string[] }) {
+function ScheduledDeploymentsTab({ appId, projectId, environments, pullSecret, appRepository }: {
+  appId: string
+  projectId: string
+  environments: string[]
+  /** Registry credential the image and tag pickers list through. */
+  pullSecret?: string
+  /** Used to offer tags when this schedule does not override the repository. */
+  appRepository?: string
+}) {
   const queryClient = useQueryClient()
   const [showForm, setShowForm] = useState(false)
   const [env, setEnv] = useState(environments[0] || '')
@@ -5289,11 +5563,24 @@ function ScheduledDeploymentsTab({ appId, projectId, environments }: { appId: st
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="label">Image (optional override)</label>
-              <input value={image} onChange={e => setImage(e.target.value)} placeholder="e.g. myregistry/myapp" className="input-field text-xs" />
+              <ImageRepositoryInput
+                secretName={pullSecret}
+                value={image}
+                onChange={setImage}
+                className="input-field text-xs w-full"
+                placeholder={appRepository || 'e.g. myregistry/myapp'}
+              />
             </div>
             <div>
               <label className="label">Tag</label>
-              <input value={tag} onChange={e => setTag(e.target.value)} placeholder="e.g. v1.2.3" className="input-field text-xs" />
+              <ImageTagInput
+                secretName={pullSecret}
+                repository={image || appRepository}
+                value={tag}
+                onChange={setTag}
+                className="input-field text-xs w-full"
+                placeholder="e.g. v1.2.3"
+              />
             </div>
           </div>
           <div className="flex gap-2">

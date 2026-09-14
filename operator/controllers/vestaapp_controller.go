@@ -15,6 +15,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -31,10 +32,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"kubernetes.getvesta.sh/operator/activator"
 	vestav1alpha1 "kubernetes.getvesta.sh/operator/api/v1alpha1"
 )
 
 type VestaAppReconciler struct {
+	// ActivatorImage is the image the per-namespace wake-on-traffic proxy runs. Empty
+	// disables the feature: nothing is created, and a sleeping app simply stays down.
+	ActivatorImage         string
+	ActivatorNamespaceRole string
+	ActivatorWakeRole      string
+
 	client.Client
 	Scheme         *runtime.Scheme
 	ConfigResolver *ConfigResolver
@@ -183,6 +191,13 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 		// Reconcile redirect ingress (handles both creation and cleanup)
 		if err := r.reconcileRedirectIngress(ctx, &app, target); err != nil {
+			return r.updateStatusFailed(ctx, &app, err)
+		}
+
+		// The wake-on-traffic proxy, before the ingress that may point at it. Creating it
+		// after would leave a window where the ingress names a Service that does not exist
+		// yet -- which an ingress controller answers with a 503 for the whole router.
+		if err := r.reconcileActivator(ctx, &app, target); err != nil {
 			return r.updateStatusFailed(ctx, &app, err)
 		}
 
@@ -1003,7 +1018,20 @@ func (r *VestaAppReconciler) buildPodSpec(app *vestav1alpha1.VestaApp, container
 		}
 	}
 
+	// Hardening last, so it can see the app's own ports and mounts. Does nothing at all
+	// under the default profile, which is what every existing app resolves to.
+	ApplySecurityProfile(&podSpec, r.securityProfileFor(app))
+
 	return podSpec
+}
+
+// securityProfileFor resolves the hardening profile for one app.
+func (r *VestaAppReconciler) securityProfileFor(app *vestav1alpha1.VestaApp) string {
+	var platform string
+	if cfg := r.ConfigResolver.GetConfig(); cfg != nil && cfg.Security != nil {
+		platform = cfg.Security.Profile
+	}
+	return ResolveSecurityProfile(platform, app.Spec.SecurityProfile)
 }
 
 func (r *VestaAppReconciler) reconcilePVCs(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) error {
@@ -1352,6 +1380,28 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Annotations[clusterIssuerAnnotation] = cert.ClusterIssuer
 			}
 
+			// While the app is at rest, or up but with nothing ready yet, the ingress
+			// points at the activator instead. It has to be decided here rather than
+			// patched afterwards: ing.Spec is assigned wholesale below on every reconcile,
+			// so anything written from outside is reverted within thirty seconds.
+			backendName := ingressBackend(app.Name,
+				atRest(app.Spec.DesiredState),
+				r.readyReplicasFor(ctx, app, target.Namespace),
+				app.Spec.Sleep.WakeOnTrafficEnabled())
+			backendPort := ingressPort
+			if backendName == activatorName {
+				backendPort = activatorPort
+			}
+
+			// The activator reads these off the Ingress, so it needs no access to VestaApp
+			// beyond the patch that wakes one, and learns about a change from the same
+			// object it already watches for routing.
+			if paths := app.Spec.Sleep.NoWakePathList(); paths != "" {
+				ing.Annotations[activator.NoWakePathsAnnotation] = paths
+			} else {
+				delete(ing.Annotations, activator.NoWakePathsAnnotation)
+			}
+
 			rules := make([]networkingv1.IngressRule, 0, len(domains))
 			for _, d := range domains {
 				rules = append(rules, networkingv1.IngressRule{
@@ -1364,9 +1414,9 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 									PathType: &pathType,
 									Backend: networkingv1.IngressBackend{
 										Service: &networkingv1.IngressServiceBackend{
-											Name: app.Name,
+											Name: backendName,
 											Port: networkingv1.ServiceBackendPort{
-												Number: ingressPort,
+												Number: backendPort,
 											},
 										},
 									},
@@ -2505,3 +2555,119 @@ func shellSplit(s string) []string {
 	}
 	return tokens
 }
+
+// readyReplicasFor reports how many pods of an app are serving in a namespace.
+//
+// Used to decide whether the ingress may point back at the app. Any error reads as zero,
+// which keeps traffic on the activator: standing in for an app that is actually up costs a
+// proxy hop, while pointing at an app that is not up costs the request.
+func (r *VestaAppReconciler) readyReplicasFor(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) int32 {
+	var deploy appsv1.Deployment
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: app.Name}, &deploy); err != nil {
+		return 0
+	}
+	return deploy.Status.ReadyReplicas
+}
+
+// reconcileActivator brings the wake-on-traffic proxy up or down in one namespace.
+//
+// Created only when some app in the namespace has opted in, and removed when the last one
+// opts out -- an activator in a namespace where nothing uses it is a pod doing nothing,
+// which is a poor look for a feature whose purpose is not running pods.
+func (r *VestaAppReconciler) reconcileActivator(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
+	if r.ActivatorImage == "" {
+		// No image configured, so there is nothing to run. An app that asked for
+		// wake-on-traffic keeps its ingress pointed at itself, which fails while asleep --
+		// the honest outcome when the thing that would have answered does not exist.
+		return nil
+	}
+
+	var apps vestav1alpha1.VestaAppList
+	if err := r.List(ctx, &apps, client.InNamespace(app.Namespace)); err != nil {
+		return err
+	}
+
+	if !activatorNeeded(apps.Items, target.Namespace, app.Spec.Project) {
+		return r.removeActivator(ctx, target.Namespace)
+	}
+
+	sa := buildActivatorServiceAccount(target.Namespace)
+	if err := r.applyObject(ctx, sa, func() error { return nil }); err != nil {
+		return fmt.Errorf("activator serviceaccount: %w", err)
+	}
+
+	// Routing permissions, in this namespace only.
+	local := buildActivatorRoleBinding(activatorName, target.Namespace,
+		r.ActivatorNamespaceRole, target.Namespace)
+	if err := r.applyObject(ctx, local, func() error { return nil }); err != nil {
+		return fmt.Errorf("activator rolebinding: %w", err)
+	}
+
+	// Wake permission, in vesta-system, where every VestaApp lives.
+	wake := buildActivatorRoleBinding(activatorWakeBindingName(target.Namespace),
+		app.Namespace, r.ActivatorWakeRole, target.Namespace)
+	if err := r.applyObject(ctx, wake, func() error { return nil }); err != nil {
+		return fmt.Errorf("activator wake binding: %w", err)
+	}
+
+	svc := buildActivatorService(target.Namespace)
+	existingSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: svc.Name, Namespace: svc.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, existingSvc, func() error {
+		existingSvc.Labels = svc.Labels
+		// ClusterIP is immutable once assigned.
+		existingSvc.Spec.Selector = svc.Spec.Selector
+		existingSvc.Spec.Ports = svc.Spec.Ports
+		return nil
+	}); err != nil {
+		return fmt.Errorf("activator service: %w", err)
+	}
+
+	desired := buildActivatorDeployment(target.Namespace, r.ActivatorImage, 1)
+	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: desired.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+		deploy.Labels = desired.Labels
+		if deploy.CreationTimestamp.IsZero() {
+			deploy.Spec.Selector = desired.Spec.Selector
+		}
+		deploy.Spec.Replicas = desired.Spec.Replicas
+		deploy.Spec.Template = desired.Spec.Template
+		return nil
+	}); err != nil {
+		return fmt.Errorf("activator deployment: %w", err)
+	}
+	return nil
+}
+
+// removeActivator tears down the proxy once nothing in the namespace wants it.
+//
+// Best effort throughout: a leftover activator costs a small pod, while failing a reconcile
+// over one would stop the app it was standing in for from being updated at all.
+func (r *VestaAppReconciler) removeActivator(ctx context.Context, namespace string) error {
+	objects := []client.Object{
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: activatorName, Namespace: namespace}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: activatorName, Namespace: namespace}},
+		&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: activatorName, Namespace: namespace}},
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: activatorName, Namespace: namespace}},
+		&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{
+			Name: activatorWakeBindingName(namespace), Namespace: vestaSystemNamespace}},
+	}
+	for _, obj := range objects {
+		if err := r.Delete(ctx, obj); err != nil && !errors.IsNotFound(err) {
+			log.FromContext(ctx).Error(err, "removing activator object",
+				"kind", fmt.Sprintf("%T", obj), "namespace", namespace)
+		}
+	}
+	return nil
+}
+
+// applyObject creates an object or leaves the existing one alone.
+//
+// Used for the objects whose content never changes once created -- a ServiceAccount and the
+// role bindings. Rewriting them on every reconcile would churn the API server for nothing.
+func (r *VestaAppReconciler) applyObject(ctx context.Context, obj client.Object, mutate func() error) error {
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, obj, mutate)
+	return err
+}
+
+// vestaSystemNamespace is where VestaApp objects live.
+const vestaSystemNamespace = "vesta-system"

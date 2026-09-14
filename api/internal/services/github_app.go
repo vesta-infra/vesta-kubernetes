@@ -15,14 +15,19 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
 const (
-	githubAppSecretName = "vesta-github-app"
+	GitHubAppSecretName = "vesta-github-app"
 	vestaNamespace      = "vesta-system"
-	tokenCacheTTL       = 50 * time.Minute // GitHub installation tokens expire in 60min
+	tokenCacheTTL       = 50 * time.Minute
+
+	// maxInstallationPages bounds the paging loop so a paging bug cannot spin forever
+	// against GitHub.
+	maxInstallationPages = 50 // GitHub installation tokens expire in 60min
 )
 
 // GitHubAppService handles GitHub App authentication: JWT generation,
@@ -37,6 +42,11 @@ type GitHubAppService struct {
 
 	// Installation token cache: installationID -> cachedToken
 	tokenCache map[int64]*cachedToken
+
+	// Credentials of Apps other than the original one, keyed by the Secret that holds
+	// them. Populated on demand, because a connection's App is only needed when something
+	// touches that connection's repositories.
+	identities map[string]appIdentity
 }
 
 type cachedToken struct {
@@ -46,14 +56,14 @@ type cachedToken struct {
 
 // GitHubAppCredentials holds the result of the manifest code exchange.
 type GitHubAppCredentials struct {
-	ID            int64            `json:"id"`
-	Slug          string           `json:"slug"`
-	Name          string           `json:"name"`
-	PEM           string           `json:"pem"`
-	WebhookSecret string           `json:"webhook_secret"`
-	ClientID      string           `json:"client_id"`
-	ClientSecret  string           `json:"client_secret"`
-	Owner         GitHubAppOwner   `json:"owner"`
+	ID            int64          `json:"id"`
+	Slug          string         `json:"slug"`
+	Name          string         `json:"name"`
+	PEM           string         `json:"pem"`
+	WebhookSecret string         `json:"webhook_secret"`
+	ClientID      string         `json:"client_id"`
+	ClientSecret  string         `json:"client_secret"`
+	Owner         GitHubAppOwner `json:"owner"`
 }
 
 type GitHubAppOwner struct {
@@ -63,9 +73,9 @@ type GitHubAppOwner struct {
 
 // GitHubInstallation represents a GitHub App installation.
 type GitHubInstallation struct {
-	ID      int64                `json:"id"`
-	Account GitHubAccount        `json:"account"`
-	Repos   []GitHubRepo         `json:"repositories,omitempty"`
+	ID      int64         `json:"id"`
+	Account GitHubAccount `json:"account"`
+	Repos   []GitHubRepo  `json:"repositories,omitempty"`
 }
 
 type GitHubAccount struct {
@@ -277,29 +287,43 @@ func (s *GitHubAppService) ListInstallations(ctx context.Context) ([]GitHubInsta
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/app/installations", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+jwtToken)
-	req.Header.Set("Accept", "application/vnd.github+json")
+	// Paginated. GitHub returns 30 per page by default and this used to fetch exactly one
+	// page, so an App installed in more than 30 places silently reported a truncated list
+	// -- and the repositories under the missing installations were invisible with no
+	// indication anything was missing.
+	var all []GitHubInstallation
+	for page := 1; page <= maxInstallationPages; page++ {
+		url := fmt.Sprintf("https://api.github.com/app/installations?per_page=100&page=%d", page)
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+jwtToken)
+		req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("github list installations: %w", err)
-	}
-	defer resp.Body.Close()
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("github list installations: %w", err)
+		}
 
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("github list installations: HTTP %d: %s", resp.StatusCode, string(body))
-	}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("github list installations: HTTP %d: %s", resp.StatusCode, string(body))
+		}
 
-	var installations []GitHubInstallation
-	if err := json.Unmarshal(body, &installations); err != nil {
-		return nil, err
+		var page_ []GitHubInstallation
+		if err := json.Unmarshal(body, &page_); err != nil {
+			return nil, err
+		}
+		all = append(all, page_...)
+
+		// A short page is the last page.
+		if len(page_) < 100 {
+			break
+		}
 	}
-	return installations, nil
+	return all, nil
 }
 
 // ListAccessibleRepos returns all repositories accessible across all installations.
@@ -445,10 +469,30 @@ func (s *GitHubAppService) ExchangeManifestCode(ctx context.Context, code string
 }
 
 // SaveToSecret stores the GitHub App credentials in a K8s Secret.
+// SecretNameForConnection is where one connection's App credentials live.
+//
+// The first App keeps the original hardcoded name so an install that predates connections
+// is untouched, and so a rollback still finds its credentials where it expects them.
+func SecretNameForConnection(connectionID string, legacy bool) string {
+	if legacy || connectionID == "" {
+		return GitHubAppSecretName
+	}
+	return GitHubAppSecretName + "-" + connectionID
+}
+
+// SaveToSecretNamed writes credentials to a named Secret.
+func (s *GitHubAppService) SaveToSecretNamed(ctx context.Context, name string, creds *GitHubAppCredentials) error {
+	return s.saveToSecret(ctx, name, creds)
+}
+
 func (s *GitHubAppService) SaveToSecret(ctx context.Context, creds *GitHubAppCredentials) error {
+	return s.saveToSecret(ctx, GitHubAppSecretName, creds)
+}
+
+func (s *GitHubAppService) saveToSecret(ctx context.Context, secretName string, creds *GitHubAppCredentials) error {
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      githubAppSecretName,
+			Name:      secretName,
 			Namespace: vestaNamespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/managed-by": "vesta",
@@ -467,17 +511,30 @@ func (s *GitHubAppService) SaveToSecret(ctx context.Context, creds *GitHubAppCre
 		},
 	}
 
-	// Try to create; if exists, update
 	_, err := s.clientset.CoreV1().Secrets(vestaNamespace).Create(ctx, secret, metav1.CreateOptions{})
-	if err != nil {
-		_, err = s.clientset.CoreV1().Secrets(vestaNamespace).Update(ctx, secret, metav1.UpdateOptions{})
+	if err == nil {
+		return nil
 	}
+	if !apierrors.IsAlreadyExists(err) {
+		// Only an existing Secret justifies an update. Falling through on any error at all
+		// hid the real cause -- an RBAC denial on create reported itself as a failed
+		// update, against an object carrying no resourceVersion.
+		return err
+	}
+
+	existing, getErr := s.clientset.CoreV1().Secrets(vestaNamespace).Get(ctx, secretName, metav1.GetOptions{})
+	if getErr != nil {
+		return getErr
+	}
+	existing.StringData = secret.StringData
+	existing.Labels = secret.Labels
+	_, err = s.clientset.CoreV1().Secrets(vestaNamespace).Update(ctx, existing, metav1.UpdateOptions{})
 	return err
 }
 
 // DeleteSecret removes the GitHub App K8s Secret.
 func (s *GitHubAppService) DeleteSecret(ctx context.Context) error {
-	return s.clientset.CoreV1().Secrets(vestaNamespace).Delete(ctx, githubAppSecretName, metav1.DeleteOptions{})
+	return s.clientset.CoreV1().Secrets(vestaNamespace).Delete(ctx, GitHubAppSecretName, metav1.DeleteOptions{})
 }
 
 // loadFromSecret tries to load GitHub App credentials from the K8s Secret on startup.
@@ -485,7 +542,7 @@ func (s *GitHubAppService) loadFromSecret() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	secret, err := s.clientset.CoreV1().Secrets(vestaNamespace).Get(ctx, githubAppSecretName, metav1.GetOptions{})
+	secret, err := s.clientset.CoreV1().Secrets(vestaNamespace).Get(ctx, GitHubAppSecretName, metav1.GetOptions{})
 	if err != nil {
 		log.Printf("[github-app] no existing config found (this is normal for first run)")
 		return
@@ -537,4 +594,239 @@ func splitRepo(fullRepo string) (string, string, error) {
 		}
 	}
 	return "", "", fmt.Errorf("invalid repo format %q, expected owner/repo", fullRepo)
+}
+
+// Credentials reports the non-secret facts about the configured App, for the connection
+// row that adopts it. The private key and webhook secret are deliberately not included:
+// they stay in the Secret.
+func (s *GitHubAppService) Credentials() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := map[string]string{}
+	if !s.configured {
+		return out
+	}
+	out["appId"] = fmt.Sprintf("%d", s.appID)
+
+	// The display fields live only in the Secret, so read them back rather than holding a
+	// second copy in memory that could drift from it.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	secret, err := s.clientset.CoreV1().Secrets(vestaNamespace).Get(ctx, GitHubAppSecretName, metav1.GetOptions{})
+	if err != nil {
+		return out
+	}
+	for _, k := range []string{"app-name", "app-slug", "owner-login", "owner-type"} {
+		if v, ok := secret.Data[k]; ok {
+			out[secretKeyToCamel(k)] = string(v)
+		}
+	}
+	return out
+}
+
+func secretKeyToCamel(k string) string {
+	switch k {
+	case "app-name":
+		return "appName"
+	case "app-slug":
+		return "appSlug"
+	case "owner-login":
+		return "ownerLogin"
+	case "owner-type":
+		return "ownerType"
+	}
+	return k
+}
+
+// --- Per-connection credentials ---
+//
+// Vesta used to allow exactly one GitHub App, so one set of credentials in memory was
+// enough. With several connections each App has its own id, key and webhook secret, held in
+// its own Secret, and a token has to be minted with the right one -- minting with the wrong
+// App yields a token that is valid but has no access to the repository, which surfaces as a
+// 404 from GitHub and reads like a missing repository rather than a wrong credential.
+
+// appIdentity is one App's signing material.
+type appIdentity struct {
+	appID         int64
+	privateKey    *rsa.PrivateKey
+	webhookSecret string
+}
+
+// identityFor loads an App's credentials from the Secret a connection names.
+//
+// The original App's Secret short-circuits to the in-memory copy, so the adopted connection
+// costs no extra reads and keeps behaving exactly as it did.
+func (s *GitHubAppService) identityFor(ctx context.Context, secretName string) (appIdentity, error) {
+	if secretName == "" || secretName == GitHubAppSecretName {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		if !s.configured {
+			return appIdentity{}, fmt.Errorf("github app not configured")
+		}
+		return appIdentity{appID: s.appID, privateKey: s.privateKey, webhookSecret: s.webhookSecret}, nil
+	}
+
+	s.mu.RLock()
+	if id, ok := s.identities[secretName]; ok {
+		s.mu.RUnlock()
+		return id, nil
+	}
+	s.mu.RUnlock()
+
+	secret, err := s.clientset.CoreV1().Secrets(vestaNamespace).Get(ctx, secretName, metav1.GetOptions{})
+	if err != nil {
+		return appIdentity{}, fmt.Errorf("read app credentials from %s: %w", secretName, err)
+	}
+
+	var appID int64
+	if _, err := fmt.Sscanf(string(secret.Data["app-id"]), "%d", &appID); err != nil {
+		return appIdentity{}, fmt.Errorf("secret %s has no usable app-id", secretName)
+	}
+	pk, err := parsePrivateKey(secret.Data["private-key"])
+	if err != nil {
+		return appIdentity{}, fmt.Errorf("secret %s has no usable private key: %w", secretName, err)
+	}
+
+	id := appIdentity{appID: appID, privateKey: pk, webhookSecret: string(secret.Data["webhook-secret"])}
+
+	s.mu.Lock()
+	if s.identities == nil {
+		s.identities = map[string]appIdentity{}
+	}
+	s.identities[secretName] = id
+	s.mu.Unlock()
+
+	return id, nil
+}
+
+// ForgetIdentity drops a cached App, so removing a connection stops its credentials being
+// usable without waiting for a restart.
+func (s *GitHubAppService) ForgetIdentity(secretName string) {
+	s.mu.Lock()
+	delete(s.identities, secretName)
+	s.mu.Unlock()
+}
+
+func (id appIdentity) jwt() (string, error) {
+	if id.privateKey == nil {
+		return "", fmt.Errorf("github app not configured")
+	}
+	now := time.Now()
+	claims := jwt.RegisteredClaims{
+		IssuedAt:  jwt.NewNumericDate(now.Add(-60 * time.Second)), // clock skew
+		ExpiresAt: jwt.NewNumericDate(now.Add(10 * time.Minute)),
+		Issuer:    fmt.Sprintf("%d", id.appID),
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodRS256, claims).SignedString(id.privateKey)
+}
+
+// GetTokenForRepoVia mints an installation token using a specific connection's App.
+func (s *GitHubAppService) GetTokenForRepoVia(ctx context.Context, secretName, fullRepo string) (string, error) {
+	id, err := s.identityFor(ctx, secretName)
+	if err != nil {
+		return "", err
+	}
+	jwtToken, err := id.jwt()
+	if err != nil {
+		return "", err
+	}
+
+	owner, repo, err := splitRepo(fullRepo)
+	if err != nil {
+		return "", err
+	}
+
+	installID, err := s.installationForRepo(ctx, jwtToken, owner, repo)
+	if err != nil {
+		return "", err
+	}
+	return s.installationToken(ctx, jwtToken, installID)
+}
+
+// WebhookSecretVia returns the webhook secret of a specific connection's App.
+func (s *GitHubAppService) WebhookSecretVia(ctx context.Context, secretName string) string {
+	id, err := s.identityFor(ctx, secretName)
+	if err != nil {
+		return ""
+	}
+	return id.webhookSecret
+}
+
+// installationForRepo and installationToken are the jwt-taking cores of
+// GetInstallationForRepo and GetInstallationToken. They exist separately because those two
+// mint a JWT from the one App held in memory, and a per-connection call has already minted
+// one from a different App.
+func (s *GitHubAppService) installationForRepo(ctx context.Context, jwtToken, owner, repo string) (int64, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/installation", owner, repo)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("github installation lookup: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("github installation lookup: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var out struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return 0, err
+	}
+	return out.ID, nil
+}
+
+func (s *GitHubAppService) installationToken(ctx context.Context, jwtToken string, installationID int64) (string, error) {
+	s.mu.RLock()
+	if ct, ok := s.tokenCache[installationID]; ok && time.Now().Before(ct.ExpiresAt) {
+		s.mu.RUnlock()
+		return ct.Token, nil
+	}
+	s.mu.RUnlock()
+
+	url := fmt.Sprintf("https://api.github.com/app/installations/%d/access_tokens", installationID)
+	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+jwtToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("github installation token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		return "", fmt.Errorf("github installation token: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", err
+	}
+
+	s.mu.Lock()
+	if s.tokenCache == nil {
+		s.tokenCache = map[int64]*cachedToken{}
+	}
+	s.tokenCache[installationID] = &cachedToken{Token: out.Token, ExpiresAt: time.Now().Add(tokenCacheTTL)}
+	s.mu.Unlock()
+
+	return out.Token, nil
 }

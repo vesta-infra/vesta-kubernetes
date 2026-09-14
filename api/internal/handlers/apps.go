@@ -331,6 +331,12 @@ func (h *Handler) GetApp(c *gin.Context) {
 func (h *Handler) UpdateApp(c *gin.Context) {
 	appID := c.Param("appId")
 
+	// Drop the cached project for this app. A stale entry would have a gate judging the
+	// request against a project the app no longer belongs to.
+	if h.Scope != nil {
+		h.Scope.Invalidate(appID)
+	}
+
 	var patch map[string]interface{}
 	if err := c.ShouldBindJSON(&patch); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
@@ -458,6 +464,12 @@ func (e errInvalidIngress) Unwrap() error { return e.err }
 func (h *Handler) DeleteApp(c *gin.Context) {
 	appID := c.Param("appId")
 
+	// Drop the cached project for this app. A stale entry would have a gate judging the
+	// request against a project the app no longer belongs to.
+	if h.Scope != nil {
+		h.Scope.Invalidate(appID)
+	}
+
 	// Resolve project for notification before deleting
 	var projectID string
 	if existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID); err == nil {
@@ -487,6 +499,12 @@ func (h *Handler) DeleteApp(c *gin.Context) {
 
 func (h *Handler) CloneApp(c *gin.Context) {
 	appID := c.Param("appId")
+
+	// Drop the cached project for this app. A stale entry would have a gate judging the
+	// request against a project the app no longer belongs to.
+	if h.Scope != nil {
+		h.Scope.Invalidate(appID)
+	}
 
 	var req struct {
 		Name    string `json:"name" binding:"required"`
@@ -536,11 +554,11 @@ func (h *Handler) CloneApp(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":        result.GetName(),
-		"name":      result.GetName(),
-		"project":   project,
+		"id":         result.GetName(),
+		"name":       result.GetName(),
+		"project":    project,
 		"clonedFrom": appID,
-		"createdAt": result.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
+		"createdAt":  result.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
 	})
 
 	h.auditLog(c, "clone_app", "app", result.GetName(), result.GetName(), project, "",

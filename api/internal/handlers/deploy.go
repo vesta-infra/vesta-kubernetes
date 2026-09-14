@@ -540,6 +540,13 @@ func (h *Handler) SleepApp(c *gin.Context) {
 
 // WakeApp wakes an app from sleep.
 func (h *Handler) WakeApp(c *gin.Context) {
+	// Tell the sweeper, or it may decide on its next pass that this app has seen no traffic
+	// and sleep it straight back -- the request that woke it is usually the only traffic in
+	// the window.
+	if h.Sleep != nil {
+		h.Sleep.NoteWoken(c.Param("appId"))
+	}
+
 	h.patchLifecycle(c, map[string]interface{}{
 		"desiredState": "running",
 		// Clearing the policy as well, matching the previous behaviour: waking by hand

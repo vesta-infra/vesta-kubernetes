@@ -270,6 +270,172 @@ async function request<T>(path: string, options?: RequestInit & { reauthGrant?: 
   return res.json()
 }
 
+export interface GitConnection {
+  id: string
+  provider: 'github' | 'gitlab' | 'bitbucket'
+  displayName: string
+  baseUrl?: string
+  host: string
+  account?: string
+  externalId?: string
+  metadata?: Record<string, string>
+  isLegacy?: boolean
+  createdAt: string
+  updatedAt: string
+  /** Where to grant access to more repositories; absent when the provider has no such flow. */
+  installUrl?: string
+  /** The path this connection's webhooks should POST to. */
+  webhookPath: string
+}
+
+export interface RegistryTestResult {
+  ok: boolean
+  error?: string
+  /** What was typed. */
+  registry: string
+  /** The key kubelet will actually look for when pulling. */
+  authsKey: string
+  apiBase: string
+  flavor: string
+  /** False when the stored value will not match any image's host. */
+  normalized: boolean
+}
+
+export interface AccessibleRepo {
+  full_name: string
+  provider: string
+  host: string
+  private: boolean
+  defaultBranch?: string
+  connectionId: string
+  connectionName: string
+}
+
+export interface MyPermissions {
+  global: string
+  projects: Record<string, string>
+  /** Keyed "project/environment". */
+  environments: Record<string, string>
+  /** False while memberships are recorded but not enforced. */
+  enforced: boolean
+  /** What the caller effectively holds where they have no membership. */
+  fallback: string
+  actions: string[]
+}
+
+export interface AccessImpact {
+  userId: string
+  username: string
+  email: string
+  globalRole: string
+  projectCount: number
+  envCount: number
+}
+
+export type AddonType = 'postgres' | 'mysql' | 'redis' | 'mongodb'
+
+export interface Addon {
+  name: string
+  type: AddonType
+  version?: string
+  environment?: string
+  size?: string
+  storage?: string
+  ready: boolean
+  reason?: string
+  phase?: string
+  secretName?: string
+  createdAt: string
+}
+
+// Cost reporting.
+//
+// Money is computed server-side at read time from stored reservations and the current rate
+// card, so a response always says which rates produced it and whether they are the built-in
+// estimate rather than this cluster's real prices.
+export interface Cost {
+  cpu: number
+  memory: number
+  storage: number
+  total: number
+  currency: string
+}
+
+export interface CostEntry {
+  key: string
+  environment?: string
+  kind?: string
+  cost: Cost
+  projectedMonthly: Cost
+  // Absent when metrics-server is not installed. The gap between reserved and used is the
+  // actionable number, so it is optional rather than defaulted to zero -- reporting an
+  // unknown as 0% efficient would invent a finding.
+  cpuEfficiency?: number
+  memoryEfficiency?: number
+}
+
+export interface CostReport {
+  window: string
+  entries: CostEntry[]
+  total: Cost
+  projectedMonthly: Cost
+  rates: {
+    cpuCoreHour: number
+    memoryGiBHour: number
+    storageGiBMonth: number
+    currency: string
+  }
+  estimated: boolean
+}
+
+export interface EnvironmentQuota {
+  environment: string
+  quota?: {
+    enforce?: boolean
+    requestsCpu?: string
+    requestsMemory?: string
+    limitsCpu?: string
+    limitsMemory?: string
+    storageTotal?: string
+    maxPods?: number
+  }
+  // What the operator observed. `exceeds` means enforcing this quota would already refuse
+  // work, which is the thing worth knowing BEFORE turning it on: Kubernetes does not apply
+  // a quota retroactively, it refuses the next admission.
+  status?: {
+    enforced?: boolean
+    wouldExceed?: boolean
+    reason?: string
+    committed?: Record<string, string>
+    used?: Record<string, string>
+  }
+}
+
+export interface SecurityPosture {
+  profile: 'legacy' | 'baseline' | 'restricted'
+  // Scope given to secrets created without one. Applies to NEW secrets only; existing
+  // credentials keep the scope they have, because narrowing one an app already pulls with
+  // would break that app's deploys with nothing to point at.
+  defaultSecretScope?: 'global' | 'project'
+  networkIsolation: {
+    enabled: boolean
+    trustedNamespaces?: string[]
+    metricsPort?: number
+  }
+  // Per environment, what the operator actually observed. `enabled` and `enforced` are
+  // different questions: NetworkPolicy is enforced by the cluster's network plugin, not by
+  // Kubernetes, so a cluster running one that ignores it accepts every policy and filters
+  // nothing.
+  observed?: Array<{
+    environment: string
+    enabled?: boolean
+    enforced?: boolean
+    enforcementKnown?: boolean
+    policyCount?: number
+    note?: string
+  }>
+}
+
 export const api = {
   // Setup
   setupStatus: () =>
@@ -316,6 +482,26 @@ export const api = {
     }),
 
   // User
+  getMyPermissions: () => request<MyPermissions>('/users/me/permissions'),
+
+  getRBACSettings: () =>
+    request<{ enforced: boolean; users: AccessImpact[]; wouldLoseAllAccess: AccessImpact[] }>('/settings/rbac'),
+
+  setRBACEnforcement: (enforced: boolean) =>
+    request<{ enforced: boolean }>('/settings/rbac', { method: 'PUT', body: JSON.stringify({ enforced }) }),
+
+  listProjectEnvMembers: (projectId: string) =>
+    request<{ items: { projectId: string; environment: string; userId: string; username?: string; role: string }[] }>(
+      `/projects/${projectId}/env-members`),
+
+  setProjectEnvRole: (projectId: string, environment: string, userId: string, role: string) =>
+    request<any>(`/projects/${projectId}/environments/${encodeURIComponent(environment)}/members/${userId}`,
+      { method: 'PUT', body: JSON.stringify({ role }) }),
+
+  removeProjectEnvRole: (projectId: string, environment: string, userId: string) =>
+    request<any>(`/projects/${projectId}/environments/${encodeURIComponent(environment)}/members/${userId}`,
+      { method: 'DELETE' }),
+
   getCurrentUser: () =>
     request<{ id: string; username: string; email: string; displayName: string; role: string; teamIds: string[] }>('/users/me'),
 
@@ -487,6 +673,29 @@ export const api = {
     request<void>(`/projects/${id}`, { method: 'DELETE' }),
 
   // Project Members
+  listAddons: (projectId: string) =>
+    request<{ items: Addon[]; total: number }>(`/projects/${projectId}/addons`),
+
+  createAddon: (projectId: string, data: {
+    name: string; type: AddonType; version?: string; environment?: string
+    size?: string; storage?: string; deletionPolicy?: string
+  }) =>
+    request<any>(`/projects/${projectId}/addons`, { method: 'POST', body: JSON.stringify(data) }),
+
+  deleteAddon: (projectId: string, name: string) =>
+    request<any>(`/projects/${projectId}/addons/${name}?force=true`, { method: 'DELETE' }),
+
+  getAddonCredentials: (projectId: string, name: string, environment: string) =>
+    request<{ name: string; environment: string; credentials: Record<string, string> }>(
+      `/projects/${projectId}/addons/${name}/credentials?environment=${encodeURIComponent(environment)}`),
+
+  bindAddon: (appId: string, addon: string, environments?: string[]) =>
+    request<any>(`/apps/${appId}/addons`,
+      { method: 'POST', body: JSON.stringify({ addon, environments }) }),
+
+  unbindAddon: (appId: string, addon: string) =>
+    request<any>(`/apps/${appId}/addons/${addon}`, { method: 'DELETE' }),
+
   listProjectMembers: (projectId: string) =>
     request<{ items: any[]; total: number }>(`/projects/${projectId}/members`),
   addProjectMember: (projectId: string, data: { userId: string; role?: string }) =>
@@ -613,7 +822,12 @@ export const api = {
     request<{ id: string; name: string; values: Record<string, string> }>(`/secrets/${secretId}/reveal`),
 
   // Registry Secrets (image pull secrets)
-  createRegistrySecret: (data: { name: string; registry: string; username: string; password: string }) =>
+  createRegistrySecret: (data: {
+    name: string; registry: string; username: string; password: string; flavor?: string
+    // Omitted, the instance's default applies -- global unless an admin changed it.
+    scope?: 'global' | 'project'
+    project?: string
+  }) =>
     request<any>('/secrets/registry', {
       method: 'POST',
       body: JSON.stringify(data),
@@ -624,6 +838,21 @@ export const api = {
 
   deleteRegistrySecret: (name: string) =>
     request<void>(`/secrets/registry/${name}`, { method: 'DELETE' }),
+
+  // Browsing a registry through a stored credential, so images and tags are picked rather
+  // than typed. These report errors instead of returning an empty list: a picker that
+  // cannot tell "nothing here" from "the call failed" leaves the user retyping.
+  listRegistryRepositories: (name: string) =>
+    request<{ repositories: string[]; flavor: string }>(
+      `/secrets/registry/${encodeURIComponent(name)}/repositories`),
+
+  listRegistryTags: (name: string, repository: string) =>
+    request<{ tags: string[] }>(
+      `/secrets/registry/${encodeURIComponent(name)}/tags?repository=${encodeURIComponent(repository)}`),
+
+  testRegistrySecret: (name: string) =>
+    request<RegistryTestResult>(
+      `/secrets/registry/${encodeURIComponent(name)}/test`, { method: 'POST' }),
 
   // Shared Secrets (project-scoped)
   createSharedSecret: (projectId: string, data: { name: string; data: Record<string, string>; environments?: string[] }) =>
@@ -678,6 +907,35 @@ export const api = {
 
   getPrometheusStatus: () =>
     request<{ available: boolean; prometheusUrl: string; availableMetrics: string[]; httpAvailable: boolean }>('/metrics/prometheus/status'),
+
+  // Costs
+  getProjectCosts: (projectId: string, window = '30d', groupBy: 'app' | 'environment' = 'app') =>
+    request<CostReport>(`/projects/${projectId}/costs?window=${encodeURIComponent(window)}&groupBy=${encodeURIComponent(groupBy)}`),
+
+  // Grouped by environment by default: on an app page the useful breakdown is which
+  // environment the money is going to, not a single row restating the app's own name.
+  getAppCosts: (appId: string, window = '30d', groupBy: 'app' | 'environment' = 'environment') =>
+    request<CostReport>(`/apps/${appId}/costs?window=${encodeURIComponent(window)}&groupBy=${encodeURIComponent(groupBy)}`),
+
+  // Security posture
+  getSecurityPosture: () =>
+    request<SecurityPosture>('/settings/security'),
+
+  setSecurityPosture: (posture: Partial<SecurityPosture>) =>
+    request<{ status: string; note: string }>('/settings/security', {
+      method: 'PUT',
+      body: JSON.stringify(posture),
+    }),
+
+  // Quotas
+  getEnvironmentQuota: (projectId: string, env: string) =>
+    request<EnvironmentQuota>(`/projects/${projectId}/environments/${encodeURIComponent(env)}/quota`),
+
+  setEnvironmentQuota: (projectId: string, env: string, quota: EnvironmentQuota['quota']) =>
+    request<{ environment: string; status: string }>(`/projects/${projectId}/environments/${encodeURIComponent(env)}/quota`, {
+      method: 'PUT',
+      body: JSON.stringify(quota ?? {}),
+    }),
 
   // API Tokens
   listTokens: () =>
@@ -934,6 +1192,25 @@ export const api = {
     }),
 
   // GitHub App
+  // Git connections. More than one may exist, across providers.
+  listGitConnections: (provider?: string) =>
+    request<{ items: GitConnection[]; total: number }>(
+      `/settings/git-connections${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`),
+
+  createGitConnection: (data: {
+    provider: 'gitlab' | 'bitbucket'
+    displayName?: string
+    baseUrl?: string
+    account?: string
+    token: string
+    webhookSecret?: string
+  }) =>
+    request<{ id: string; provider: string; displayName: string; host: string; webhookPath: string }>(
+      '/settings/git-connections', { method: 'POST', body: JSON.stringify(data) }),
+
+  deleteGitConnection: (id: string) =>
+    request<any>(`/settings/git-connections/${id}`, { method: 'DELETE' }),
+
   getGitHubAppStatus: () =>
     request<{ configured: boolean; appId?: number; appName?: string; appSlug?: string; ownerLogin?: string; ownerType?: string; installations?: number }>('/settings/github-app'),
 
@@ -986,9 +1263,13 @@ export const api = {
     }),
 
   // Git helpers
-  listRepoBranches: (repo: string) =>
-    request<{ branches: string[] }>(`/git/branches?repo=${encodeURIComponent(repo)}`),
+  listRepoBranches: (repo: string, opts?: { provider?: string; host?: string; connectionId?: string }) =>
+    request<{ branches: string[] }>(
+      `/git/branches?repo=${encodeURIComponent(repo)}` +
+      (opts?.provider ? `&provider=${encodeURIComponent(opts.provider)}` : '') +
+      (opts?.host ? `&host=${encodeURIComponent(opts.host)}` : '') +
+      (opts?.connectionId ? `&connectionId=${encodeURIComponent(opts.connectionId)}` : '')),
 
   listAccessibleRepos: () =>
-    request<{ repos: { full_name: string; private: boolean }[] }>('/git/repos'),
+    request<{ repos: AccessibleRepo[]; problems?: { connectionName: string; error: string }[] }>('/git/repos'),
 }
