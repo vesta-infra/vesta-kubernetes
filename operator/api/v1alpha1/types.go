@@ -953,7 +953,7 @@ type VestaLogDrain struct {
 // required in the generated schema, and a newly-required field rejects resources an earlier
 // release accepted; that is the 0.7.1 defect, and hack/check-crd-compat.sh guards it.
 type VestaLogDrainSpec struct {
-	// +kubebuilder:validation:Enum=http;loki;syslog;elasticsearch;datadog;s3
+	// +kubebuilder:validation:Enum=http;loki;syslog;elasticsearch;datadog;s3;openobserve;forward
 	Type string `json:"type"`
 
 	DisplayName string `json:"displayName,omitempty"`
@@ -975,6 +975,8 @@ type VestaLogDrainSpec struct {
 	Elasticsearch *ElasticsearchDrain `json:"elasticsearch,omitempty"`
 	Datadog       *DatadogDrain       `json:"datadog,omitempty"`
 	S3            *S3Drain            `json:"s3,omitempty"`
+	OpenObserve   *OpenObserveDrain   `json:"openobserve,omitempty"`
+	Forward       *ForwardDrain       `json:"forward,omitempty"`
 
 	Retry *LogRetryPolicy `json:"retry,omitempty"`
 }
@@ -1076,6 +1078,53 @@ type S3Drain struct {
 	UsePutObject  *bool           `json:"usePutObject,omitempty"`
 	Compression   string          `json:"compression,omitempty"`
 	StorageClass  string          `json:"storageClass,omitempty"`
+}
+
+// OpenObserveDrain ships to OpenObserve's JSON ingest API.
+//
+// This is the http drain with the endpoint shape and timestamp field filled in. Worth a
+// type of its own because both are easy to get subtly wrong: the URL is
+// /api/<org>/<stream>/_json rather than anything guessable, and OpenObserve keys on
+// "_timestamp" -- send "timestamp" and it accepts every record while stamping each with its
+// ingestion time, which looks correct until a backlog drains.
+type OpenObserveDrain struct {
+	// Endpoint is the base URL, e.g. https://openobserve.example.com -- no path.
+	Endpoint string `json:"endpoint"`
+	// Organization defaults to "default", which is what a single-tenant install uses.
+	Organization string `json:"organization,omitempty"`
+	// Stream is the destination stream; it is created on first write.
+	Stream string `json:"stream,omitempty"`
+	// Credentials holds "email:password". OpenObserve authenticates with HTTP basic auth.
+	Credentials *DrainSecretRef `json:"credentials,omitempty"`
+	TLSVerify   *bool           `json:"tlsVerify,omitempty"`
+	Compress    string          `json:"compress,omitempty"`
+}
+
+// ForwardDrain ships to another Fluent Bit or Fluentd over the forward protocol.
+//
+// For clusters that already run an aggregator: Vesta's per-node collectors become
+// forwarders, and the aggregator keeps owning where logs ultimately go. That is the right
+// shape when routing rules already live there, or when the real destination is reachable
+// only from the aggregator.
+//
+// The aggregator sees records already tagged and enriched -- vesta_project, vesta_namespace
+// and vesta_app are set before any output runs -- so its own routing can match on those
+// rather than re-deriving them from the Kubernetes metadata.
+type ForwardDrain struct {
+	Host string `json:"host"`
+	Port int32  `json:"port,omitempty"`
+
+	// SharedKey enables Fluent Bit's handshake. Without it the aggregator accepts records
+	// from anything that can reach the port.
+	SharedKey    *DrainSecretRef `json:"sharedKey,omitempty"`
+	SelfHostname string          `json:"selfHostname,omitempty"`
+
+	TLS       *bool `json:"tls,omitempty"`
+	TLSVerify *bool `json:"tlsVerify,omitempty"`
+
+	// TimeAsInteger is needed by Fluentd v0.12 and earlier, which cannot read the
+	// event-time format newer versions use.
+	TimeAsInteger *bool `json:"timeAsInteger,omitempty"`
 }
 
 // LogRetryPolicy controls what the collector does with records it cannot deliver.

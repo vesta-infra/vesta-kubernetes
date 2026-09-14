@@ -1,4 +1,5 @@
-export type LogDrainType = 'http' | 'loki' | 'syslog' | 'elasticsearch' | 'datadog' | 's3'
+export type LogDrainType =
+  | 'http' | 'loki' | 'syslog' | 'elasticsearch' | 'datadog' | 's3' | 'openobserve' | 'forward'
 
 export interface LogDrain {
   name: string

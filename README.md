@@ -409,25 +409,43 @@ config:
   port: 3100
 ```
 
-Six destinations: `http`, `loki`, `syslog`, `elasticsearch`, `datadog` and `s3`.
+Eight destinations: `http`, `loki`, `syslog`, `elasticsearch`, `datadog`, `s3`,
+`openobserve` and `forward`.
 
-Anything that accepts JSON over HTTP works through the `http` type — OpenObserve, for
-example, whose ingest API keys on `_timestamp`:
+`forward` sends to a Fluent Bit or Fluentd aggregator you already run, which keeps owning
+where logs finally go. Records arrive already tagged and enriched — `vesta_project`,
+`vesta_namespace` and `vesta_app` are set before any output runs — so the aggregator's own
+routing can match on those instead of re-deriving them from Kubernetes metadata.
+
+```yaml
+name: central-aggregator
+type: forward
+config:
+  host: fluentd.logging.svc
+  port: 24224
+credentials:
+  sharedKey: "..."
+```
+
+OpenObserve has its own type, which fills in the ingest path and timestamp field:
 
 ```yaml
 name: openobserve
-type: http
+type: openobserve
 config:
-  uri: https://openobserve.example.com/api/default/vesta/_json
-  dateKey: _timestamp
+  endpoint: https://openobserve.example.com   # base URL only, no path
+  organization: default
+  stream: vesta
 credentials:
-  authHeader: "Basic <base64 of email:password>"
+  credentials: "email@example.com:password"
 ```
 
-Set `dateKey` to whatever field the destination reads the event time from. Leave it unset
-and records carry `timestamp`, which most services accept — but a destination that expects
-its own field will silently stamp every record with its ingestion time instead, and that
-only becomes visible when a backlog drains and an hour of logs shares one timestamp.
+Anything else accepting JSON over HTTP works through the `http` type. There, set `dateKey`
+to whatever field the destination reads event time from. Leave it unset and records carry
+`timestamp`, which most services accept — but a destination expecting its own field will
+silently stamp every record with its ingestion time instead, and that only becomes visible
+when a backlog drains and an hour of logs shares one timestamp. OpenObserve reads
+`_timestamp`, which is half of why it gets a type of its own.
 
 **Scope is the attachment.** A drain with no `project` covers every app; add `project`,
 `environment` or `app` to narrow it. An app ships to *every* drain whose scope covers it, so

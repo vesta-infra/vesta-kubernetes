@@ -181,3 +181,59 @@ func TestLogDrainAcceptsYAML(t *testing.T) {
 		t.Errorf("got %#v", req.Config)
 	}
 }
+
+// Every credential field must expand to Secret keys. A missing entry means the credential
+// is written under a key the collector's environment never carries, so the reference
+// expands to an empty string and the destination rejects the batch -- reported as a
+// delivery error rather than as the configuration mistake it is.
+func TestEveryCredentialFieldHasSecretKeys(t *testing.T) {
+	for drainType, fields := range credentialFields {
+		for _, field := range fields {
+			if len(secretKeys(drainType, field)) == 0 {
+				t.Errorf("%s.%s expands to no secret keys", drainType, field)
+			}
+		}
+	}
+}
+
+func TestS3CredentialsUseAWSKeyNames(t *testing.T) {
+	// "credentials" is the config field for both s3 and openobserve, but the collector
+	// settings differ -- aws_access_key_id versus http_user.
+	if got := secretKeys("s3", "credentials"); got[0] != "AWS_ACCESS_KEY_ID" {
+		t.Errorf("got %v", got)
+	}
+	if got := secretKeys("openobserve", "credentials"); got[0] != "USER" {
+		t.Errorf("got %v", got)
+	}
+}
+
+func TestValidateOpenObserve(t *testing.T) {
+	base := func(endpoint string) logDrainRequest {
+		return logDrainRequest{Name: "oo", Type: "openobserve",
+			Config: map[string]interface{}{"endpoint": endpoint}}
+	}
+
+	t.Run("accepts a base URL", func(t *testing.T) {
+		if err := validateLogDrain(base("https://openobserve.example.com")); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("rejects an endpoint carrying a path", func(t *testing.T) {
+		// The ingest path is built from organization and stream; a path here would be
+		// prefixed to it and 404.
+		err := validateLogDrain(base("https://openobserve.example.com/api/default/vesta/_json"))
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if !strings.Contains(err.Error(), "without a path") {
+			t.Errorf("the error should say why, got: %v", err)
+		}
+	})
+
+	t.Run("rejects a bare hostname", func(t *testing.T) {
+		if err := validateLogDrain(base("openobserve.example.com")); err == nil {
+			t.Error("expected an error")
+		}
+	})
+}

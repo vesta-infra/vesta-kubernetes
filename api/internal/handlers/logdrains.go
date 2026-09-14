@@ -21,7 +21,8 @@ import (
 // than as a schema error the UI cannot render usefully.
 var drainTypes = map[string]bool{
 	"http": true, "loki": true, "syslog": true,
-	"elasticsearch": true, "datadog": true, "s3": true,
+	"elasticsearch": true, "datadog": true, "s3": true, "openobserve": true,
+	"forward": true,
 }
 
 // credentialFields maps a drain type to the config keys that are credentials. Values under
@@ -33,7 +34,38 @@ var credentialFields = map[string][]string{
 	"elasticsearch": {"basicAuth", "cloudId"},
 	"datadog":       {"apiKey"},
 	"s3":            {"credentials"},
+	"openobserve":   {"credentials"},
+	"forward":       {"sharedKey"},
 	"syslog":        {},
+}
+
+// secretKeysFor names the Secret keys one credential field expands into, and they are the
+// environment-variable suffixes the generated collector config references. A field holding
+// a pair -- basic auth, an AWS key pair -- is split on the first colon so the UI can keep
+// offering a single input.
+//
+// These names have to match what the renderer emits. They do not match by convention: the
+// operator mounts whatever keys the Secret holds under VESTA_DRAIN_<NAME>_<KEY>, so a
+// mismatch here produces an empty credential and a delivery failure that reads as the
+// destination rejecting the batch.
+var secretKeysFor = map[string][]string{
+	"authHeader":  {"AUTH"},
+	"apiKey":      {"API_KEY"},
+	"cloudId":     {"CLOUD_ID"},
+	"basicAuth":   {"USER", "PASSWORD"},
+	"sharedKey":   {"SHARED_KEY"},
+	"credentials": {"USER", "PASSWORD"},
+}
+
+// s3CredentialKeys override the pair names for S3, whose config field is also "credentials"
+// but whose collector settings are the AWS ones.
+var s3CredentialKeys = []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}
+
+func secretKeys(drainType, field string) []string {
+	if drainType == "s3" && field == "credentials" {
+		return s3CredentialKeys
+	}
+	return secretKeysFor[field]
 }
 
 type logDrainRequest struct {
@@ -215,10 +247,29 @@ func (h *Handler) storeDrainCredentials(ctx context.Context, req logDrainRequest
 		if !submitted || strings.TrimSpace(value) == "" {
 			continue
 		}
-		data[field] = []byte(value)
+
+		keys := secretKeys(req.Type, field)
+		switch len(keys) {
+		case 2:
+			// A pair in one input: "user:password", "accessKey:secretKey". Split on the
+			// first colon only, since a password may well contain one.
+			left, right, found := strings.Cut(value, ":")
+			if !found {
+				return nil, fmt.Errorf("%s must be given as two values separated by a colon", field)
+			}
+			data[keys[0]] = []byte(left)
+			data[keys[1]] = []byte(right)
+		case 1:
+			data[keys[0]] = []byte(value)
+		default:
+			return nil, fmt.Errorf("no secret keys are defined for %s", field)
+		}
+
+		// The reference records that a credential exists; the value reaches the collector
+		// through its environment, not through this.
 		config[field] = map[string]interface{}{
 			"name": drainSecretName(req.Name),
-			"key":  field,
+			"key":  keys[0],
 		}
 	}
 
@@ -228,9 +279,15 @@ func (h *Handler) storeDrainCredentials(ctx context.Context, req logDrainRequest
 		existing, err := h.K8s.Clientset.CoreV1().Secrets(vestaSystemNS).
 			Get(ctx, drainSecretName(req.Name), metav1.GetOptions{})
 		if err == nil {
-			for field := range existing.Data {
-				config[field] = map[string]interface{}{
-					"name": drainSecretName(req.Name), "key": field,
+			for _, field := range fields {
+				keys := secretKeys(req.Type, field)
+				if len(keys) == 0 {
+					continue
+				}
+				if _, present := existing.Data[keys[0]]; present {
+					config[field] = map[string]interface{}{
+						"name": drainSecretName(req.Name), "key": keys[0],
+					}
 				}
 			}
 		}
@@ -329,6 +386,23 @@ func validateLogDrain(req logDrainRequest) error {
 	case "s3":
 		if bucket, _ := req.Config["bucket"].(string); strings.TrimSpace(bucket) == "" {
 			return fmt.Errorf("an s3 drain needs a bucket")
+		}
+	case "forward":
+		if host, _ := req.Config["host"].(string); strings.TrimSpace(host) == "" {
+			return fmt.Errorf("a forward drain needs the host of the Fluent Bit or Fluentd to send to")
+		}
+	case "openobserve":
+		endpoint, _ := req.Config["endpoint"].(string)
+		if strings.TrimSpace(endpoint) == "" {
+			return fmt.Errorf("an openobserve drain needs an endpoint")
+		}
+		if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+			return fmt.Errorf("endpoint must start with http:// or https://")
+		}
+		// The path is built from organization and stream; including one here produces a
+		// URL like /api/default/vesta/_json appended to it, which 404s.
+		if strings.Contains(strings.TrimPrefix(strings.TrimPrefix(endpoint, "https://"), "http://"), "/") {
+			return fmt.Errorf("endpoint must be the base URL only, without a path")
 		}
 	}
 	return nil
