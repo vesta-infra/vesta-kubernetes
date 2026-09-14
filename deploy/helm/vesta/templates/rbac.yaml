@@ -6,10 +6,10 @@ metadata:
     {{- include "vesta.labels" . | nindent 4 }}
 rules:
   - apiGroups: ["kubernetes.getvesta.sh"]
-    resources: ["vestaapps", "vestaprojects", "vestaenvironments", "vestaconfigs", "vestasecrets", "vestamiddlewares"]
+    resources: ["vestaapps", "vestaprojects", "vestaenvironments", "vestaconfigs", "vestasecrets", "vestamiddlewares", "vestalogdrains"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["kubernetes.getvesta.sh"]
-    resources: ["vestaapps/status", "vestaprojects/status", "vestaenvironments/status", "vestasecrets/status", "vestamiddlewares/status"]
+    resources: ["vestaapps/status", "vestaprojects/status", "vestaenvironments/status", "vestasecrets/status", "vestamiddlewares/status", "vestalogdrains/status"]
     verbs: ["get", "update", "patch"]
   - apiGroups: ["kubernetes.getvesta.sh"]
     resources: ["vestaapps/finalizers"]
@@ -27,7 +27,7 @@ rules:
     resources: ["events"]
     verbs: ["get", "list", "watch", "create", "patch"]
   - apiGroups: ["apps"]
-    resources: ["deployments"]
+    resources: ["deployments", "daemonsets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]

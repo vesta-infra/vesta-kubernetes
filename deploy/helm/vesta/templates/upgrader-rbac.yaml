@@ -45,7 +45,7 @@ rules:
     resources: ["namespaces"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["apps"]
-    resources: ["deployments", "statefulsets"]
+    resources: ["deployments", "statefulsets", "daemonsets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Read-only, and not because the chart renders these. `helm upgrade --wait` computes
   # readiness by walking from a Deployment to its ReplicaSets to their Pods, and from a

@@ -50,6 +50,9 @@ var (
 	VestaMiddlewareGVR = schema.GroupVersionResource{
 		Group: "kubernetes.getvesta.sh", Version: "v1alpha1", Resource: "vestamiddlewares",
 	}
+	VestaLogDrainGVR = schema.GroupVersionResource{
+		Group: "kubernetes.getvesta.sh", Version: "v1alpha1", Resource: "vestalogdrains",
+	}
 
 	DeploymentGVR = schema.GroupVersionResource{
 		Group: "apps", Version: "v1", Resource: "deployments",

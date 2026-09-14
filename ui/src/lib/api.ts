@@ -1,3 +1,39 @@
+export type LogDrainType = 'http' | 'loki' | 'syslog' | 'elasticsearch' | 'datadog' | 's3'
+
+export interface LogDrain {
+  name: string
+  type: LogDrainType
+  displayName?: string
+  description?: string
+  project?: string
+  app?: string
+  environment?: string
+  enabled: boolean
+  /** Carries secret references, never values. */
+  config: Record<string, any>
+  ready: boolean
+  reason?: string
+  scope?: string
+  recordsDelivered: number
+  errors: number
+  lastDeliveryAt?: string
+}
+
+export interface LogDrainPayload {
+  name?: string
+  type: LogDrainType
+  displayName?: string
+  description?: string
+  project?: string
+  app?: string
+  environment?: string
+  enabled?: boolean
+  config?: Record<string, any>
+  configRaw?: string
+  /** Write-only. Never returned by the API. */
+  credentials?: Record<string, string>
+}
+
 export type MiddlewareType =
   | 'rateLimit' | 'basicAuth' | 'ipAllowList' | 'headers'
   | 'stripPrefix' | 'compress' | 'retry' | 'circuitBreaker' | 'buffering' | 'raw'
@@ -801,6 +837,16 @@ export const api = {
     request<any>(`/apps/${appId}/rate-limits?environment=${environment}`),
   updateRateLimits: (appId: string, data: { environment: string; limits: Record<string, string> }) =>
     request<any>(`/apps/${appId}/rate-limits`, { method: 'PUT', body: JSON.stringify(data) }),
+
+  listLogDrains: (project?: string) =>
+    request<{ drains: LogDrain[] }>(`/log-drains${project ? `?project=${encodeURIComponent(project)}` : ''}`),
+  getLogDrain: (name: string) => request<LogDrain>(`/log-drains/${name}`),
+  createLogDrain: (data: LogDrainPayload) =>
+    request<LogDrain>('/log-drains', { method: 'POST', body: JSON.stringify(data) }),
+  updateLogDrain: (name: string, data: LogDrainPayload) =>
+    request<LogDrain>(`/log-drains/${name}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteLogDrain: (name: string) =>
+    request<any>(`/log-drains/${name}`, { method: 'DELETE' }),
 
   listMiddlewares: (project?: string) =>
     request<{ middlewares: Middleware[] }>(`/middlewares${project ? `?project=${encodeURIComponent(project)}` : ''}`),

@@ -270,3 +270,29 @@ postgres:
 
 # -- Image pull secrets for Vesta's own images
 imagePullSecrets: []
+
+# Log drains ship app logs to external destinations. Disabled by default: a cluster that
+# already runs a logging agent should not get a second one tailing the same files.
+logging:
+  enabled: false
+  image:
+    repository: cr.fluentbit.io/fluent/fluent-bit
+    tag: "3.1.9"
+    pullPolicy: IfNotPresent
+  # Sized for tailing, buffering and forwarding rather than for processing: the collector
+  # holds at most a few MB of records per node before flushing.
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  priorityClassName: ""
+  # Credentials for drains, mounted as environment variables the generated config
+  # references. Managed by the API when a drain is created through the UI; set by hand only
+  # when declaring drains as YAML.
+  #   - env: VESTA_DRAIN_CENTRAL_API_KEY
+  #     secret: central-drain-credentials
+  #     key: apiKey
+  secretRefs: []

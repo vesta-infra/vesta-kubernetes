@@ -388,6 +388,78 @@ default chart and the dev proxy rewrites `Host`. Set `VESTA_ALLOWED_ORIGINS` to 
 browser origins may complete a ceremony; left unset, any syntactically valid domain is
 accepted.
 
+### Log drains
+
+Pod logs are read on demand and not retained — when a pod is replaced, its logs are gone. A
+log drain ships them somewhere that keeps them. Enable the collector, then define drains:
+
+```bash
+helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --reuse-values --set logging.enabled=true
+
+vesta drains create -f central.yaml
+vesta drains list
+```
+
+```yaml
+name: central-logging
+type: loki
+config:
+  host: loki.monitoring.svc
+  port: 3100
+```
+
+Six destinations: `http`, `loki`, `syslog`, `elasticsearch`, `datadog` and `s3`.
+
+Anything that accepts JSON over HTTP works through the `http` type — OpenObserve, for
+example, whose ingest API keys on `_timestamp`:
+
+```yaml
+name: openobserve
+type: http
+config:
+  uri: https://openobserve.example.com/api/default/vesta/_json
+  dateKey: _timestamp
+credentials:
+  authHeader: "Basic <base64 of email:password>"
+```
+
+Set `dateKey` to whatever field the destination reads the event time from. Leave it unset
+and records carry `timestamp`, which most services accept — but a destination that expects
+its own field will silently stamp every record with its ingestion time instead, and that
+only becomes visible when a backlog drains and an hour of logs shares one timestamp.
+
+**Scope is the attachment.** A drain with no `project` covers every app; add `project`,
+`environment` or `app` to narrow it. An app ships to *every* drain whose scope covers it, so
+a project drain adds to the platform one rather than replacing it — which is what makes
+"everything to S3, plus this project to Datadog" a two-line configuration. To exempt one app
+from a broader drain, declare a drain of the same name scoped to that app with
+`enabled: false`.
+
+**Credentials never reach the drain.** Put them under a separate `credentials:` key and Vesta
+writes them to a Secret, storing only a reference:
+
+```yaml
+name: datadog
+type: datadog
+config:
+  site: datadoghq.eu
+credentials:
+  apiKey: "..."
+```
+
+A CRD is readable by anyone with `get` on the type, so an API key there would be a leak
+however it arrived. The generated collector configuration references the Secret through the
+environment and never contains the value either.
+
+**Delivery is reported, not assumed.** Each drain's status carries records delivered and
+errors, read from the collector's own metrics. Without that, a misconfigured destination is
+indistinguishable from an app that logged nothing, and the first sign of trouble is an empty
+dashboard during an incident.
+
+Only pods carrying Vesta's app label are shipped. The cluster's own components — including
+Vesta's API, whose logs contain request detail — are deliberately not routed to app drains.
+
 ### Ingress middlewares
 
 Rate limits, basic auth, IP allow lists, CORS headers and the rest are defined once as

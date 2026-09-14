@@ -17,13 +17,14 @@ CHART_DIR="${CHART_DIR:-deploy/helm/vesta}"
 command -v helm >/dev/null || { echo "helm is required" >&2; exit 2; }
 
 helm template vesta "$CHART_DIR" -n vesta-system \
-  --set selfUpdate.enabled=true --set postgres.enabled=true 2>/dev/null \
+  --set selfUpdate.enabled=true --set postgres.enabled=true --set logging.enabled=true 2>/dev/null \
 | python3 -c '
 import sys, yaml
 
 # Kind -> (apiGroup, plural). Only kinds this chart actually renders.
 KINDS = {
     "Deployment":               ("apps", "deployments"),
+    "DaemonSet":                ("apps", "daemonsets"),
     "StatefulSet":              ("apps", "statefulsets"),
     "Job":                      ("batch", "jobs"),
     "ConfigMap":                ("", "configmaps"),
