@@ -959,15 +959,24 @@ type VestaLogDrainSpec struct {
 	DisplayName string `json:"displayName,omitempty"`
 	Description string `json:"description,omitempty"`
 
-	// Enabled is a pointer so that absent and false are distinguishable. Absent means on;
-	// an explicitly disabled drain scoped to one app suppresses a broader drain of the same
-	// name, which is how a single app opts out of platform-wide shipping.
+	// Enabled turns the whole drain off without deleting it, keeping its configuration and
+	// credentials for when it is turned back on. To exempt individual apps instead, use
+	// ExcludeApps.
 	Enabled *bool `json:"enabled,omitempty"`
 
 	// Project, App and Environment narrow which apps ship here. All empty is platform-wide.
 	Project     string `json:"project,omitempty"`
 	App         string `json:"app,omitempty"`
 	Environment string `json:"environment,omitempty"`
+
+	// ExcludeApps names apps within the scope that must not ship here, as "<app>" for any
+	// project or "<project>/<app>" for one. It is how a project-wide drain skips the one
+	// app whose logs are too noisy or too sensitive to send.
+	//
+	// Exclusion is a list rather than a flag on the app because Fluent Bit has no negative
+	// Match: the collector routes by tag, so leaving an app out means enumerating the ones
+	// that remain. Keeping that list on the drain is what makes it computable at all.
+	ExcludeApps []string `json:"excludeApps,omitempty"`
 
 	HTTP          *HTTPDrain          `json:"http,omitempty"`
 	Loki          *LokiDrain          `json:"loki,omitempty"`

@@ -77,6 +77,7 @@ type logDrainRequest struct {
 	Project     string                 `json:"project"`
 	App         string                 `json:"app"`
 	Environment string                 `json:"environment"`
+	ExcludeApps []string               `json:"excludeApps"`
 	Config      map[string]interface{} `json:"config"`
 	ConfigRaw   string                 `json:"configRaw"`
 
@@ -428,6 +429,17 @@ func logDrainSpecFrom(req logDrainRequest) map[string]interface{} {
 	if req.Enabled != nil {
 		spec["enabled"] = *req.Enabled
 	}
+	if len(req.ExcludeApps) > 0 {
+		excluded := make([]interface{}, 0, len(req.ExcludeApps))
+		for _, app := range req.ExcludeApps {
+			if app = strings.TrimSpace(app); app != "" {
+				excluded = append(excluded, app)
+			}
+		}
+		if len(excluded) > 0 {
+			spec["excludeApps"] = excluded
+		}
+	}
 	if len(req.Config) > 0 {
 		spec[req.Type] = req.Config
 	}
@@ -462,6 +474,7 @@ func logDrainToResponse(obj *unstructured.Unstructured) map[string]interface{} {
 		"app":         spec["app"],
 		"environment": spec["environment"],
 		"enabled":     enabled,
+		"excludeApps": toStringSlice(spec["excludeApps"]),
 		// config carries secret *references*, never values -- the Secret holds those and
 		// the API has no endpoint that reads them back.
 		"config":           config,

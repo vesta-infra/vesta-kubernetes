@@ -10,6 +10,7 @@ export interface LogDrain {
   app?: string
   environment?: string
   enabled: boolean
+  excludeApps?: string[]
   /** Carries secret references, never values. */
   config: Record<string, any>
   ready: boolean
@@ -29,6 +30,7 @@ export interface LogDrainPayload {
   app?: string
   environment?: string
   enabled?: boolean
+  excludeApps?: string[]
   config?: Record<string, any>
   configRaw?: string
   /** Write-only. Never returned by the API. */

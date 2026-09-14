@@ -117,21 +117,6 @@ func (r *VestaLogDrainReconciler) resolveTargets(ctx context.Context, drains []v
 	}
 	sort.Strings(allApps)
 
-	// A disabled drain is not an output; it is an instruction that a narrower scope should
-	// not receive a broader drain of the same name.
-	optOuts := map[string][]string{}
-	for i := range drains {
-		d := &drains[i]
-		if boolOr(d.Spec.Enabled, true) {
-			continue
-		}
-		for _, pair := range allApps {
-			if scopeCovers(d.Spec, pair) {
-				optOuts[d.Name] = append(optOuts[d.Name], pair)
-			}
-		}
-	}
-
 	renderErrors := map[string]string{}
 	var targets []DrainTarget
 
@@ -144,9 +129,11 @@ func (r *VestaLogDrainReconciler) resolveTargets(ctx context.Context, drains []v
 		target := DrainTarget{
 			Drain:        d,
 			Namespaces:   r.namespacesForScope(ctx, d.Spec),
-			ExcludedApps: optOuts[d.Name],
+			ExcludedApps: resolveExclusions(d.Spec, allApps),
 		}
 		if len(target.ExcludedApps) > 0 {
+			// Only a drain with an exclusion needs the full list: the Match has to
+			// enumerate what remains, since Fluent Bit cannot express "everything except".
 			for _, pair := range allApps {
 				if scopeCovers(d.Spec, pair) {
 					target.IncludedApps = append(target.IncludedApps, pair)
@@ -164,6 +151,35 @@ func (r *VestaLogDrainReconciler) resolveTargets(ctx context.Context, drains []v
 	}
 
 	return targets, renderErrors, nil
+}
+
+// resolveExclusions turns the drain's excludeApps entries into concrete
+// "<namespace>/<app>" pairs. An entry is either a bare app name, excluding it wherever it
+// runs, or "<project>/<app>" for one project's copy.
+func resolveExclusions(spec vestav1alpha1.VestaLogDrainSpec, allApps []string) []string {
+	if len(spec.ExcludeApps) == 0 {
+		return nil
+	}
+
+	wanted := map[string]bool{}
+	for _, entry := range spec.ExcludeApps {
+		wanted[strings.TrimSpace(entry)] = true
+	}
+
+	var out []string
+	for _, pair := range allApps {
+		if !scopeCovers(spec, pair) {
+			continue
+		}
+		ns, app, _ := strings.Cut(pair, "/")
+		// A bare name excludes the app everywhere; qualifying it with the project narrows
+		// that to one namespace, which matters when two projects run an app of the same name.
+		if wanted[app] || wanted[ns+"/"+app] {
+			out = append(out, pair)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // scopeCovers reports whether a drain's scope includes a given "<namespace>/<app>".

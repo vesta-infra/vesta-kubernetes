@@ -308,3 +308,45 @@ func TestHTTPDateKeyIsConfigurable(t *testing.T) {
 		t.Errorf("the default must not change:\n%s", defaulted)
 	}
 }
+
+// Exclusions are how a project-wide drain skips one app. The list lives on the drain
+// because Fluent Bit has no negative Match: leaving an app out means enumerating the ones
+// that remain, which is only computable from the drain's side.
+func TestResolveExclusions(t *testing.T) {
+	allApps := []string{
+		"shop-production/api", "shop-production/web",
+		"shop-staging/api", "utility-prod/vesta-deploy",
+	}
+
+	t.Run("a bare app name excludes it everywhere in scope", func(t *testing.T) {
+		got := resolveExclusions(vestav1alpha1.VestaLogDrainSpec{ExcludeApps: []string{"api"}}, allApps)
+		want := []string{"shop-production/api", "shop-staging/api"}
+		if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("qualifying with the namespace narrows it to one", func(t *testing.T) {
+		// Two projects can run an app of the same name; a bare name would exclude both.
+		got := resolveExclusions(vestav1alpha1.VestaLogDrainSpec{
+			ExcludeApps: []string{"shop-staging/api"}}, allApps)
+		if len(got) != 1 || got[0] != "shop-staging/api" {
+			t.Errorf("got %v, want [shop-staging/api]", got)
+		}
+	})
+
+	t.Run("an exclusion outside the drain's scope is ignored", func(t *testing.T) {
+		// Excluding an app a project drain never covered must not silently widen anything.
+		got := resolveExclusions(vestav1alpha1.VestaLogDrainSpec{
+			Project: "shop", ExcludeApps: []string{"vesta-deploy"}}, allApps)
+		if len(got) != 0 {
+			t.Errorf("got %v, want none", got)
+		}
+	})
+
+	t.Run("no exclusions costs nothing", func(t *testing.T) {
+		if got := resolveExclusions(vestav1alpha1.VestaLogDrainSpec{}, allApps); got != nil {
+			t.Errorf("got %v, want nil so the common case keeps the cheap Match", got)
+		}
+	})
+}
