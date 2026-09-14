@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"slices"
@@ -121,6 +122,14 @@ func (h *Handler) Setup(c *gin.Context) {
 	if err := h.DB.AddTeamMember(c.Request.Context(), team.ID, user.ID, "owner"); err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to add team member"})
 		return
+	}
+
+	// A brand-new install has no webhooks depending on the old skip-verification
+	// behaviour, so it starts closed. Upgrades leave the key unset, which reads as
+	// permissive, and are asked to close it from Settings once they can see what is
+	// arriving unsigned.
+	if err := h.DB.SetSetting(c.Request.Context(), db.SettingWebhooksAllowUnsigned, "false", user.ID); err != nil {
+		log.Printf("[setup] could not default %s: %v", db.SettingWebhooksAllowUnsigned, err)
 	}
 
 	tokenString, expiresAt, err := h.generateJWT(user)

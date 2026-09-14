@@ -26,8 +26,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/client-go/util/homedir"
 )
 
@@ -52,6 +52,10 @@ var (
 	}
 	VestaLogDrainGVR = schema.GroupVersionResource{
 		Group: "kubernetes.getvesta.sh", Version: "v1alpha1", Resource: "vestalogdrains",
+	}
+
+	VestaAddonGVR = schema.GroupVersionResource{
+		Group: "kubernetes.getvesta.sh", Version: "v1alpha1", Resource: "vestaaddons",
 	}
 
 	DeploymentGVR = schema.GroupVersionResource{
@@ -152,6 +156,20 @@ func (c *Client) DeleteResource(ctx context.Context, gvr schema.GroupVersionReso
 
 func (c *Client) PatchResource(ctx context.Context, gvr schema.GroupVersionResource, namespace, name string, patchData []byte) (*unstructured.Unstructured, error) {
 	return c.Dynamic.Resource(gvr).Namespace(namespace).Patch(ctx, name, types.MergePatchType, patchData, metav1.PatchOptions{})
+}
+
+// PatchResourceStatus patches the status subresource.
+//
+// It exists because PatchResource cannot: every Vesta CR declares a status subresource, and
+// a patch to the main resource has its "status" stanza dropped by the API server with no
+// error. Code that patched status through PatchResource was writing nothing, which is how
+// sleep and stop came to be no-ops, and how the commit SHA recorded after a push never
+// persisted.
+//
+// Use this only for genuinely observed state. Anything the user is asking for belongs in
+// spec, where the operator can act on it and where a controller restart cannot lose it.
+func (c *Client) PatchResourceStatus(ctx context.Context, gvr schema.GroupVersionResource, namespace, name string, patchData []byte) (*unstructured.Unstructured, error) {
+	return c.Dynamic.Resource(gvr).Namespace(namespace).Patch(ctx, name, types.MergePatchType, patchData, metav1.PatchOptions{}, "status")
 }
 
 func (c *Client) GetClusterResource(ctx context.Context, gvr schema.GroupVersionResource, name string) (*unstructured.Unstructured, error) {
@@ -575,13 +593,13 @@ func (c *Client) TriggerCronJob(ctx context.Context, namespace, cronJobName stri
 
 // CronJobStatus contains status info for a cronjob.
 type CronJobStatus struct {
-	Name              string  `json:"name"`
-	Schedule          string  `json:"schedule"`
-	LastScheduleTime  *string `json:"lastScheduleTime"`
+	Name               string  `json:"name"`
+	Schedule           string  `json:"schedule"`
+	LastScheduleTime   *string `json:"lastScheduleTime"`
 	LastSuccessfulTime *string `json:"lastSuccessfulTime"`
-	Active            int     `json:"active"`
-	RunCount          int     `json:"runCount"`
-	Suspended         bool    `json:"suspended"`
+	Active             int     `json:"active"`
+	RunCount           int     `json:"runCount"`
+	Suspended          bool    `json:"suspended"`
 }
 
 // GetCronJobStatuses returns status info for all cronjobs matching a label selector.

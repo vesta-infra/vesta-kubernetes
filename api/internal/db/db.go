@@ -372,4 +372,109 @@ CREATE TABLE IF NOT EXISTS instance_settings (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_by UUID REFERENCES users(id) ON DELETE SET NULL
 );
+
+-- One row per configured git server. Vesta used to allow exactly one GitHub App: the
+-- credentials lived in a single Secret with a hardcoded name and a second connection was
+-- refused with a 409.
+--
+-- Only metadata lives here. Credentials stay in the Kubernetes Secret named by
+-- secret_name, so a connection can be listed, logged and returned to the UI without a
+-- token travelling with it -- the same reasoning the middleware and log-drain features
+-- already apply to their own secrets.
+--
+-- No CHECK on provider. A CHECK here could never be widened: migrate() is one Exec of a
+-- CREATE TABLE IF NOT EXISTS, so the constraint written on first install is the one that
+-- install keeps forever, and adding a provider would need an ALTER that never runs.
+-- Validation lives in Go instead.
+CREATE TABLE IF NOT EXISTS git_connections (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    base_url TEXT NOT NULL DEFAULT '',
+    host TEXT NOT NULL,
+    account TEXT NOT NULL DEFAULT '',
+    secret_name TEXT NOT NULL,
+    external_id TEXT NOT NULL DEFAULT '',
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    -- Marks the connection adopted from the pre-connections GitHub App. Webhooks created
+    -- before this release point at a URL with no connection in it, and that URL resolves
+    -- here.
+    is_legacy BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- A connection is identified by where it points and whose account it uses, so the same
+-- server can be connected twice for two different organisations but not twice for one.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_git_connections_identity
+    ON git_connections(provider, host, account);
+
+-- Pending OAuth/App-manifest handshakes.
+--
+-- This was an in-process map guarded by a mutex. It never expired, so it leaked for the
+-- life of the process, and it broke outright with more than one API replica: the callback
+-- could land on a pod that had never seen the state and answered 403.
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    draft JSONB NOT NULL DEFAULT '{}'::jsonb,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_states_expires ON oauth_states(expires_at);
+
+-- Per-environment roles, so "deploy to staging but not production" can be said.
+--
+-- A separate table rather than a column on project_members, because a column added to an
+-- existing table silently never migrates here -- migrate() is one Exec of CREATE TABLE IF
+-- NOT EXISTS, which is a no-op against a database that already has the table.
+--
+-- No CHECK on role for the same reason as git_connections: a CHECK written on first install
+-- could never be widened, and adding a role later would need an ALTER that never runs.
+-- api/internal/rbac validates instead.
+--
+-- A row here overrides the project role in both directions. Its absence means "inherit",
+-- not "no access", or every environment would need a row before anyone could deploy.
+CREATE TABLE IF NOT EXISTS project_env_members (
+    project_id TEXT NOT NULL,
+    environment TEXT NOT NULL,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, environment, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_env_members_user ON project_env_members(user_id);
+
+-- What each workload was reserving, sampled on an interval.
+--
+-- Cost is derived at read time from these and the current rate card, rather than stored as
+-- money. Rates change, and a stored figure would be a mixture of old and new prices that
+-- nobody could reconcile; re-pricing history is at least explicable.
+--
+-- Reservations rather than usage, because a request occupies a node whether it is used or
+-- not. Usage is recorded alongside so the gap can be shown, which is the actionable part.
+CREATE TABLE IF NOT EXISTS cost_samples (
+    id BIGSERIAL PRIMARY KEY,
+    sampled_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    project_id TEXT NOT NULL,
+    environment TEXT NOT NULL DEFAULT '',
+    app_id TEXT NOT NULL DEFAULT '',
+    -- kind separates apps from add-ons, which are billable too. No CHECK: it could never be
+    -- widened, for the same reason as every other CHECK-less column here.
+    kind TEXT NOT NULL DEFAULT 'app',
+    replicas INT NOT NULL DEFAULT 0,
+    cpu_millicores BIGINT NOT NULL DEFAULT 0,
+    memory_bytes BIGINT NOT NULL DEFAULT 0,
+    storage_bytes BIGINT NOT NULL DEFAULT 0,
+    cpu_used_millicores BIGINT NOT NULL DEFAULT 0,
+    memory_used_bytes BIGINT NOT NULL DEFAULT 0,
+    -- The interval this sample stands for, so a gap in sampling is not charged as though
+    -- the workload ran continuously at the last observed size.
+    interval_seconds INT NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_cost_samples_project_time ON cost_samples(project_id, sampled_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cost_samples_app_time ON cost_samples(app_id, sampled_at DESC);
 `

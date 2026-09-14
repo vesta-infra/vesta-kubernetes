@@ -11,6 +11,26 @@ import (
 // a second factor.
 const SettingMFARequireAdmin = "mfa.require_admin"
 
+// SettingWebhooksAllowUnsigned holds "true"/"false" for whether an inbound webhook with no
+// signature is processed.
+//
+// It exists only to keep upgrades from breaking. Verification used to be skipped whenever
+// the signature header was absent, so any install with hand-created hooks and no secret has
+// been relying on unsigned deliveries working. A fresh install writes "false" during setup;
+// an upgrade leaves the key unset, which reads as true, and Settings shows the count of
+// unsigned deliveries next to the switch so the cutover is a decision rather than an outage.
+const SettingWebhooksAllowUnsigned = "webhooks.allow_unsigned"
+
+// SettingRBACEnforcement holds "true"/"false" for whether project and environment
+// memberships are enforced.
+//
+// Default false, and deliberately so. Before this existed a global developer could touch
+// every project on the instance, and no project memberships were ever created -- the only
+// way to get one was a hard-coded "owner". Enforcing on upgrade would lock every non-admin
+// out of every project simultaneously. Settings shows what would be denied so the cutover
+// is a decision rather than an incident.
+const SettingRBACEnforcement = "rbac.enforcement"
+
 // Update-check settings. The latest version and the time it was seen are cached here
 // rather than re-fetched per request, so the UI reads a row instead of the network and a
 // restart does not immediately hit GitHub again.

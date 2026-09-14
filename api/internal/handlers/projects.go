@@ -7,6 +7,7 @@ import (
 	"kubernetes.getvesta.sh/api/internal/db"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
+	"kubernetes.getvesta.sh/api/internal/rbac"
 )
 
 const vestaSystemNS = "vesta-system"
@@ -222,10 +223,16 @@ func (h *Handler) AddProjectMember(c *gin.Context) {
 		return
 	}
 	if req.Role == "" {
-		req.Role = "owner"
+		req.Role = rbac.RoleOwner
 	}
-	if req.Role != "owner" {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "invalid role: must be 'owner'"})
+	// Any project-scoped role is now acceptable. The column was always free text; only this
+	// check restricted it, so "owner" was the sole value any install ever held.
+	//
+	// Global roles are refused: recorded here, "admin" would rank above owner and read as a
+	// project membership more powerful than the project's owner.
+	if !rbac.Valid(req.Role) {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Code: 400, Message: "invalid role: must be one of owner, maintainer, deployer, viewer"})
 		return
 	}
 

@@ -364,9 +364,9 @@ func (h *Handler) GetMetrics(c *gin.Context) {
 
 	// Build summary with totals
 	summary := map[string]interface{}{
-		"totalCPUUsage":    k8s.FormatCPUNano(totalCPUUsageNano),
-		"totalMemoryUsage": k8s.FormatMemBytes(totalMemUsageBytes),
-		"totalCPURequest":  k8s.FormatCPUNano(totalCPUReqNano),
+		"totalCPUUsage":      k8s.FormatCPUNano(totalCPUUsageNano),
+		"totalMemoryUsage":   k8s.FormatMemBytes(totalMemUsageBytes),
+		"totalCPURequest":    k8s.FormatCPUNano(totalCPUReqNano),
 		"totalMemoryRequest": k8s.FormatMemBytes(totalMemReqBytes),
 	}
 	if totalCPULimNano > 0 {

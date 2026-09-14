@@ -15,29 +15,32 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"kubernetes.getvesta.sh/api/internal/db"
+	"kubernetes.getvesta.sh/api/internal/git"
 )
 
 const (
 	BuildStrategyDockerfile = "dockerfile"
 	BuildStrategyNixpacks   = "nixpacks"
-	BuildStrategyBuildpacks  = "buildpacks"
+	BuildStrategyBuildpacks = "buildpacks"
 
 	buildNamespace = "vesta-system"
 )
 
 type BuildRequest struct {
-	AppID        string
-	ProjectID    string
-	Environment  string
-	Strategy     string
-	Repository   string
-	Branch       string
-	CommitSHA    string
-	Dockerfile   string
-	ImageDest    string // full destination image:tag
+	AppID          string
+	ProjectID      string
+	Environment    string
+	Strategy       string
+	Repository     string
+	Provider       string // github | gitlab | bitbucket; empty means github
+	Host           string // git server; empty means github.com
+	Branch         string
+	CommitSHA      string
+	Dockerfile     string
+	ImageDest      string // full destination image:tag
 	RegistrySecret string // docker-registry secret name for push
 	GitSecretName  string // optional: secret with git credentials
-	TriggeredBy  string
+	TriggeredBy    string
 }
 
 type Builder struct {
@@ -45,7 +48,17 @@ type Builder struct {
 	db        *db.DB
 	notifier  *Notifier
 	githubApp *GitHubAppService
+	providers *git.Registry
+
+	// connections resolves which connection serves a repository. A func rather than a
+	// handle on the database, so the builder keeps no opinion about where connections are
+	// stored and stays testable without one.
+	connections func(context.Context, git.RepoRef) (git.Connection, error)
 }
+
+// SetProviders gives the builder the provider registry, so a clone credential comes with
+// the username that provider expects instead of the GitHub one being assumed.
+func (b *Builder) SetProviders(r *git.Registry) { b.providers = r }
 
 func NewBuilder(clientset kubernetes.Interface, database *db.DB, notifier *Notifier) *Builder {
 	return &Builder{
@@ -85,11 +98,15 @@ func (b *Builder) TriggerBuild(ctx context.Context, req BuildRequest) (string, e
 	}
 	jobName = strings.ToLower(jobName)
 
-	// If no git secret is set, try to create an ephemeral one from GitHub App
+	// If no git secret is set, ask the provider for one.
+	//
+	// The username used to be the literal "x-access-token", which is GitHub-App specific --
+	// GitLab expects "oauth2" and Bitbucket "x-token-auth", and the wrong one fails the
+	// clone with a bare 403. It now travels with the token.
 	ephemeralSecret := ""
-	if req.GitSecretName == "" && req.Repository != "" && b.githubApp != nil && b.githubApp.IsConfigured() {
-		token, err := b.githubApp.GetTokenForRepo(ctx, req.Repository)
-		if err == nil && token != "" {
+	if req.GitSecretName == "" && req.Repository != "" {
+		cred, err := b.cloneCredential(ctx, req)
+		if err == nil && !cred.Empty() {
 			ephemeralSecret = fmt.Sprintf("git-token-%s", jobName)
 			if len(ephemeralSecret) > 63 {
 				ephemeralSecret = ephemeralSecret[:63]
@@ -105,8 +122,8 @@ func (b *Builder) TriggerBuild(ctx context.Context, req BuildRequest) (string, e
 				},
 				Type: corev1.SecretTypeOpaque,
 				StringData: map[string]string{
-					"token":    token,
-					"username": "x-access-token",
+					"token":    cred.Token,
+					"username": cred.Username,
 				},
 			}
 			if _, err := b.clientset.CoreV1().Secrets(buildNamespace).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
@@ -143,10 +160,24 @@ func (b *Builder) TriggerBuild(ctx context.Context, req BuildRequest) (string, e
 		return buildID, fmt.Errorf("failed to create build job spec: %w", err)
 	}
 
-	_, err = b.clientset.BatchV1().Jobs(buildNamespace).Create(ctx, job, metav1.CreateOptions{})
+	createdJob, err := b.clientset.BatchV1().Jobs(buildNamespace).Create(ctx, job, metav1.CreateOptions{})
 	if err != nil {
 		b.db.UpdateBuildStatus(ctx, buildID, "failed", err.Error())
+		if ephemeralSecret != "" {
+			// The Job never existed, so nothing will ever collect the token.
+			b.deleteEphemeralSecret(ctx, ephemeralSecret)
+		}
 		return buildID, fmt.Errorf("failed to create build job: %w", err)
+	}
+
+	// Hand the token secret to the Job so it is collected with it.
+	//
+	// The secret holds a live git credential and used to outlive every build: it had no
+	// owner, nothing deleted it, and the Job's TTL only removed the Job. One permanent
+	// Secret containing a usable token accumulated per build. The owner reference can only
+	// be set now, because it needs the Job's UID.
+	if ephemeralSecret != "" {
+		b.adoptEphemeralSecret(ctx, ephemeralSecret, createdJob)
 	}
 
 	b.db.UpdateBuildStatus(ctx, buildID, "running", "")
@@ -162,7 +193,7 @@ func (b *Builder) TriggerBuild(ctx context.Context, req BuildRequest) (string, e
 	})
 
 	// Watch the job in the background
-	go b.watchBuild(buildID, jobName, req)
+	go b.watchBuild(buildID, jobName, req, ephemeralSecret)
 
 	return buildID, nil
 }
@@ -187,7 +218,10 @@ func (b *Builder) createBuildJob(req BuildRequest, jobName string) (*batchv1.Job
 		})
 	}
 
-	gitURL := fmt.Sprintf("https://github.com/%s.git", req.Repository)
+	gitHost := req.Host
+	if gitHost == "" {
+		gitHost = "github.com"
+	}
 
 	switch req.Strategy {
 	case BuildStrategyDockerfile:
@@ -199,9 +233,9 @@ func (b *Builder) createBuildJob(req BuildRequest, jobName string) (*batchv1.Job
 			})
 		}
 
-		gitContext := fmt.Sprintf("git://github.com/%s.git#refs/heads/%s", req.Repository, req.Branch)
+		gitContext := fmt.Sprintf("git://%s/%s.git#refs/heads/%s", gitHost, req.Repository, req.Branch)
 		if req.CommitSHA != "" {
-			gitContext = fmt.Sprintf("git://github.com/%s.git#%s", req.Repository, req.CommitSHA)
+			gitContext = fmt.Sprintf("git://%s/%s.git#%s", gitHost, req.Repository, req.CommitSHA)
 		}
 
 		args := []string{
@@ -273,24 +307,7 @@ func (b *Builder) createBuildJob(req BuildRequest, jobName string) (*batchv1.Job
 			})
 		}
 
-		nixCloneURL := gitURL
-		if req.GitSecretName != "" {
-			nixCloneURL = fmt.Sprintf("https://x-access-token:${GIT_TOKEN}@github.com/%s.git", req.Repository)
-		}
-
-		cloneCmd := fmt.Sprintf("git clone --depth=1 -b %s %s /workspace", req.Branch, nixCloneURL)
-		if req.CommitSHA != "" {
-			cloneCmd = fmt.Sprintf("git clone %s /workspace && cd /workspace && git checkout %s", nixCloneURL, req.CommitSHA)
-		}
-
-		script := fmt.Sprintf(`set -e
-%s
-cd /workspace
-nixpacks build . --name %s
-# Push image using crane
-crane push %s %s
-echo "Build and push complete"
-`, cloneCmd, req.ImageDest, req.ImageDest, req.ImageDest)
+		script := nixpacksScript
 
 		container = corev1.Container{
 			Name:         "build",
@@ -300,16 +317,32 @@ echo "Build and push complete"
 			VolumeMounts: nixMounts,
 		}
 
+		// Everything the script reads arrives as an environment variable, so the script
+		// itself stays a constant and a branch name cannot become shell.
+		container.Env = append(container.Env, buildScriptEnv(req)...)
+
 		if req.GitSecretName != "" {
-			container.Env = append(container.Env, corev1.EnvVar{
-				Name: "GIT_TOKEN",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: req.GitSecretName},
-						Key:                  "token",
+			container.Env = append(container.Env,
+				corev1.EnvVar{
+					Name: "GIT_TOKEN",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: req.GitSecretName},
+							Key:                  "token",
+						},
 					},
 				},
-			})
+				corev1.EnvVar{
+					Name: "GIT_USERNAME",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: req.GitSecretName},
+							Key:                  "username",
+							Optional:             boolPtr(true),
+						},
+					},
+				},
+			)
 		}
 
 	case BuildStrategyBuildpacks:
@@ -331,21 +364,7 @@ echo "Build and push complete"
 			})
 		}
 
-		bpCloneURL := gitURL
-		if req.GitSecretName != "" {
-			bpCloneURL = fmt.Sprintf("https://x-access-token:${GIT_TOKEN}@github.com/%s.git", req.Repository)
-		}
-
-		cloneCmd := fmt.Sprintf("git clone --depth=1 -b %s %s /workspace", req.Branch, bpCloneURL)
-		if req.CommitSHA != "" {
-			cloneCmd = fmt.Sprintf("git clone %s /workspace && cd /workspace && git checkout %s", bpCloneURL, req.CommitSHA)
-		}
-
-		script := fmt.Sprintf(`set -e
-%s
-/cnb/lifecycle/creator -app=/workspace -run-image=gcr.io/buildpacks/gcp/run:v1 %s
-echo "Build and push complete"
-`, cloneCmd, req.ImageDest)
+		script := buildpacksScript
 
 		container = corev1.Container{
 			Name:         "build",
@@ -355,20 +374,38 @@ echo "Build and push complete"
 			VolumeMounts: bpMounts,
 		}
 
+		// Everything the script reads arrives as an environment variable, so the script
+		// itself stays a constant and a branch name cannot become shell.
+		container.Env = append(container.Env, buildScriptEnv(req)...)
+
 		if req.GitSecretName != "" {
-			container.Env = append(container.Env, corev1.EnvVar{
-				Name: "GIT_TOKEN",
-				ValueFrom: &corev1.EnvVarSource{
-					SecretKeyRef: &corev1.SecretKeySelector{
-						LocalObjectReference: corev1.LocalObjectReference{Name: req.GitSecretName},
-						Key:                  "token",
+			container.Env = append(container.Env,
+				corev1.EnvVar{
+					Name: "GIT_TOKEN",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: req.GitSecretName},
+							Key:                  "token",
+						},
 					},
 				},
-			})
+				corev1.EnvVar{
+					Name: "GIT_USERNAME",
+					ValueFrom: &corev1.EnvVarSource{
+						SecretKeyRef: &corev1.SecretKeySelector{
+							LocalObjectReference: corev1.LocalObjectReference{Name: req.GitSecretName},
+							Key:                  "username",
+							Optional:             boolPtr(true),
+						},
+					},
+				},
+			)
 		}
 
 	default:
-		return nil, fmt.Errorf("unsupported build strategy: %s", req.Strategy)
+		return nil, fmt.Errorf(
+			"build strategy %q is not implemented; use one of %s",
+			req.Strategy, strings.Join(SupportedBuildStrategies, ", "))
 	}
 
 	backoffLimit := int32(0)
@@ -409,10 +446,18 @@ echo "Build and push complete"
 }
 
 // watchBuild polls the Job status and updates the DB + triggers deploy on success.
-func (b *Builder) watchBuild(buildID, jobName string, req BuildRequest) {
+func (b *Builder) watchBuild(buildID, jobName string, req BuildRequest, ephemeralSecret string) {
 	ctx := context.Background()
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+
+	// Drop the git token as soon as the build stops needing it, rather than leaving it
+	// until the Job's hour-long TTL expires. The owner reference set at creation is the
+	// backstop for the case this defer cannot cover: if the API restarts, this goroutine
+	// dies with it and nothing here runs at all.
+	if ephemeralSecret != "" {
+		defer b.deleteEphemeralSecret(ctx, ephemeralSecret)
+	}
 
 	timeout := time.After(30 * time.Minute)
 
@@ -426,6 +471,7 @@ func (b *Builder) watchBuild(buildID, jobName string, req BuildRequest) {
 				AppID:     req.AppID,
 				Message:   fmt.Sprintf("Build timed out for %s", req.AppID),
 			})
+			b.reportStatus(ctx, req, git.StateError, "Vesta build timed out after 30 minutes")
 			return
 
 		case <-ticker.C:
@@ -448,6 +494,7 @@ func (b *Builder) watchBuild(buildID, jobName string, req BuildRequest) {
 					})
 					// Auto-deploy: update the VestaApp image tag
 					b.onBuildSuccess(ctx, req)
+					b.reportStatus(ctx, req, git.StateSuccess, "Vesta build succeeded")
 					return
 				}
 
@@ -464,6 +511,7 @@ func (b *Builder) watchBuild(buildID, jobName string, req BuildRequest) {
 						Environment: req.Environment,
 						Message:     fmt.Sprintf("Build failed for %s: %s", req.AppID, errMsg),
 					})
+					b.reportStatus(ctx, req, git.StateFailed, truncateForStatus(errMsg))
 					return
 				}
 			}
@@ -481,25 +529,27 @@ func (b *Builder) onBuildSuccess(ctx context.Context, req BuildRequest) {
 	}
 	tag := parts[1]
 
-	appPath := fmt.Sprintf("/apis/kubernetes.getvesta.sh/v1alpha1/namespaces/%s/vestaapps/%s", buildNamespace, req.AppID)
-
-	// commitSHA is app-wide; a merge patch creates spec.git if it is absent.
-	gitPatch := fmt.Sprintf(`{"spec":{"git":{"commitSHA":"%s"}}}`, req.CommitSHA)
-	if _, err := b.clientset.Discovery().RESTClient().
-		Patch("application/merge-patch+json").
-		AbsPath(appPath).
-		Body([]byte(gitPatch)).
-		DoRaw(ctx); err != nil {
-		log.Printf("[builder] failed to update commitSHA on VestaApp %s: %v", req.AppID, err)
+	if err := b.RecordCommitSHA(ctx, req.AppID, req.CommitSHA); err != nil {
+		log.Printf("[builder] failed to record commit SHA on VestaApp %s: %v", req.AppID, err)
 	}
 
-	// Pin the tag to the environment this build was for. spec.image.tag is only the
-	// default for environments without a tag of their own, so writing it would roll
-	// this build out to every other such environment.
-	envIndex, envImage, err := b.environmentImage(ctx, appPath, req.Environment)
+	if err := b.PinEnvironmentTag(ctx, req.AppID, req.Environment, tag); err != nil {
+		log.Printf("[builder] failed to update VestaApp %s after build: %v", req.AppID, err)
+	}
+}
+
+// PinEnvironmentTag points one environment at an image tag.
+//
+// Shared with the webhook's pre-built-image path so both roll out the same way. The rule
+// that matters is the one encoded below: spec.image.tag is only the default for
+// environments that carry no tag of their own, so writing it would roll this image out to
+// every other such environment rather than the one being deployed.
+func (b *Builder) PinEnvironmentTag(ctx context.Context, appID, environment, tag string) error {
+	appPath := fmt.Sprintf("/apis/kubernetes.getvesta.sh/v1alpha1/namespaces/%s/vestaapps/%s", buildNamespace, appID)
+
+	envIndex, envImage, err := b.environmentImage(ctx, appPath, environment)
 	if err != nil {
-		log.Printf("[builder] cannot resolve environment %q on VestaApp %s: %v", req.Environment, req.AppID, err)
-		return
+		return fmt.Errorf("resolve environment %q: %w", environment, err)
 	}
 
 	var patchType types.PatchType
@@ -509,8 +559,7 @@ func (b *Builder) onBuildSuccess(ctx context.Context, req BuildRequest) {
 		envImage["tag"] = tag
 		value, mErr := json.Marshal(envImage)
 		if mErr != nil {
-			log.Printf("[builder] failed to encode image config for %s: %v", req.AppID, mErr)
-			return
+			return fmt.Errorf("encode image config: %w", mErr)
 		}
 		patchType = types.JSONPatchType
 		patch = []byte(fmt.Sprintf(`[{"op":"add","path":"/spec/environments/%d/image","value":%s}]`, envIndex, value))
@@ -525,8 +574,31 @@ func (b *Builder) onBuildSuccess(ctx context.Context, req BuildRequest) {
 		AbsPath(appPath).
 		Body(patch).
 		DoRaw(ctx); err != nil {
-		log.Printf("[builder] failed to update VestaApp %s after build: %v", req.AppID, err)
+		return err
 	}
+	return nil
+}
+
+// RecordCommitSHA notes which commit an app was last rolled out from.
+//
+// This writes status.lastCommitSHA, through the status subresource. It used to write
+// spec.git.commitSHA, a field the CRD does not declare -- so the API server pruned it on
+// every write and nothing was ever recorded. The commit is observed state, not something
+// anyone asked for, so status is where it belongs; and status can only be written through
+// its own subresource, which a patch to the main resource silently drops.
+func (b *Builder) RecordCommitSHA(ctx context.Context, appID, commitSHA string) error {
+	if commitSHA == "" {
+		return nil
+	}
+	statusPath := fmt.Sprintf("/apis/kubernetes.getvesta.sh/v1alpha1/namespaces/%s/vestaapps/%s/status", buildNamespace, appID)
+	patch := fmt.Sprintf(`{"status":{"lastCommitSHA":%q}}`, commitSHA)
+
+	_, err := b.clientset.Discovery().RESTClient().
+		Patch(types.MergePatchType).
+		AbsPath(statusPath).
+		Body([]byte(patch)).
+		DoRaw(ctx)
+	return err
 }
 
 // environmentImage returns the index of envName in spec.environments along with its
@@ -570,3 +642,127 @@ func (b *Builder) environmentImage(ctx context.Context, appPath, envName string)
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+// adoptEphemeralSecret makes a build Job the owner of its git-token Secret, so Kubernetes
+// deletes the token when it deletes the Job. Best effort: a build that runs is worth more
+// than a tidy namespace, and watchBuild deletes the secret directly when the build ends.
+func (b *Builder) adoptEphemeralSecret(ctx context.Context, name string, job *batchv1.Job) {
+	patch := fmt.Sprintf(
+		`{"metadata":{"ownerReferences":[{"apiVersion":"batch/v1","kind":"Job","name":%q,"uid":%q,"controller":true,"blockOwnerDeletion":false}]}}`,
+		job.Name, job.UID)
+
+	if _, err := b.clientset.CoreV1().Secrets(buildNamespace).
+		Patch(ctx, name, types.MergePatchType, []byte(patch), metav1.PatchOptions{}); err != nil {
+		log.Printf("[builder] could not attach ephemeral secret %s to job %s: %v", name, job.Name, err)
+	}
+}
+
+func (b *Builder) deleteEphemeralSecret(ctx context.Context, name string) {
+	if err := b.clientset.CoreV1().Secrets(buildNamespace).
+		Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+		log.Printf("[builder] could not delete ephemeral secret %s: %v", name, err)
+	}
+}
+
+// cloneCredential resolves the credential a build should clone with.
+//
+// Falls back to the GitHub App directly when no registry is wired, so a Builder constructed
+// without one behaves as it did before rather than silently losing authentication.
+func (b *Builder) cloneCredential(ctx context.Context, req BuildRequest) (git.Credential, error) {
+	provider := req.Provider
+	if provider == "" {
+		provider = git.ProviderGitHub
+	}
+
+	ref, err := git.ParseRepoRef(provider, req.Host, req.Repository)
+	if err != nil {
+		return git.Credential{}, err
+	}
+
+	if p, ok := b.providers.Get(provider); ok {
+		return p.CredentialFor(ctx, git.Connection{Provider: provider, Host: ref.Host}, ref)
+	}
+
+	if b.githubApp != nil && b.githubApp.IsConfigured() && provider == git.ProviderGitHub {
+		token, err := b.githubApp.GetTokenForRepo(ctx, ref.Path)
+		if err != nil {
+			return git.Credential{}, err
+		}
+		return githubCredential(token), nil
+	}
+	return git.Credential{}, fmt.Errorf("no provider for %s", provider)
+}
+
+// reportStatus tells the git host how a build ended.
+//
+// Nothing did this before. A build start posted "pending" from the webhook handler and no
+// code path ever posted anything else, so every commit Vesta built was left with a
+// permanently pending check -- which blocks merges on any repository with a required status
+// and looks, from the pull request, exactly like a build that never finished.
+//
+// Best effort on purpose: a host that cannot be told is not a reason to fail a build that
+// already succeeded.
+func (b *Builder) reportStatus(ctx context.Context, req BuildRequest, state git.BuildState, description string) {
+	if req.CommitSHA == "" {
+		return // a manual build with no commit has nothing to report against
+	}
+
+	provider := req.Provider
+	if provider == "" {
+		provider = git.ProviderGitHub
+	}
+	impl, ok := b.providers.Get(provider)
+	if !ok {
+		return
+	}
+
+	ref, err := git.ParseRepoRef(provider, req.Host, req.Repository)
+	if err != nil {
+		return
+	}
+
+	conn := git.Connection{Provider: ref.Provider, Host: ref.Host}
+	if b.connections != nil {
+		if resolved, err := b.connections(ctx, ref); err == nil {
+			conn = resolved
+		}
+	}
+
+	if err := impl.ReportStatus(ctx, conn, ref, req.CommitSHA, state, "", description); err != nil {
+		log.Printf("[builder] could not report %s for %s: %v", state, req.AppID, err)
+	}
+}
+
+// SetConnectionResolver gives the builder a way to find the connection serving a repository,
+// so a status is reported through the credentials that repository actually belongs to.
+func (b *Builder) SetConnectionResolver(fn func(context.Context, git.RepoRef) (git.Connection, error)) {
+	b.connections = fn
+}
+
+// truncateForStatus keeps a build error short enough for a commit status description, which
+// every provider caps well below the length a Kubernetes failure message can reach.
+func truncateForStatus(msg string) string {
+	const max = 140
+	if len(msg) <= max {
+		return msg
+	}
+	return msg[:max-1] + "\u2026"
+}
+
+// SupportedBuildStrategies is what TriggerBuild can actually build.
+//
+// Deliberately narrower than the CRD's enum, which also accepts "runpacks" and "image".
+// "image" never reaches a builder -- an app deploying a pre-built image does not build --
+// but "runpacks" is a genuine gap: it is accepted at admission and then fails at build time,
+// which is the worst place to discover it.
+//
+// Removing it from the enum would be the obvious fix and is the wrong one. Narrowing a CRD
+// schema is a data migration: an app already storing that value would become unappliable,
+// and check-crd-compat.sh guards `required` fields but not enum narrowing, so nothing would
+// catch the breakage. So the value stays accepted and the failure is at least explicit about
+// what to use instead.
+var SupportedBuildStrategies = []string{
+	BuildStrategyDockerfile,
+	BuildStrategyNixpacks,
+	BuildStrategyBuildpacks,
+}

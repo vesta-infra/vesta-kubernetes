@@ -241,7 +241,10 @@ func TestOutputOrderIsStable(t *testing.T) {
 }
 
 func TestSplitEndpoint(t *testing.T) {
-	cases := []struct{ uri, path, host, port string; tls bool }{
+	cases := []struct {
+		uri, path, host, port string
+		tls                   bool
+	}{
 		{"https://logs.example.com/ingest", "/ingest", "logs.example.com", "443", true},
 		{"http://logs.internal:8080/v1/logs", "/v1/logs", "logs.internal", "8080", false},
 		{"https://logs.example.com", "/", "logs.example.com", "443", true},

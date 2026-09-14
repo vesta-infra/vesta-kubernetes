@@ -20,27 +20,27 @@ import (
 type EventType string
 
 const (
-	EventDeployStarted  EventType = "deploy.started"
-	EventDeployFailed   EventType = "deploy.failed"
+	EventDeployStarted   EventType = "deploy.started"
+	EventDeployFailed    EventType = "deploy.failed"
 	EventDeploySucceeded EventType = "deploy.succeeded"
-	EventBuildStarted   EventType = "build.started"
-	EventBuildSucceeded EventType = "build.succeeded"
-	EventBuildFailed    EventType = "build.failed"
-	EventAppRestarted   EventType = "app.restarted"
-	EventAppScaled      EventType = "app.scaled"
-	EventAppCreated     EventType = "app.created"
-	EventAppDeleted     EventType = "app.deleted"
+	EventBuildStarted    EventType = "build.started"
+	EventBuildSucceeded  EventType = "build.succeeded"
+	EventBuildFailed     EventType = "build.failed"
+	EventAppRestarted    EventType = "app.restarted"
+	EventAppScaled       EventType = "app.scaled"
+	EventAppCreated      EventType = "app.created"
+	EventAppDeleted      EventType = "app.deleted"
 )
 
 type NotificationEvent struct {
-	Type        EventType `json:"type"`
-	ProjectID   string    `json:"projectId"`
-	AppID       string    `json:"appId"`
-	Environment string    `json:"environment,omitempty"`
-	Image       string    `json:"image,omitempty"`
-	TriggeredBy string    `json:"triggeredBy,omitempty"`
-	Message     string    `json:"message"`
-	Timestamp   time.Time `json:"timestamp"`
+	Type        EventType              `json:"type"`
+	ProjectID   string                 `json:"projectId"`
+	AppID       string                 `json:"appId"`
+	Environment string                 `json:"environment,omitempty"`
+	Image       string                 `json:"image,omitempty"`
+	TriggeredBy string                 `json:"triggeredBy,omitempty"`
+	Message     string                 `json:"message"`
+	Timestamp   time.Time              `json:"timestamp"`
 	Extra       map[string]interface{} `json:"extra,omitempty"`
 }
 

@@ -58,20 +58,34 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Created before the controllers that read it. The environment reconciler needs it for
+	// platform quota defaults and pod-size presets, and it used to be built after that
+	// block.
+	configResolver := controllers.NewConfigResolver(mgr.GetClient())
+
 	if err = (&controllers.VestaEnvironmentReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		ConfigResolver: configResolver,
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "VestaEnvironment")
 		os.Exit(1)
 	}
 
-	configResolver := controllers.NewConfigResolver(mgr.GetClient())
+	// The activator image and the ClusterRoles its ServiceAccounts bind to. Empty disables
+	// wake-on-traffic: nothing is created, and a sleeping app simply stays down rather
+	// than being answered by something that does not exist.
+	activatorImage := os.Getenv("VESTA_ACTIVATOR_IMAGE")
+	activatorNamespaceRole := envOrDefault("VESTA_ACTIVATOR_NAMESPACE_ROLE", "vesta-activator-namespace")
+	activatorWakeRole := envOrDefault("VESTA_ACTIVATOR_WAKE_ROLE", "vesta-activator-wake")
 
 	if err = (&controllers.VestaAppReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		ConfigResolver: configResolver,
+		ActivatorImage:         activatorImage,
+		ActivatorNamespaceRole: activatorNamespaceRole,
+		ActivatorWakeRole:      activatorWakeRole,
+		Client:                 mgr.GetClient(),
+		Scheme:                 mgr.GetScheme(),
+		ConfigResolver:         configResolver,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "VestaApp")
 		os.Exit(1)
@@ -105,6 +119,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&controllers.VestaAddonReconciler{
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		ConfigResolver: configResolver,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "VestaAddon")
+		os.Exit(1)
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
@@ -119,4 +142,11 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

@@ -296,3 +296,29 @@ logging:
   #     secret: central-drain-credentials
   #     key: apiKey
   secretRefs: []
+
+# Wake-on-traffic for scaled-to-zero apps.
+#
+# An activator stands in for a sleeping app: it holds the request, starts the app, waits for
+# it to serve, and proxies through, so the requester sees a slow response rather than an
+# error. One runs per namespace that contains an app with wakeOnTraffic set, created and
+# removed by the operator.
+#
+# Enabled by default because the alternative is worse: without it a sleeping app's requests
+# simply fail, and scale-to-zero is a feature nobody can use. Nothing runs until an app opts
+# in, so a cluster that never uses it pays nothing.
+activator:
+  enabled: true
+  image:
+    repository: ghcr.io/vesta-infra/kubernetes-activator
+    tag: ""
+    pullPolicy: IfNotPresent
+  # Sized for proxying, not for work: it holds connections and forwards bytes. An activator
+  # that costs more than the app it stands in for defeats the point of scaling to zero.
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi

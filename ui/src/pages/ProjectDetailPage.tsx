@@ -2,6 +2,10 @@ import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
+import { ImageRepositoryInput, ImageTagInput } from '../components/RegistryPicker'
+import AddonsSection from '../components/AddonsSection'
+import CostSection from '../components/CostSection'
+import QuotaSection from '../components/QuotaSection'
 import { useUserRole, useIsProjectOwner } from '../lib/useRole'
 import RevealableInput from '../components/RevealableInput'
 
@@ -233,6 +237,11 @@ export default function ProjectDetailPage() {
 
       <NotificationsSection projectId={projectId!} />
       <AlertRulesSection projectId={projectId!} />
+      <AddonsSection projectId={projectId!} environments={(environments?.items || []).map((e: any) => e.name)} />
+
+      <CostSection projectId={projectId!} />
+
+      <QuotaSection projectId={projectId!} environments={(environments?.items || []).map((e: any) => e.name)} />
       <DependencyGraphSection projectId={projectId!} />
       <ProjectTransferSection projectId={projectId!} />
     </div>
@@ -243,6 +252,7 @@ function ProjectOwnersSection({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient()
   const [showAdd, setShowAdd] = useState(false)
   const [selectedUserId, setSelectedUserId] = useState('')
+  const [selectedRole, setSelectedRole] = useState('maintainer')
 
   const { data: members, isLoading } = useQuery({
     queryKey: ['projectMembers', projectId],
@@ -256,7 +266,7 @@ function ProjectOwnersSection({ projectId }: { projectId: string }) {
   })
 
   const addMutation = useMutation({
-    mutationFn: (userId: string) => api.addProjectMember(projectId, { userId, role: 'owner' }),
+    mutationFn: (userId: string) => api.addProjectMember(projectId, { userId, role: selectedRole }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['projectMembers', projectId] })
       setShowAdd(false)
@@ -275,7 +285,7 @@ function ProjectOwnersSection({ projectId }: { projectId: string }) {
   return (
     <section className="card p-5">
       <div className="flex items-center justify-between mb-4">
-        <h3 className="section-title">Project Owners</h3>
+        <h3 className="section-title">Project Members</h3>
         <button
           onClick={() => { setShowAdd(!showAdd); setSelectedUserId('') }}
           className="text-xs text-accent hover:text-accent-glow transition-colors"
@@ -289,7 +299,7 @@ function ProjectOwnersSection({ projectId }: { projectId: string }) {
           <select
             value={selectedUserId}
             onChange={(e) => setSelectedUserId(e.target.value)}
-            className="input w-full text-xs"
+            className="input-field w-full text-xs"
           >
             <option value="">Select a user...</option>
             {availableUsers.map((u: any) => (
@@ -298,12 +308,22 @@ function ProjectOwnersSection({ projectId }: { projectId: string }) {
               </option>
             ))}
           </select>
+          <select
+            value={selectedRole}
+            onChange={(e) => setSelectedRole(e.target.value)}
+            className="input-field w-full text-xs"
+          >
+            <option value="owner">Owner — can also manage members</option>
+            <option value="maintainer">Maintainer — configuration and secrets</option>
+            <option value="deployer">Deployer — deploy, but no secrets</option>
+            <option value="viewer">Viewer — read only</option>
+          </select>
           <button
             onClick={() => { if (selectedUserId) addMutation.mutate(selectedUserId) }}
             disabled={!selectedUserId || addMutation.isPending}
             className="btn-primary w-full text-xs"
           >
-            {addMutation.isPending ? 'Adding...' : 'Add as Project Owner'}
+            {addMutation.isPending ? 'Adding...' : 'Add member'}
           </button>
           {addMutation.isError && (
             <p className="text-status-failed text-xs">{(addMutation.error as Error).message}</p>
@@ -314,15 +334,21 @@ function ProjectOwnersSection({ projectId }: { projectId: string }) {
       {isLoading && <p className="text-xs text-text-tertiary">Loading...</p>}
 
       {!isLoading && (!members?.items || members.items.length === 0) && (
-        <p className="text-xs text-text-tertiary">No project owners assigned.</p>
+        <p className="text-xs text-text-tertiary">
+          No members yet. Until memberships are enforced under Settings → Roles, access still
+          follows global roles.
+        </p>
       )}
 
       <div className="space-y-2">
         {(members?.items || []).map((m: any) => (
           <div key={m.userId} className="flex items-center justify-between">
-            <div>
-              <p className="text-xs text-text-primary">{m.displayName || m.username || m.userId}</p>
-              {m.email && <p className="text-[11px] text-text-tertiary font-mono">{m.email}</p>}
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <p className="text-xs text-text-primary truncate">{m.displayName || m.username || m.userId}</p>
+                <span className="chip">{m.role || 'owner'}</span>
+              </div>
+              {m.email && <p className="text-[11px] text-text-tertiary font-mono truncate">{m.email}</p>}
             </div>
             <button
               onClick={() => removeMutation.mutate(m.userId)}
@@ -864,19 +890,22 @@ function CreateAppForm({ projectId, environments, onClose }: { projectId: string
       <div className="grid grid-cols-3 gap-4">
         <div className="col-span-2">
           <label className="label">Image Repository</label>
-          <input
+          <ImageRepositoryInput
+            secretName={pullSecrets[0]}
             value={imageRepo}
-            onChange={(e) => setImageRepo(e.target.value)}
-            className="input-field"
+            onChange={setImageRepo}
+            className="input-field w-full"
             placeholder="registry.example.com/org/app"
           />
         </div>
         <div>
           <label className="label">Tag</label>
-          <input
+          <ImageTagInput
+            secretName={pullSecrets[0]}
+            repository={imageRepo}
             value={imageTag}
-            onChange={(e) => setImageTag(e.target.value)}
-            className="input-field"
+            onChange={setImageTag}
+            className="input-field w-full"
             placeholder="latest"
           />
         </div>
