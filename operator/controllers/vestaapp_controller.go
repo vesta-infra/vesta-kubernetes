@@ -425,28 +425,12 @@ func (r *VestaAppReconciler) reconcileServiceAccount(ctx context.Context, app *v
 
 func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv, projectLabels, projectAnnotations map[string]string) error {
 	labels := r.labelsForApp(app)
-	replicas := int32(1)
-	if target.Config.Replicas != nil {
-		replicas = *target.Config.Replicas
-	}
 
-	// When autoscaling is enabled, don't override replicas — let the HPA control them.
+	// When autoscaling is enabled, don't override replicas — let the HPA control them,
+	// except while the app is at rest, where zero has to win over the autoscaler.
 	autoscalingEnabled := target.Config.Autoscale != nil && target.Config.Autoscale.Enabled
 
-	// Scale-to-Zero: if sleep is enabled and the app is marked as sleeping, set replicas to 0
-	sleepActive := false
-	if app.Spec.Sleep != nil && app.Spec.Sleep.Enabled {
-		if app.Status.Phase == "Sleeping" {
-			replicas = 0
-			sleepActive = true
-		}
-	}
-
-	// Stopped: if the app is explicitly stopped, set replicas to 0
-	if app.Status.Phase == "Stopped" {
-		replicas = 0
-		sleepActive = true // reuse the sleepActive flag to force replicas
-	}
+	replicas, writeReplicas := resolveReplicas(app.Spec.DesiredState, target.Config.Replicas, autoscalingEnabled)
 
 	// Fetch project for imagePullSecrets
 	var project vestav1alpha1.VestaProject
@@ -576,12 +560,10 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 				Spec: podSpec,
 			}
 
-			// Only set replicas when autoscaling is NOT enabled;
-			// otherwise let the HPA manage the replica count.
-			// When sleep is active, always force replicas to 0.
-			if sleepActive {
-				deploy.Spec.Replicas = &replicas
-			} else if !autoscalingEnabled {
+			// resolveReplicas has already decided this: it says no when an HPA owns the
+			// field, and yes regardless while the app is at rest, where zero must win
+			// over the autoscaler.
+			if writeReplicas {
 				deploy.Spec.Replicas = &replicas
 			}
 
@@ -2193,11 +2175,14 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 			}
 		}
 
-		// Determine phase
-		sleepEnabled := app.Spec.Sleep != nil && app.Spec.Sleep.Enabled
+		// Determine phase. A resting state is read from the spec rather than inferred
+		// from the absence of pods: "no replicas because we were told to sleep" and "no
+		// replicas because something went wrong" look identical from the cluster, and
+		// only the spec distinguishes them.
+		resting, isResting := restingPhase(app.Spec.DesiredState)
 		switch {
-		case sleepEnabled && totalDesired == 0:
-			app.Status.Phase = "Sleeping"
+		case isResting:
+			app.Status.Phase = resting
 		case hasImagePullErr:
 			app.Status.Phase = "Failed"
 		case hasCrashLoop:
@@ -2216,14 +2201,14 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 		// names the specific pod, container, and underlying error.
 		reason, message := summarizeIssues(issues)
 		switch app.Status.Phase {
-		case "Running", "Sleeping":
+		case "Running", "Sleeping", "Stopped":
 			app.Status.Reason = ""
 			app.Status.Message = ""
 		default:
 			app.Status.Reason = reason
 			app.Status.Message = message
 		}
-		r.setReadyCondition(&app, reason, message)
+		r.setReadyCondition(&app, app.Status.Phase, reason, message)
 
 		// Populate scaling status
 		app.Status.Scaling = &vestav1alpha1.ScalingStatus{
@@ -2293,7 +2278,7 @@ func (r *VestaAppReconciler) updateStatusFailed(ctx context.Context, app *vestav
 		// "Failed" with the cause only in the operator's logs.
 		latest.Status.Reason = reason
 		latest.Status.Message = truncateMessage(message)
-		r.setReadyCondition(&latest, reason, message)
+		r.setReadyCondition(&latest, "Failed", reason, message)
 		return r.Status().Update(ctx, &latest)
 	})
 	return ctrl.Result{}, reconcileErr
@@ -2301,12 +2286,25 @@ func (r *VestaAppReconciler) updateStatusFailed(ctx context.Context, app *vestav
 
 // setReadyCondition mirrors the reason onto a standard Ready condition so
 // kubectl wait, kubectl describe, and controller-runtime tooling can read it.
-func (r *VestaAppReconciler) setReadyCondition(app *vestav1alpha1.VestaApp, reason, message string) {
+func (r *VestaAppReconciler) setReadyCondition(app *vestav1alpha1.VestaApp, phase, reason, message string) {
 	ready := metav1.ConditionTrue
 	condReason := "AppReady"
 	condMessage := "All environments are running"
 
-	if reason != "" {
+	switch {
+	// An app at rest is not serving, so Ready has to be false -- but the reason names the
+	// instruction rather than a fault, so a deliberate sleep does not read as an outage.
+	// Without this branch a stopped app reported Ready with "All environments are
+	// running", since the resting phases carry no reason.
+	case phase == "Sleeping":
+		ready = metav1.ConditionFalse
+		condReason = "Sleeping"
+		condMessage = "Asleep; scaled to zero"
+	case phase == "Stopped":
+		ready = metav1.ConditionFalse
+		condReason = "Stopped"
+		condMessage = "Stopped by request"
+	case reason != "":
 		ready = metav1.ConditionFalse
 		condReason = reason
 		condMessage = truncateMessage(message)

@@ -2,11 +2,11 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api'
 
-type Phase = 'Running' | 'Deploying' | 'Pending' | 'Degraded' | 'CrashLoopBackOff' | 'Failed' | 'Sleeping'
+type Phase = 'Running' | 'Deploying' | 'Pending' | 'Degraded' | 'CrashLoopBackOff' | 'Failed' | 'Sleeping' | 'Stopped'
 
 // Every phase the operator can report. A phase missing here rendered as "Pending",
 // which quietly mislabelled crash-looping apps as merely starting up.
-const PHASE_ORDER: Phase[] = ['Running', 'Deploying', 'Pending', 'Degraded', 'CrashLoopBackOff', 'Failed', 'Sleeping']
+const PHASE_ORDER: Phase[] = ['Running', 'Deploying', 'Pending', 'Degraded', 'CrashLoopBackOff', 'Failed', 'Sleeping', 'Stopped']
 
 // Short labels keep the legend readable; the phase itself stays the key.
 const PHASE_LABELS: Record<string, string> = {

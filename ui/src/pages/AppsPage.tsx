@@ -662,7 +662,7 @@ function StatusBadge({ phase }: { phase?: string }) {
       ? 'bg-status-failed-bg text-status-failed border border-status-failed/10'
       : p === 'Degraded'
       ? 'bg-status-degraded-bg text-status-degraded border border-status-degraded/10'
-      : p === 'Sleeping'
+      : p === 'Sleeping' || p === 'Stopped'
       ? 'bg-status-sleeping-bg text-status-sleeping border border-status-sleeping/10'
       : p === 'Deploying'
       ? 'bg-status-pending-bg text-status-pending border border-status-pending/10'

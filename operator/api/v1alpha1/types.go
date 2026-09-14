@@ -46,8 +46,28 @@ type VestaAppSpec struct {
 	Addons   []AddonConfig   `json:"addons,omitempty"`
 	Sleep    *SleepConfig    `json:"sleep,omitempty"`
 
+	// DesiredState is what the operator should be driving the app toward. Status reports
+	// what it actually is; this says what it ought to be.
+	//
+	// The distinction is load-bearing. Sleep and stop used to be expressed by writing
+	// status.phase, which cannot work: VestaApp has a status subresource, so a patch to
+	// the main resource drops the status stanza silently. Sleep then deadlocked -- the
+	// operator zeroed replicas only once the phase was "Sleeping", while the phase became
+	// "Sleeping" only once replicas were already zero -- and stop was a no-op outright.
+	//
+	// Empty means "running", so an app that predates this field keeps its behaviour.
+	// +kubebuilder:validation:Enum=running;sleeping;stopped
+	DesiredState string `json:"desiredState,omitempty"`
+
 	CustomConfig *CustomConfig `json:"customConfig,omitempty"`
 }
+
+// DesiredState values. Empty is equivalent to DesiredStateRunning.
+const (
+	DesiredStateRunning  = "running"
+	DesiredStateSleeping = "sleeping"
+	DesiredStateStopped  = "stopped"
+)
 
 // AppEnvironmentConfig holds per-environment deployment configuration
 type AppEnvironmentConfig struct {
@@ -322,7 +342,11 @@ type CustomConfig struct {
 // --- Status ---
 
 type VestaAppStatus struct {
-	// +kubebuilder:validation:Enum=Pending;Building;Deploying;Running;Degraded;Failed;Sleeping;CrashLoopBackOff
+	// Stopped joins the list because spec.desiredState can now hold an app at zero
+	// replicas indefinitely. Earlier releases wrote "Stopped" here from the API without
+	// it ever being a legal value -- the write was dropped by the status subresource, so
+	// nothing rejected it and nothing honoured it either.
+	// +kubebuilder:validation:Enum=Pending;Building;Deploying;Running;Degraded;Failed;Sleeping;Stopped;CrashLoopBackOff
 	Phase string `json:"phase,omitempty"`
 
 	// Reason is a short CamelCase token naming why the app is in its current

@@ -99,7 +99,9 @@ var logDrainsCreateCmd = &cobra.Command{
 		"Scope it by adding project, environment or app. Credentials go under a separate\n" +
 		"credentials key and are written to a Secret rather than to the drain:\n\n" +
 		"  name: datadog\n  type: datadog\n  config:\n    site: datadoghq.eu\n" +
-		"  credentials:\n    apiKey: ...\n\n" +
+		"  credentials:\n    API_KEY: ...\n\n" +
+		"Each credential is named by the key it is stored under -- USER and PASSWORD for\n" +
+		"basic auth, API_KEY, AUTH, SHARED_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY.\n\n" +
 		"Use \"-\" to read from stdin.",
 	Run: func(cmd *cobra.Command, args []string) {
 		file, _ := cmd.Flags().GetString("file")

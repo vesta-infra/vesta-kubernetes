@@ -5,6 +5,8 @@ import { api, type LogDrain, type LogDrainType, type LogDrainPayload } from '../
 type FieldKind = 'text' | 'number' | 'boolean' | 'map' | 'secret'
 
 interface FieldSpec {
+  /** For secret fields this is the Secret key, which is also the env-var suffix the
+   *  generated collector config references. For others it is the config field. */
   key: string
   label: string
   kind: FieldKind
@@ -21,7 +23,7 @@ const TYPE_FIELDS: Record<LogDrainType, { label: string; blurb: string; fields: 
     blurb: 'POSTs batches of JSON. Works with most SaaS log services and anything custom.',
     fields: [
       { key: 'uri', label: 'URL', kind: 'text', placeholder: 'https://logs.example.com/ingest' },
-      { key: 'authHeader', label: 'Authorization header', kind: 'secret', help: 'Sent as the Authorization header. Stored in a Secret, never on the drain.' },
+      { key: 'AUTH', label: 'Authorization header', kind: 'secret', help: 'Sent verbatim as the Authorization header, e.g. "Bearer …". Stored in a Secret.' },
       { key: 'format', label: 'Format', kind: 'text', placeholder: 'json' },
       { key: 'dateKey', label: 'Timestamp field', kind: 'text', placeholder: 'timestamp', help: 'The field the destination reads event time from. Leave blank unless it expects its own — a mismatch is accepted silently and every record gets its ingestion time instead.' },
       { key: 'headers', label: 'Extra headers', kind: 'map' },
@@ -33,7 +35,8 @@ const TYPE_FIELDS: Record<LogDrainType, { label: string; blurb: string; fields: 
     fields: [
       { key: 'host', label: 'Host', kind: 'text', placeholder: 'loki.monitoring.svc' },
       { key: 'port', label: 'Port', kind: 'number', placeholder: '3100' },
-      { key: 'basicAuth', label: 'Basic auth', kind: 'secret', help: 'user:password. Stored in a Secret.' },
+      { key: 'USER', label: 'Username', kind: 'secret' },
+      { key: 'PASSWORD', label: 'Password', kind: 'secret' },
       { key: 'tenantId', label: 'Tenant ID', kind: 'text' },
       { key: 'labels', label: 'Extra stream labels', kind: 'map', help: 'project, namespace and app are always added.' },
     ],
@@ -55,7 +58,8 @@ const TYPE_FIELDS: Record<LogDrainType, { label: string; blurb: string; fields: 
       { key: 'host', label: 'Host', kind: 'text' },
       { key: 'port', label: 'Port', kind: 'number', placeholder: '9200' },
       { key: 'index', label: 'Index', kind: 'text', placeholder: 'vesta' },
-      { key: 'basicAuth', label: 'Basic auth', kind: 'secret', help: 'user:password. Stored in a Secret.' },
+      { key: 'USER', label: 'Username', kind: 'secret' },
+      { key: 'PASSWORD', label: 'Password', kind: 'secret' },
       { key: 'logstashFormat', label: 'Dated indices (Logstash format)', kind: 'boolean' },
     ],
   },
@@ -63,7 +67,7 @@ const TYPE_FIELDS: Record<LogDrainType, { label: string; blurb: string; fields: 
     label: 'Datadog',
     blurb: 'Datadog Logs.',
     fields: [
-      { key: 'apiKey', label: 'API key', kind: 'secret', help: 'Stored in a Secret, never on the drain.' },
+      { key: 'API_KEY', label: 'API key', kind: 'secret', help: 'Stored in a Secret, never on the drain.' },
       { key: 'site', label: 'Site', kind: 'text', placeholder: 'datadoghq.com', help: 'Use datadoghq.eu for EU accounts — the wrong site is accepted and lands elsewhere.' },
       { key: 'service', label: 'Service', kind: 'text' },
       { key: 'tags', label: 'Extra tags', kind: 'map' },
@@ -76,7 +80,8 @@ const TYPE_FIELDS: Record<LogDrainType, { label: string; blurb: string; fields: 
       { key: 'endpoint', label: 'Endpoint', kind: 'text', placeholder: 'https://openobserve.example.com', help: 'Base URL only \u2014 no path. The ingest path is built from the organization and stream below.' },
       { key: 'organization', label: 'Organization', kind: 'text', placeholder: 'default' },
       { key: 'stream', label: 'Stream', kind: 'text', placeholder: 'vesta', help: 'Created on first write.' },
-      { key: 'credentials', label: 'Email and password', kind: 'secret', help: 'As email:password. Stored in a Secret; the collector does the encoding.' },
+      { key: 'USER', label: 'Email', kind: 'secret', help: 'The account OpenObserve authenticates as.' },
+      { key: 'PASSWORD', label: 'Password', kind: 'secret', help: 'Stored in a Secret; the collector handles the encoding.' },
     ],
   },
   forward: {
@@ -85,7 +90,7 @@ const TYPE_FIELDS: Record<LogDrainType, { label: string; blurb: string; fields: 
     fields: [
       { key: 'host', label: 'Host', kind: 'text', placeholder: 'fluentd.logging.svc' },
       { key: 'port', label: 'Port', kind: 'number', placeholder: '24224' },
-      { key: 'sharedKey', label: 'Shared key', kind: 'secret', help: 'Enables the handshake. Without it the aggregator accepts records from anything that can reach the port.' },
+      { key: 'SHARED_KEY', label: 'Shared key', kind: 'secret', help: 'Enables the handshake. Without it the aggregator accepts records from anything that can reach the port.' },
       { key: 'tls', label: 'TLS', kind: 'boolean' },
     ],
   },
@@ -95,7 +100,8 @@ const TYPE_FIELDS: Record<LogDrainType, { label: string; blurb: string; fields: 
     fields: [
       { key: 'bucket', label: 'Bucket', kind: 'text' },
       { key: 'region', label: 'Region', kind: 'text', placeholder: 'eu-west-1' },
-      { key: 'credentials', label: 'Access key', kind: 'secret', help: 'Leave empty to use the node role or IRSA.' },
+      { key: 'AWS_ACCESS_KEY_ID', label: 'Access key ID', kind: 'secret', help: 'Leave both empty to use the node role or IRSA.' },
+      { key: 'AWS_SECRET_ACCESS_KEY', label: 'Secret access key', kind: 'secret' },
       { key: 'endpoint', label: 'Endpoint', kind: 'text', help: 'For S3-compatible storage.' },
       { key: 'totalFileSize', label: 'File size before upload', kind: 'text', placeholder: '50M' },
     ],
@@ -388,7 +394,7 @@ function LogDrainForm({ existing, onClose, onSaved }: {
               key={field.key}
               field={field}
               value={field.kind === 'secret' ? credentials[field.key] : config[field.key]}
-              hasStoredSecret={field.kind === 'secret' && !!existing?.config?.[field.key]}
+              hasStoredSecret={field.kind === 'secret' && hasStoredCredential(existing, type, field.key)}
               onChange={v => field.kind === 'secret'
                 ? setCredentials(prev => ({ ...prev, [field.key]: v }))
                 : setConfig(prev => ({ ...prev, [field.key]: v }))}
@@ -483,4 +489,25 @@ function DrainField({ field, value, hasStoredSecret, onChange }: {
       {field.help && <p className="text-[10px] text-text-tertiary mt-1">{field.help}</p>}
     </div>
   )
+}
+
+
+// Which config field records that a given Secret key is stored. The API sets one reference
+// per credential, keyed by config field, so a Secret key has to map back to it before the
+// form can say "unchanged".
+const CREDENTIAL_CONFIG_FIELD: Record<string, Record<string, string>> = {
+  http: { AUTH: 'authHeader' },
+  loki: { USER: 'basicAuth', PASSWORD: 'basicAuth' },
+  elasticsearch: { USER: 'basicAuth', PASSWORD: 'basicAuth', CLOUD_ID: 'cloudId' },
+  datadog: { API_KEY: 'apiKey' },
+  s3: { AWS_ACCESS_KEY_ID: 'credentials', AWS_SECRET_ACCESS_KEY: 'credentials' },
+  openobserve: { USER: 'credentials', PASSWORD: 'credentials' },
+  forward: { SHARED_KEY: 'sharedKey' },
+  syslog: {},
+}
+
+function hasStoredCredential(existing: LogDrain | null, type: LogDrainType, secretKey: string): boolean {
+  if (!existing) return false
+  const field = CREDENTIAL_CONFIG_FIELD[type]?.[secretKey]
+  return !!field && !!existing.config?.[field]
 }

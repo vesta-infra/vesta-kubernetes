@@ -505,94 +505,64 @@ func (h *Handler) appHasEnvironment(obj map[string]interface{}, envName string) 
 	return false
 }
 
-// SleepApp puts an app to sleep (scales to zero).
-func (h *Handler) SleepApp(c *gin.Context) {
+// patchLifecycle asks the operator for a lifecycle change by patching spec.desiredState.
+//
+// The four handlers below used to patch status.phase instead. VestaApp declares a status
+// subresource, so a patch to the main resource discards the status stanza without error:
+// sleep deadlocked (the operator zeroed replicas only once the phase read "Sleeping", and
+// the phase read "Sleeping" only once replicas were already zero) and stop did nothing at
+// all. The instruction belongs in the spec; the operator alone owns the phase.
+func (h *Handler) patchLifecycle(c *gin.Context, spec map[string]interface{}, verb, action, result string) {
 	appId := c.Param("appId")
 
-	patch := map[string]interface{}{
-		"spec": map[string]interface{}{
-			"sleep": map[string]interface{}{
-				"enabled": true,
-			},
-		},
-		"status": map[string]interface{}{
-			"phase": "Sleeping",
-		},
-	}
-	patchBytes, _ := json.Marshal(patch)
-	_, err := h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId, patchBytes)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to sleep app: %v", err)})
+	patchBytes, _ := json.Marshal(map[string]interface{}{"spec": spec})
+	if _, err := h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId, patchBytes); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Code: 500, Message: fmt.Sprintf("failed to %s app: %v", verb, err)})
 		return
 	}
 
-	h.auditLog(c, "app.slept", "app", appId, appId, "", "", nil)
-	c.JSON(http.StatusOK, gin.H{"status": "sleeping", "app": appId})
+	h.auditLog(c, action, "app", appId, appId, "", "", nil)
+	c.JSON(http.StatusOK, gin.H{"status": result, "app": appId})
+}
+
+// SleepApp puts an app to sleep (scales to zero).
+func (h *Handler) SleepApp(c *gin.Context) {
+	h.patchLifecycle(c, map[string]interface{}{
+		"desiredState": "sleeping",
+		// desiredState is what actually holds the app at zero. spec.sleep stays the
+		// policy flag -- set here so an app slept by hand is also marked eligible for
+		// scale-to-zero, which is what the earlier behaviour implied and what the
+		// inactivity sweeper will read.
+		"sleep": map[string]interface{}{"enabled": true},
+	}, "sleep", "app.slept", "sleeping")
 }
 
 // WakeApp wakes an app from sleep.
 func (h *Handler) WakeApp(c *gin.Context) {
-	appId := c.Param("appId")
-
-	patch := map[string]interface{}{
-		"spec": map[string]interface{}{
-			"sleep": map[string]interface{}{
-				"enabled": false,
-			},
-		},
-		"status": map[string]interface{}{
-			"phase": "Pending",
-		},
-	}
-	patchBytes, _ := json.Marshal(patch)
-	_, err := h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId, patchBytes)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to wake app: %v", err)})
-		return
-	}
-
-	h.auditLog(c, "app.woken", "app", appId, appId, "", "", nil)
-	c.JSON(http.StatusOK, gin.H{"status": "waking", "app": appId})
+	h.patchLifecycle(c, map[string]interface{}{
+		"desiredState": "running",
+		// Clearing the policy as well, matching the previous behaviour: waking by hand
+		// opts the app out of scale-to-zero until it is turned back on.
+		"sleep": map[string]interface{}{"enabled": false},
+	}, "wake", "app.woken", "waking")
 }
 
 // StopApp stops an app by scaling to zero replicas.
 func (h *Handler) StopApp(c *gin.Context) {
-	appId := c.Param("appId")
-
-	patch := map[string]interface{}{
-		"status": map[string]interface{}{
-			"phase": "Stopped",
-		},
-	}
-	patchBytes, _ := json.Marshal(patch)
-	_, err := h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId, patchBytes)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to stop app: %v", err)})
-		return
-	}
-
-	h.auditLog(c, "app.stopped", "app", appId, appId, "", "", nil)
-	c.JSON(http.StatusOK, gin.H{"status": "stopped", "app": appId})
+	h.patchLifecycle(c, map[string]interface{}{
+		"desiredState": "stopped",
+	}, "stop", "app.stopped", "stopped")
 }
 
 // StartApp starts a stopped app by restoring its configured replicas.
+//
+// Unlike WakeApp this leaves spec.sleep alone: stopping is unrelated to the sleep policy,
+// and starting an app should not silently disable scale-to-zero for it.
 func (h *Handler) StartApp(c *gin.Context) {
-	appId := c.Param("appId")
-
-	patch := map[string]interface{}{
-		"status": map[string]interface{}{
-			"phase": "Pending",
-		},
-	}
-	patchBytes, _ := json.Marshal(patch)
-	_, err := h.K8s.PatchResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId, patchBytes)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to start app: %v", err)})
-		return
-	}
-
-	h.auditLog(c, "app.started", "app", appId, appId, "", "", nil)
-	c.JSON(http.StatusOK, gin.H{"status": "starting", "app": appId})
+	h.patchLifecycle(c, map[string]interface{}{
+		"desiredState": "running",
+	}, "start", "app.started", "starting")
 }
 
 // TriggerCronJob manually triggers a cronjob by creating a one-off Job.

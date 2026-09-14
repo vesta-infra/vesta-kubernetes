@@ -17,7 +17,7 @@ func TestNoCredentialReachesTheStoredDrainSpec(t *testing.T) {
 			"site":    "datadoghq.eu",
 			"service": "api",
 		},
-		Credentials: map[string]string{"apiKey": "dd-secret-value"},
+		Credentials: map[string]string{"API_KEY": "dd-secret-value"},
 	}
 
 	spec := logDrainSpecFrom(req)
@@ -154,17 +154,6 @@ func TestValidateLogDrain(t *testing.T) {
 	})
 }
 
-// Every drain type must have an entry, even an empty one. A missing entry means the
-// handler never strips that type's credential fields, so a value submitted under a
-// credential key would be stored on the resource.
-func TestEveryDrainTypeHasCredentialFields(t *testing.T) {
-	for drainType := range drainTypes {
-		if _, ok := credentialFields[drainType]; !ok {
-			t.Errorf("type %q has no credentialFields entry; its credentials would not be stripped", drainType)
-		}
-	}
-}
-
 func TestDrainSecretName(t *testing.T) {
 	if got := drainSecretName("central"); got != "vld-central-credentials" {
 		t.Errorf("got %q", got)
@@ -182,28 +171,56 @@ func TestLogDrainAcceptsYAML(t *testing.T) {
 	}
 }
 
-// Every credential field must expand to Secret keys. A missing entry means the credential
-// is written under a key the collector's environment never carries, so the reference
-// expands to an empty string and the destination rejects the batch -- reported as a
-// delivery error rather than as the configuration mistake it is.
-func TestEveryCredentialFieldHasSecretKeys(t *testing.T) {
-	for drainType, fields := range credentialFields {
-		for _, field := range fields {
-			if len(secretKeys(drainType, field)) == 0 {
-				t.Errorf("%s.%s expands to no secret keys", drainType, field)
+// Every drain type must have a credentialInputs entry, even an empty one, and every entry
+// must name a config field. A missing one means the type's credential keys are never
+// stripped from a submitted config, so a literal could be stored on the resource.
+func TestEveryDrainTypeHasCredentialInputs(t *testing.T) {
+	for drainType := range drainTypes {
+		inputs, ok := credentialInputs[drainType]
+		if !ok {
+			t.Errorf("type %q has no credentialInputs entry", drainType)
+			continue
+		}
+		primaries := map[string]int{}
+		for _, input := range inputs {
+			if input.SecretKey == "" || input.ConfigField == "" {
+				t.Errorf("%s has an incomplete credential input: %+v", drainType, input)
+			}
+			if input.Primary {
+				primaries[input.ConfigField]++
+			}
+		}
+		// Exactly one primary per config field, or the reference is either never set or
+		// set twice from different keys.
+		for field, count := range primaries {
+			if count != 1 {
+				t.Errorf("%s.%s has %d primary keys, want 1", drainType, field, count)
+			}
+		}
+		for _, field := range credentialConfigFields(drainType) {
+			if primaries[field] != 1 {
+				t.Errorf("%s.%s has no primary key, so its reference is never set", drainType, field)
 			}
 		}
 	}
 }
 
-func TestS3CredentialsUseAWSKeyNames(t *testing.T) {
-	// "credentials" is the config field for both s3 and openobserve, but the collector
-	// settings differ -- aws_access_key_id versus http_user.
-	if got := secretKeys("s3", "credentials"); got[0] != "AWS_ACCESS_KEY_ID" {
-		t.Errorf("got %v", got)
+func TestS3AndOpenObserveShareAFieldButNotKeys(t *testing.T) {
+	// Both use the config field "credentials", but the collector settings differ --
+	// aws_access_key_id versus http_user -- so the Secret keys must differ too.
+	keyFor := func(drainType string) string {
+		for _, input := range credentialInputs[drainType] {
+			if input.Primary {
+				return input.SecretKey
+			}
+		}
+		return ""
 	}
-	if got := secretKeys("openobserve", "credentials"); got[0] != "USER" {
-		t.Errorf("got %v", got)
+	if keyFor("s3") != "AWS_ACCESS_KEY_ID" {
+		t.Errorf("s3 primary key is %q", keyFor("s3"))
+	}
+	if keyFor("openobserve") != "USER" {
+		t.Errorf("openobserve primary key is %q", keyFor("openobserve"))
 	}
 }
 
