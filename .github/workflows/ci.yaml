@@ -145,7 +145,10 @@ jobs:
       #
       # The baseline chart is public, so these pull anonymously. Deliberately no registry
       # login: it would add a failure mode on pull requests from forks and buy nothing.
-      - name: CRD compatibility
+      # Covers both compatibility with earlier releases and structural validity. A property
+      # with no type makes the API server reject the whole CRD, and helm lint does not look
+      # at CRD schemas at all.
+      - name: CRD compatibility and structural validity
         run: make check-crds
 
       - name: No dropped resources
