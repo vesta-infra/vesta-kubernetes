@@ -424,7 +424,7 @@ config:
   host: fluentd.logging.svc
   port: 24224
 credentials:
-  sharedKey: "..."
+  SHARED_KEY: "..."
 ```
 
 OpenObserve has its own type, which fills in the ingest path and timestamp field:
@@ -437,7 +437,8 @@ config:
   organization: default
   stream: vesta
 credentials:
-  credentials: "email@example.com:password"
+  USER: you@example.com
+  PASSWORD: "..."
 ```
 
 Anything else accepting JSON over HTTP works through the `http` type. There, set `dateKey`
@@ -478,8 +479,13 @@ type: datadog
 config:
   site: datadoghq.eu
 credentials:
-  apiKey: "..."
+  API_KEY: "..."
 ```
+
+Each entry under `credentials:` is one value, named by the key it is stored under —
+`USER` and `PASSWORD` for basic auth, `API_KEY`, `AUTH`, `SHARED_KEY`,
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Those names are also the environment
+variables the collector reads, so what you see here is what the running config references.
 
 A CRD is readable by anyone with `get` on the type, so an API key there would be a leak
 however it arrived. The generated collector configuration references the Secret through the

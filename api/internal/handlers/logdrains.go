@@ -25,47 +25,68 @@ var drainTypes = map[string]bool{
 	"forward": true,
 }
 
-// credentialFields maps a drain type to the config keys that are credentials. Values under
-// these keys never reach the CRD: the handler writes them to a Secret and stores a
-// reference. A CRD is readable by anyone holding get on the type.
-var credentialFields = map[string][]string{
-	"http":          {"authHeader"},
-	"loki":          {"basicAuth"},
-	"elasticsearch": {"basicAuth", "cloudId"},
-	"datadog":       {"apiKey"},
-	"s3":            {"credentials"},
-	"openobserve":   {"credentials"},
-	"forward":       {"sharedKey"},
-	"syslog":        {},
-}
-
-// secretKeysFor names the Secret keys one credential field expands into, and they are the
-// environment-variable suffixes the generated collector config references. A field holding
-// a pair -- basic auth, an AWS key pair -- is split on the first colon so the UI can keep
-// offering a single input.
+// credentialInput is one thing a user types: a Secret key, and the config field whose
+// presence tells the renderer a credential exists.
 //
-// These names have to match what the renderer emits. They do not match by convention: the
-// operator mounts whatever keys the Secret holds under VESTA_DRAIN_<NAME>_<KEY>, so a
-// mismatch here produces an empty credential and a delivery failure that reads as the
-// destination rejecting the batch.
-var secretKeysFor = map[string][]string{
-	"authHeader":  {"AUTH"},
-	"apiKey":      {"API_KEY"},
-	"cloudId":     {"CLOUD_ID"},
-	"basicAuth":   {"USER", "PASSWORD"},
-	"sharedKey":   {"SHARED_KEY"},
-	"credentials": {"USER", "PASSWORD"},
+// Keyed by Secret key rather than by config field because a pair used to arrive as one
+// colon-joined string -- "email:password" -- which nobody could be expected to guess from a
+// form. Two keys mean two labelled inputs and no splitting anywhere.
+type credentialInput struct {
+	// SecretKey is also the environment-variable suffix. The operator mounts every key in
+	// a drain's Secret as VESTA_DRAIN_<NAME>_<KEY>, and the generated config references
+	// exactly that, so this name appearing in both places is what makes a credential
+	// resolve at all.
+	SecretKey string
+	// ConfigField is set on the resource when this key is present, recording that a
+	// credential exists without recording the credential.
+	ConfigField string
+	// Primary marks the key whose presence sets ConfigField, for fields spanning two keys.
+	Primary bool
 }
 
-// s3CredentialKeys override the pair names for S3, whose config field is also "credentials"
-// but whose collector settings are the AWS ones.
-var s3CredentialKeys = []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}
+var credentialInputs = map[string][]credentialInput{
+	"http": {
+		{SecretKey: "AUTH", ConfigField: "authHeader", Primary: true},
+	},
+	"loki": {
+		{SecretKey: "USER", ConfigField: "basicAuth", Primary: true},
+		{SecretKey: "PASSWORD", ConfigField: "basicAuth"},
+	},
+	"elasticsearch": {
+		{SecretKey: "USER", ConfigField: "basicAuth", Primary: true},
+		{SecretKey: "PASSWORD", ConfigField: "basicAuth"},
+		{SecretKey: "CLOUD_ID", ConfigField: "cloudId", Primary: true},
+	},
+	"datadog": {
+		{SecretKey: "API_KEY", ConfigField: "apiKey", Primary: true},
+	},
+	"s3": {
+		{SecretKey: "AWS_ACCESS_KEY_ID", ConfigField: "credentials", Primary: true},
+		{SecretKey: "AWS_SECRET_ACCESS_KEY", ConfigField: "credentials"},
+	},
+	"openobserve": {
+		{SecretKey: "USER", ConfigField: "credentials", Primary: true},
+		{SecretKey: "PASSWORD", ConfigField: "credentials"},
+	},
+	"forward": {
+		{SecretKey: "SHARED_KEY", ConfigField: "sharedKey", Primary: true},
+	},
+	"syslog": {},
+}
 
-func secretKeys(drainType, field string) []string {
-	if drainType == "s3" && field == "credentials" {
-		return s3CredentialKeys
+// credentialConfigFields lists the config keys that hold credential references for a type.
+// They are stripped from any submitted config regardless of whether a new credential was
+// given, so a caller cannot put a literal where the reference belongs.
+func credentialConfigFields(drainType string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, input := range credentialInputs[drainType] {
+		if !seen[input.ConfigField] {
+			seen[input.ConfigField] = true
+			out = append(out, input.ConfigField)
+		}
 	}
-	return secretKeysFor[field]
+	return out
 }
 
 type logDrainRequest struct {
@@ -235,64 +256,55 @@ func (h *Handler) storeDrainCredentials(ctx context.Context, req logDrainRequest
 	for key, value := range req.Config {
 		config[key] = value
 	}
-
-	// Anything named as a credential field is stripped from the config regardless of
-	// whether a new value was submitted -- a caller cannot smuggle a literal in by putting
-	// it under the same key the reference belongs at.
-	fields := credentialFields[req.Type]
-	data := map[string][]byte{}
-	for _, field := range fields {
+	for _, field := range credentialConfigFields(req.Type) {
 		delete(config, field)
+	}
 
-		value, submitted := req.Credentials[field]
+	inputs := credentialInputs[req.Type]
+	data := map[string][]byte{}
+	for _, input := range inputs {
+		value, submitted := req.Credentials[input.SecretKey]
 		if !submitted || strings.TrimSpace(value) == "" {
 			continue
 		}
-
-		keys := secretKeys(req.Type, field)
-		switch len(keys) {
-		case 2:
-			// A pair in one input: "user:password", "accessKey:secretKey". Split on the
-			// first colon only, since a password may well contain one.
-			left, right, found := strings.Cut(value, ":")
-			if !found {
-				return nil, fmt.Errorf("%s must be given as two values separated by a colon", field)
-			}
-			data[keys[0]] = []byte(left)
-			data[keys[1]] = []byte(right)
-		case 1:
-			data[keys[0]] = []byte(value)
-		default:
-			return nil, fmt.Errorf("no secret keys are defined for %s", field)
-		}
-
-		// The reference records that a credential exists; the value reaches the collector
-		// through its environment, not through this.
-		config[field] = map[string]interface{}{
-			"name": drainSecretName(req.Name),
-			"key":  keys[0],
-		}
+		data[input.SecretKey] = []byte(value)
 	}
 
+	existing, readErr := h.K8s.Clientset.CoreV1().Secrets(vestaSystemNS).
+		Get(ctx, drainSecretName(req.Name), metav1.GetOptions{})
+
+	// Nothing new submitted: keep the stored Secret and re-derive the references from the
+	// keys it holds. This is what lets an edit save without retyping a credential that
+	// cannot be read back.
 	if len(data) == 0 {
-		// Editing without resubmitting credentials keeps the existing Secret and its
-		// references, which is what lets the UI show a drain without ever holding its key.
-		existing, err := h.K8s.Clientset.CoreV1().Secrets(vestaSystemNS).
-			Get(ctx, drainSecretName(req.Name), metav1.GetOptions{})
-		if err == nil {
-			for _, field := range fields {
-				keys := secretKeys(req.Type, field)
-				if len(keys) == 0 {
-					continue
-				}
-				if _, present := existing.Data[keys[0]]; present {
-					config[field] = map[string]interface{}{
-						"name": drainSecretName(req.Name), "key": keys[0],
+		if readErr == nil {
+			for _, input := range inputs {
+				if _, present := existing.Data[input.SecretKey]; present && input.Primary {
+					config[input.ConfigField] = map[string]interface{}{
+						"name": drainSecretName(req.Name), "key": input.SecretKey,
 					}
 				}
 			}
 		}
 		return config, nil
+	}
+
+	// A partly-resubmitted credential must not drop the half that was not retyped:
+	// changing only the password would otherwise leave the drain with no username.
+	if readErr == nil {
+		for key, value := range existing.Data {
+			if _, replaced := data[key]; !replaced {
+				data[key] = value
+			}
+		}
+	}
+
+	for _, input := range inputs {
+		if _, present := data[input.SecretKey]; present && input.Primary {
+			config[input.ConfigField] = map[string]interface{}{
+				"name": drainSecretName(req.Name), "key": input.SecretKey,
+			}
+		}
 	}
 
 	secret := &corev1.Secret{
@@ -375,7 +387,7 @@ func validateLogDrain(req logDrainRequest) error {
 			return fmt.Errorf("uri must start with http:// or https://")
 		}
 	case "datadog":
-		if strings.TrimSpace(req.Credentials["apiKey"]) == "" {
+		if strings.TrimSpace(req.Credentials["API_KEY"]) == "" {
 			if _, hasRef := req.Config["apiKey"]; !hasRef {
 				return fmt.Errorf("a datadog drain needs an apiKey")
 			}

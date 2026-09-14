@@ -1128,6 +1128,36 @@ spec:
                     items:
                       type: object
                       x-kubernetes-preserve-unknown-fields: true
+              desiredState:
+                description: 'DesiredState is what the operator should be driving
+                  the app toward. Status reports
+
+                  what it actually is; this says what it ought to be.
+
+
+                  The distinction is load-bearing. Sleep and stop used to be expressed
+                  by writing
+
+                  status.phase, which cannot work: VestaApp has a status subresource,
+                  so a patch to
+
+                  the main resource drops the status stanza silently. Sleep then deadlocked
+                  -- the
+
+                  operator zeroed replicas only once the phase was "Sleeping", while
+                  the phase became
+
+                  "Sleeping" only once replicas were already zero -- and stop was
+                  a no-op outright.
+
+
+                  Empty means "running", so an app that predates this field keeps
+                  its behaviour.'
+                enum:
+                - running
+                - sleeping
+                - stopped
+                type: string
           status:
             type: object
             properties:
@@ -1141,6 +1171,7 @@ spec:
                 - Degraded
                 - Failed
                 - Sleeping
+                - Stopped
                 - CrashLoopBackOff
               reason:
                 type: string
