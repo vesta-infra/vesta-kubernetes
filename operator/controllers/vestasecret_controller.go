@@ -40,6 +40,22 @@ func (r *VestaSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 		return ctrl.Result{}, err
 	}
 
+	// Move any plaintext password into a Secret before anything reads it. Ordered so that
+	// the value is durably written and verified before the original is cleared -- a
+	// credential lost here cannot be recovered from anywhere.
+	if migrated, err := r.MigrateRegistryPassword(ctx, &vs); err != nil {
+		logger.Error(err, "could not migrate registry password out of the CRD; "+
+			"the plaintext is left in place and this will be retried", "secret", vs.Name)
+	} else if migrated {
+		logger.Info("moved registry password into a Secret", "secret", vs.Name,
+			"passwordSecret", registryPasswordSecretName(vs.Name))
+		// Re-read: the patch changed spec, and continuing with the stale copy would
+		// materialise from a password field that is now empty.
+		if err := r.Get(ctx, req.NamespacedName, &vs); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	logger.Info("reconciling VestaSecret", "name", vs.Name, "namespace", vs.Namespace)
 
 	// Populated inside the mutate function below, which CreateOrUpdate may call more
@@ -79,7 +95,11 @@ func (r *VestaSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 		case "kubernetes.io/dockerconfigjson":
 			if vs.Spec.DockerConfig != nil {
-				dockerJSON, err := buildDockerConfigJSON(vs.Spec.DockerConfig)
+				password, err := r.ResolveRegistryPassword(ctx, vs.Namespace, vs.Spec.DockerConfig)
+				if err != nil {
+					return fmt.Errorf("resolve registry password: %w", err)
+				}
+				dockerJSON, err := buildDockerConfigJSON(vs.Spec.DockerConfig, password)
 				if err != nil {
 					return fmt.Errorf("build docker config: %w", err)
 				}
@@ -125,13 +145,17 @@ func (r *VestaSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{}, nil
 }
 
-func buildDockerConfigJSON(dc *vestav1alpha1.DockerSecretConfig) ([]byte, error) {
-	auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", dc.Username, dc.Password)))
+// buildDockerConfigJSON renders the docker config the kubelet reads.
+//
+// The password arrives as an argument rather than being read off the spec, so this stays a
+// pure function while the credential itself lives in a Secret.
+func buildDockerConfigJSON(dc *vestav1alpha1.DockerSecretConfig, password string) ([]byte, error) {
+	auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", dc.Username, password)))
 	config := map[string]interface{}{
 		"auths": map[string]interface{}{
 			dc.Registry: map[string]string{
 				"username": dc.Username,
-				"password": dc.Password,
+				"password": password,
 				"auth":     auth,
 			},
 		},

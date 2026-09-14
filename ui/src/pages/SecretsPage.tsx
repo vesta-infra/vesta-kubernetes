@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api } from '../lib/api'
+import { api, type RegistryTestResult } from '../lib/api'
 import { useUserRole, useIsProjectOwner } from '../lib/useRole'
 import { parseEnvContent, secretKeyError, truncateSecretKey } from '../lib/secretKeys'
 import CopyEnvButton from '../components/CopyEnvButton'
@@ -643,14 +643,34 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete, showProject
 function RegistrySecretsSection() {
   const queryClient = useQueryClient()
   const { data, isLoading } = useQuery({ queryKey: ['registrySecrets'], queryFn: () => api.listRegistrySecrets() })
+  // Only needed to populate the project picker when a credential is scoped to one.
+  const { data: projects } = useQuery({ queryKey: ['projects'], queryFn: () => api.listProjects() })
+  const isAdmin = useUserRole() === 'admin'
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
   const [registry, setRegistry] = useState('https://index.docker.io/v1/')
+  const [flavor, setFlavor] = useState('')
+  // A non-admin may only create project-scoped credentials, so the form starts there
+  // rather than on an instance default they are not allowed to take.
+  const [scope, setScope] = useState('')
+  const [scopeProject, setScopeProject] = useState('')
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
 
+
+  // Derived rather than seeded into state: useUserRole resolves from the session, and a
+  // useState initialiser that ran before it did would leave a non-admin on a scope the
+  // server refuses, with no later correction.
+  const effectiveScope = isAdmin ? scope : 'project'
   const createMutation = useMutation({
-    mutationFn: () => api.createRegistrySecret({ name, registry, username, password }),
+    mutationFn: () => api.createRegistrySecret({
+      name, registry, username, password,
+      flavor: flavor || undefined,
+      // Omitted, the instance default applies. Sending the project only when the credential
+      // is actually project-scoped keeps a stale selection from leaking into a global one.
+      scope: (effectiveScope || undefined) as 'global' | 'project' | undefined,
+      project: effectiveScope === 'project' ? scopeProject : undefined,
+    }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['registrySecrets'] })
       setShowCreate(false)
@@ -698,7 +718,66 @@ function RegistrySecretsSection() {
             <div>
               <label className="label">Registry URL</label>
               <input value={registry} onChange={(e) => setRegistry(e.target.value)} className="input-field font-mono text-xs" placeholder="https://index.docker.io/v1/" required />
+              <p className="text-[11px] text-text-tertiary mt-1">
+                Stored as the host your images are pulled from. A scheme, a :443 or a trailing
+                path are removed, so this matches what the cluster looks for.
+              </p>
             </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">Type</label>
+              <select value={flavor} onChange={(e) => setFlavor(e.target.value)} className="input-field text-xs">
+                <option value="">Detect automatically</option>
+                <option value="generic-v2">Docker Registry v2 (Harbor, Distribution, …)</option>
+                <option value="harbor">Harbor</option>
+                <option value="dockerhub">Docker Hub</option>
+                <option value="ghcr">GitHub Container Registry</option>
+              </select>
+              <p className="text-[11px] text-text-tertiary mt-1">
+                Only affects listing repositories. Set it if the guess from the hostname is wrong.
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="label">Scope</label>
+              <select value={effectiveScope} onChange={(e) => setScope(e.target.value)} className="input-field text-xs">
+                {/*
+                  A global credential is usable by everyone who can reach this page, so
+                  creating one is an instance-wide act and the server allows it only for
+                  admins. Offering the option to someone who cannot use it would produce a
+                  403 after they had filled in the whole form.
+                */}
+                {isAdmin && <option value="">Instance default</option>}
+                {isAdmin && <option value="global">Global — usable across the instance</option>}
+                <option value="project">Project — private to one project</option>
+              </select>
+              <p className="text-[11px] text-text-tertiary mt-1">
+                {isAdmin
+                  ? "A global credential can be listed and used by anyone who can reach this page. Scoping it to a project limits that to the project's members."
+                  : 'Credentials you create belong to one project. Only an administrator can add one that works across the whole instance.'}
+              </p>
+            </div>
+            {effectiveScope === 'project' && (
+              <div>
+                <label className="label">Project</label>
+                <select
+                  value={scopeProject}
+                  onChange={(e) => setScopeProject(e.target.value)}
+                  className="input-field text-xs"
+                  required
+                >
+                  <option value="">Select a project...</option>
+                  {(projects?.items || []).map((p: any) => (
+                    <option key={p.name || p.id} value={p.name || p.id}>{p.displayName || p.name}</option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-text-tertiary mt-1">
+                  You need permission to add secrets to whichever project you pick.
+                </p>
+              </div>
+            )}
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -749,17 +828,76 @@ function RegistrySecretsSection() {
               <div className="flex items-center gap-3 mt-0.5">
                 <span className="text-xs text-text-tertiary font-mono">{s.registry}</span>
                 <span className="text-[11px] text-text-tertiary">user: {s.username}</span>
+                {/*
+                  Shown on every row, including global ones. "Global" is the default and is
+                  therefore the easy thing to end up with by accident -- a credential that is
+                  usable instance-wide should say so rather than being the silent case.
+                */}
+                {s.scope === 'project' ? (
+                  <span className="text-[11px] text-accent">project: {s.project}</span>
+                ) : (
+                  <span className="text-[11px] text-text-quaternary">global</span>
+                )}
               </div>
             </div>
           </div>
-          <button
-            onClick={() => { if (confirm(`Delete registry credential "${s.name}"?`)) deleteMutation.mutate(s.name) }}
-            className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
-          >
-            Delete
-          </button>
+          <div className="flex items-center gap-3">
+            <RegistryTestButton name={s.name} />
+            <button
+              onClick={() => { if (confirm(`Delete registry credential "${s.name}"?`)) deleteMutation.mutate(s.name) }}
+              className="text-xs text-text-tertiary hover:text-status-failed transition-colors opacity-0 group-hover:opacity-100"
+            >
+              Delete
+            </button>
+          </div>
         </div>
       ))}
+    </div>
+  )
+}
+
+// RegistryTestButton checks a credential against its registry on demand.
+//
+// It reports two different things, because they fail independently. The registry can accept
+// the credential perfectly while the credential is still never used: the cluster looks it up
+// by the host of the image being pulled, and a value stored with a scheme or a port produces
+// a key no image matches. That second failure used to be invisible until a deploy sat in
+// ImagePullBackOff blaming the image.
+function RegistryTestButton({ name }: { name: string }) {
+  const [result, setResult] = useState<RegistryTestResult | null>(null)
+
+  const test = useMutation({
+    mutationFn: () => api.testRegistrySecret(name),
+    onSuccess: setResult,
+  })
+
+  return (
+    <div className="flex items-center gap-2">
+      {result && (
+        <span
+          className={`text-[11px] font-mono ${result.ok ? 'text-status-running' : 'text-status-failed'}`}
+          title={result.error || ''}
+        >
+          {result.ok ? 'reachable' : (result.error ?? 'failed')}
+        </span>
+      )}
+
+      {result && !result.normalized && (
+        <span
+          className="text-[11px] font-mono text-status-degraded"
+          title={`Stored as "${result.registry}", but the cluster looks for "${result.authsKey}". Images from this registry will fail to pull with ImagePullBackOff. Recreate the credential to store it in the matching form.`}
+        >
+          will not match images
+        </span>
+      )}
+
+      <button
+        onClick={() => test.mutate()}
+        disabled={test.isPending}
+        className="text-xs text-text-tertiary hover:text-accent transition-colors"
+      >
+        {test.isPending ? 'Testing…' : 'Test'}
+      </button>
     </div>
   )
 }
