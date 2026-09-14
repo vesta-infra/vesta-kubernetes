@@ -560,9 +560,35 @@ spec:
                     type: boolean
                   branch:
                     type: string
+                  connectionId:
+                    description: |-
+                      ConnectionID names the git connection that serves this repository, set when the
+                      repository is chosen through the UI. Empty is resolved by matching provider, host
+                      and path against the configured connections, which is what keeps apps written
+                      before connections existed working.
+                    type: string
+                  host:
+                    description: |-
+                      Host is the git server, for self-managed GitLab and Bitbucket Data Center. Empty
+                      means the provider's SaaS host. It is part of a repository's identity: the same
+                      path can exist on gitlab.com and on gitlab.internal and they are not the same
+                      repository.
+                    type: string
                   provider:
                     type: string
                   repository:
+                    type: string
+                  tokenSecret:
+                    description: |-
+                      TokenSecret names a Secret in vesta-system holding a "token" key, used instead of a
+                      connection's credentials.
+
+                      This field is new here but not new to the codebase: the API has been reading it and
+                      the UI collecting it since before it existed on the type. Because the CRD is a
+                      structural schema with no preserved unknown fields, the API server pruned it on
+                      every write, so the read could never succeed and the input was decorative. Same for
+                      commitSHA, which is not restored here -- it was observed state and belongs in
+                      status.lastCommitSHA, which already exists.
                     type: string
                 required:
                 - provider
@@ -973,6 +999,18 @@ spec:
                       type: object
                     type: array
                 type: object
+              securityProfile:
+                description: |-
+                  SecurityProfile overrides the platform default for this app. Empty inherits it.
+
+                  The override exists because "restricted" is not a setting an instance can safely turn
+                  on for everything: one image that writes to its own filesystem would otherwise force
+                  the whole instance back down to the weakest profile.
+                enum:
+                - legacy
+                - baseline
+                - restricted
+                type: string
               service:
                 properties:
                   ports:
@@ -1009,10 +1047,56 @@ spec:
                 type: object
               sleep:
                 properties:
+                  autoSleep:
+                    description: |-
+                      AutoSleep arms the inactivity sweeper for this app.
+
+                      A pointer so absent is distinguishable from false. Absent means off, which is what
+                      every app upgrading from a release where none of this worked must get.
+                    type: boolean
                   enabled:
+                    description: |-
+                      Enabled marks the app as eligible for scale-to-zero. It is a capability, not an
+                      instruction: spec.desiredState is what actually holds an app at zero.
+
+                      The distinction is load-bearing on upgrade. Scale-to-zero did nothing for a long
+                      time -- the API wrote status.phase, which a status subresource discards -- so any
+                      app whose Sleep button was ever pressed carries enabled=true and has been running
+                      normally ever since. Redefining this field as "sleep me when idle" would put every
+                      one of them to sleep on upgrade, which is why AutoSleep exists separately.
                     type: boolean
                   inactivityTimeout:
                     type: string
+                  minAwake:
+                    description: |-
+                      MinAwake is the floor between waking and being eligible to sleep again. Without one
+                      the request that woke the app is the only traffic in the window, so it sleeps again
+                      immediately and flaps.
+                    type: string
+                  noWakePaths:
+                    description: |-
+                      NoWakePaths are request paths the activator answers itself while the app is asleep,
+                      instead of starting it.
+
+                      This is what makes scale-to-zero survive monitoring. An uptime check polling the
+                      public URL every minute would otherwise wake the app, and its own traffic would then
+                      keep the request rate above zero -- so the app would never sleep again, and the
+                      feature would appear simply not to work.
+
+                      Only consulted while the app is down. Once it is running these are proxied through
+                      like anything else, so a health check against a live app still reports on the app.
+
+                      A trailing * matches a prefix. Choose carefully: a path listed here is one the app
+                      will never be woken for, so listing "/" disables wake-on-traffic entirely.
+                    items:
+                      type: string
+                    type: array
+                  wakeOnTraffic:
+                    description: |-
+                      WakeOnTraffic routes a sleeping app's ingress through the activator, so the next
+                      request starts it again. Absent means off: without it a sleeping app simply stays
+                      down until somebody wakes it, which is worse than never sleeping.
+                    type: boolean
                 required:
                 - enabled
                 type: object
@@ -1151,6 +1235,15 @@ spec:
                 - currentReplicas
                 - desiredReplicas
                 type: object
+              sleepReason:
+                description: |-
+                  SleepReason says why the app is or is not scaled to zero.
+
+                  Written by the inactivity sweeper on every pass, including when it decides to do
+                  nothing. Without it the feature is invisible while idle: somebody who turned on
+                  auto-sleep and sees the app still running cannot tell whether it is busy, whether
+                  Prometheus is missing, or whether Vesta is simply not looking.
+                type: string
               url:
                 type: string
             type: object

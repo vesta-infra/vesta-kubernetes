@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	"strings"
+
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -45,6 +47,14 @@ type VestaAppSpec struct {
 	Cronjobs []CronjobConfig `json:"cronjobs,omitempty"`
 	Addons   []AddonConfig   `json:"addons,omitempty"`
 	Sleep    *SleepConfig    `json:"sleep,omitempty"`
+
+	// SecurityProfile overrides the platform default for this app. Empty inherits it.
+	//
+	// The override exists because "restricted" is not a setting an instance can safely turn
+	// on for everything: one image that writes to its own filesystem would otherwise force
+	// the whole instance back down to the weakest profile.
+	// +kubebuilder:validation:Enum=legacy;baseline;restricted
+	SecurityProfile string `json:"securityProfile,omitempty"`
 
 	// DesiredState is what the operator should be driving the app toward. Status reports
 	// what it actually is; this says what it ought to be.
@@ -123,6 +133,29 @@ type GitSource struct {
 	Repository       string `json:"repository"`
 	Branch           string `json:"branch,omitempty"`
 	AutoDeployOnPush bool   `json:"autoDeployOnPush,omitempty"`
+
+	// Host is the git server, for self-managed GitLab and Bitbucket Data Center. Empty
+	// means the provider's SaaS host. It is part of a repository's identity: the same
+	// path can exist on gitlab.com and on gitlab.internal and they are not the same
+	// repository.
+	Host string `json:"host,omitempty"`
+
+	// ConnectionID names the git connection that serves this repository, set when the
+	// repository is chosen through the UI. Empty is resolved by matching provider, host
+	// and path against the configured connections, which is what keeps apps written
+	// before connections existed working.
+	ConnectionID string `json:"connectionId,omitempty"`
+
+	// TokenSecret names a Secret in vesta-system holding a "token" key, used instead of a
+	// connection's credentials.
+	//
+	// This field is new here but not new to the codebase: the API has been reading it and
+	// the UI collecting it since before it existed on the type. Because the CRD is a
+	// structural schema with no preserved unknown fields, the API server pruned it on
+	// every write, so the read could never succeed and the input was decorative. Same for
+	// commitSHA, which is not restored here -- it was observed state and belongs in
+	// status.lastCommitSHA, which already exists.
+	TokenSecret string `json:"tokenSecret,omitempty"`
 }
 
 type BuildConfig struct {
@@ -306,8 +339,97 @@ type AddonConfig struct {
 }
 
 type SleepConfig struct {
+	// Enabled marks the app as eligible for scale-to-zero. It is a capability, not an
+	// instruction: spec.desiredState is what actually holds an app at zero.
+	//
+	// The distinction is load-bearing on upgrade. Scale-to-zero did nothing for a long
+	// time -- the API wrote status.phase, which a status subresource discards -- so any
+	// app whose Sleep button was ever pressed carries enabled=true and has been running
+	// normally ever since. Redefining this field as "sleep me when idle" would put every
+	// one of them to sleep on upgrade, which is why AutoSleep exists separately.
 	Enabled           bool   `json:"enabled"`
 	InactivityTimeout string `json:"inactivityTimeout,omitempty"`
+
+	// AutoSleep arms the inactivity sweeper for this app.
+	//
+	// A pointer so absent is distinguishable from false. Absent means off, which is what
+	// every app upgrading from a release where none of this worked must get.
+	AutoSleep *bool `json:"autoSleep,omitempty"`
+
+	// WakeOnTraffic routes a sleeping app's ingress through the activator, so the next
+	// request starts it again. Absent means off: without it a sleeping app simply stays
+	// down until somebody wakes it, which is worse than never sleeping.
+	WakeOnTraffic *bool `json:"wakeOnTraffic,omitempty"`
+
+	// MinAwake is the floor between waking and being eligible to sleep again. Without one
+	// the request that woke the app is the only traffic in the window, so it sleeps again
+	// immediately and flaps.
+	MinAwake string `json:"minAwake,omitempty"`
+
+	// NoWakePaths are request paths the activator answers itself while the app is asleep,
+	// instead of starting it.
+	//
+	// This is what makes scale-to-zero survive monitoring. An uptime check polling the
+	// public URL every minute would otherwise wake the app, and its own traffic would then
+	// keep the request rate above zero -- so the app would never sleep again, and the
+	// feature would appear simply not to work.
+	//
+	// Only consulted while the app is down. Once it is running these are proxied through
+	// like anything else, so a health check against a live app still reports on the app.
+	//
+	// A trailing * matches a prefix. Choose carefully: a path listed here is one the app
+	// will never be woken for, so listing "/" disables wake-on-traffic entirely.
+	NoWakePaths []string `json:"noWakePaths,omitempty"`
+}
+
+// AutoSleepEnabled reports whether the inactivity sweeper should consider this app.
+//
+// Both flags are required: eligibility alone is not consent, for the upgrade reason above.
+func (s *SleepConfig) AutoSleepEnabled() bool {
+	if s == nil || !s.Enabled || s.AutoSleep == nil {
+		return false
+	}
+	return *s.AutoSleep
+}
+
+// DefaultNoWakePaths are answered by the activator instead of waking a sleeping app.
+//
+// There has to be a default, or scale-to-zero does not survive contact with monitoring. An
+// uptime check or an external load balancer polling the public URL every thirty seconds
+// wakes the app every thirty seconds, so it never stays down and the feature saves nothing --
+// and the cause is invisible, because from the outside the app simply looks busy.
+//
+// Deliberately only paths that are overwhelmingly health probes. "/status" and "/ping" are
+// left out despite being common: both are real application endpoints often enough that
+// answering them from the activator would be worse than the problem being solved -- a request
+// the app should have served returns a stub instead.
+var DefaultNoWakePaths = []string{
+	"/healthz", "/readyz", "/livez",
+	"/health", "/healthcheck",
+	"/-/healthy", "/-/ready",
+}
+
+// NoWakePathList renders the no-wake paths for the Ingress annotation the activator reads.
+//
+// An unset list gets the defaults above. Configuring one REPLACES them rather than adding to
+// them, so an app that needs a different set is not stuck with these as well.
+func (s *SleepConfig) NoWakePathList() string {
+	if s == nil {
+		return ""
+	}
+	if len(s.NoWakePaths) == 0 {
+		return strings.Join(DefaultNoWakePaths, ",")
+	}
+	return strings.Join(s.NoWakePaths, ",")
+}
+
+// WakeOnTrafficEnabled reports whether a sleeping app's ingress should route to the
+// activator.
+func (s *SleepConfig) WakeOnTrafficEnabled() bool {
+	if s == nil || !s.Enabled || s.WakeOnTraffic == nil {
+		return false
+	}
+	return *s.WakeOnTraffic
 }
 
 type ServiceConfig struct {
@@ -370,6 +492,14 @@ type VestaAppStatus struct {
 
 	Scaling    *ScalingStatus     `json:"scaling,omitempty"`
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// SleepReason says why the app is or is not scaled to zero.
+	//
+	// Written by the inactivity sweeper on every pass, including when it decides to do
+	// nothing. Without it the feature is invisible while idle: somebody who turned on
+	// auto-sleep and sees the app still running cannot tell whether it is busy, whether
+	// Prometheus is missing, or whether Vesta is simply not looking.
+	SleepReason string `json:"sleepReason,omitempty"`
 }
 
 type DeploymentRecord struct {
@@ -424,6 +554,9 @@ type VestaProjectSpec struct {
 	DefaultImage     *ImageConfig                  `json:"defaultImage,omitempty"`
 	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 	Notifications    *NotificationConfig           `json:"notifications,omitempty"`
+
+	// Quota applies to every environment of this project unless one narrows it.
+	Quota *QuotaSpec `json:"quota,omitempty"`
 }
 
 type ProjectEnvironment struct {
@@ -490,6 +623,133 @@ type VestaEnvironment struct {
 	Status VestaEnvironmentStatus `json:"status,omitempty"`
 }
 
+// CostConfig prices the units a workload reserves.
+//
+// Either give the per-unit rates, or give what a node costs and let Vesta split it. The
+// second is preferred and wins when both are present: an administrator knows what a machine
+// costs and does not know what a vCPU-hour is worth, and asking the answerable question is
+// the difference between a figure somebody trusts and one they ignore.
+type CostConfig struct {
+	NodeMonthlyCost float64 `json:"nodeMonthlyCost,omitempty"`
+	NodeVCPUs       float64 `json:"nodeVCPUs,omitempty"`
+	NodeMemoryGiB   float64 `json:"nodeMemoryGiB,omitempty"`
+
+	CPUCoreHour     float64 `json:"cpuCoreHour,omitempty"`
+	MemoryGiBHour   float64 `json:"memoryGiBHour,omitempty"`
+	StorageGiBMonth float64 `json:"storageGiBMonth,omitempty"`
+
+	Currency string `json:"currency,omitempty"`
+}
+
+// QuotaSpec bounds what an environment or project may consume.
+type QuotaSpec struct {
+	// Enforce is a pointer so absent is distinguishable from false. Absent means
+	// report-only: the controller creates no ResourceQuota at all and only computes what
+	// one would do.
+	//
+	// That default is the whole safety story. A ResourceQuota is not applied retroactively
+	// to pods that already exist -- it blocks the NEXT admission, which means the failure
+	// lands in the middle of somebody's deploy rather than when the quota was set. Working
+	// out the answer first, and showing it, turns that into a decision.
+	Enforce *bool `json:"enforce,omitempty"`
+
+	RequestsCPU    string `json:"requestsCpu,omitempty"`
+	RequestsMemory string `json:"requestsMemory,omitempty"`
+
+	// Limits are opt-in and sharper than they look: a limits.* quota makes every pod
+	// without that limit set unadmittable, and most pods do not set one.
+	LimitsCPU    string `json:"limitsCpu,omitempty"`
+	LimitsMemory string `json:"limitsMemory,omitempty"`
+
+	StorageTotal string `json:"storageTotal,omitempty"`
+
+	MaxPods        *int32 `json:"maxPods,omitempty"`
+	MaxDeployments *int32 `json:"maxDeployments,omitempty"`
+	MaxPVCs        *int32 `json:"maxPvcs,omitempty"`
+	MaxServices    *int32 `json:"maxServices,omitempty"`
+
+	// Defaults for the LimitRange that ships alongside the quota. Once a quota names
+	// requests.cpu, Kubernetes requires every new pod to set one; these are what pods that
+	// do not get.
+	DefaultRequestCPU    string `json:"defaultRequestCpu,omitempty"`
+	DefaultRequestMemory string `json:"defaultRequestMemory,omitempty"`
+	DefaultLimitCPU      string `json:"defaultLimitCpu,omitempty"`
+	DefaultLimitMemory   string `json:"defaultLimitMemory,omitempty"`
+}
+
+// Enforced reports whether a quota should actually be applied.
+func (q *QuotaSpec) Enforced() bool {
+	return q != nil && q.Enforce != nil && *q.Enforce
+}
+
+// QuotaStatus reports what a quota is doing, or would do.
+type QuotaStatus struct {
+	// Enforced is whether a ResourceQuota object exists.
+	Enforced bool `json:"enforced,omitempty"`
+	// Committed is what the environment's apps add up to at their configured maximum --
+	// autoscaling ceilings included, because a quota that fits today's replicas and not
+	// tomorrow's blocks a scale-up with no warning.
+	Committed map[string]string `json:"committed,omitempty"`
+	// Used is what is actually running now.
+	Used map[string]string `json:"used,omitempty"`
+	// WouldExceed is set when the configured quota is below what is already committed.
+	// Applying it then would refuse the next deploy, so it is reported instead.
+	WouldExceed bool   `json:"wouldExceed,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+// SecurityConfig is the platform-wide hardening posture.
+type SecurityConfig struct {
+	// Profile is the default pod hardening for every app that does not name its own.
+	//
+	//   "legacy" (the default) sets no security context, which is what every app running
+	//     today already has. Changing this default would alter the behaviour of running
+	//     workloads on upgrade, so it does not change.
+	//   "baseline" forbids privilege escalation, drops all capabilities and applies the
+	//     runtime's default seccomp filter. Safe to turn on across an instance.
+	//   "restricted" adds a non-root user and a read-only root filesystem. Not safe to turn
+	//     on blindly -- images that write to their own filesystem will break -- so it is
+	//     best set per app.
+	// +kubebuilder:validation:Enum=legacy;baseline;restricted
+	Profile string `json:"profile,omitempty"`
+
+	// DefaultSecretScope is the scope given to a secret created without one.
+	//
+	// "global" is the default and the backwards-compatible answer. Setting "project" makes
+	// new secrets private to their project; it does NOT reclassify existing ones, because
+	// silently narrowing access to a credential an app already pulls with would break that
+	// app's deploys with nothing to point at.
+	// +kubebuilder:validation:Enum=global;project
+	DefaultSecretScope string `json:"defaultSecretScope,omitempty"`
+
+	// NetworkIsolation keeps environments from reaching each other.
+	NetworkIsolation *NetworkIsolationConfig `json:"networkIsolation,omitempty"`
+}
+
+// NetworkIsolationConfig configures per-namespace NetworkPolicy.
+//
+// NetworkPolicy is enforced by the cluster's network plugin, not by Kubernetes. A cluster
+// running a plugin that does not implement it accepts every policy and enforces none, so
+// enabling this is not on its own evidence that anything is isolated -- the operator reports
+// what it found in the environment's status.
+type NetworkIsolationConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+
+	// TrustedNamespaces may reach apps. Left empty, a default list covering the usual
+	// ingress-controller and monitoring namespaces is used; setting it REPLACES that list
+	// rather than adding to it.
+	TrustedNamespaces []string `json:"trustedNamespaces,omitempty"`
+
+	// TrustedNamespaceLabels is for clusters that label namespaces by purpose rather than
+	// naming them predictably.
+	TrustedNamespaceLabels map[string]string `json:"trustedNamespaceLabels,omitempty"`
+
+	// MetricsPort, when set, stays reachable from anywhere. A scraper that cannot be located
+	// by namespace is common, and a closed metrics port fails silently -- the dashboard just
+	// goes blank.
+	MetricsPort int32 `json:"metricsPort,omitempty"`
+}
+
 type VestaEnvironmentSpec struct {
 	Project         string `json:"project"`
 	DisplayName     string `json:"displayName,omitempty"`
@@ -498,11 +758,42 @@ type VestaEnvironmentSpec struct {
 	Branch          string `json:"branch,omitempty"`
 	RequireApproval bool   `json:"requireApproval,omitempty"`
 	AutoDeployPRs   bool   `json:"autoDeployPRs,omitempty"`
+
+	// Quota bounds what this environment may consume. Empty inherits the project's, then
+	// the platform default.
+	Quota *QuotaSpec `json:"quota,omitempty"`
+}
+
+// NetworkIsolationStatus reports what isolation is actually doing.
+//
+// Enabled and Enforced are separate on purpose. NetworkPolicy is enforced by the cluster's
+// network plugin, not by Kubernetes, so a cluster running one that does not implement it
+// accepts every policy and filters nothing -- and the objects existing is not evidence that
+// anything is isolated.
+type NetworkIsolationStatus struct {
+	Enabled     bool  `json:"enabled,omitempty"`
+	PolicyCount int32 `json:"policyCount,omitempty"`
+	// Enforced is whether this cluster's CNI is believed to implement NetworkPolicy.
+	Enforced bool `json:"enforced,omitempty"`
+	// EnforcementKnown distinguishes "we determined it is not enforced" from "we could not
+	// tell". Reporting an unknown as "not enforced" would cry wolf on every unrecognised
+	// plugin; reporting it as enforced would be the dangerous direction.
+	EnforcementKnown bool        `json:"enforcementKnown,omitempty"`
+	Note             string      `json:"note,omitempty"`
+	TrustedFrom      []string    `json:"trustedFrom,omitempty"`
+	LastApplied      metav1.Time `json:"lastApplied,omitempty"`
 }
 
 type VestaEnvironmentStatus struct {
 	AppCount   int                `json:"appCount,omitempty"`
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Quota reports what the environment is consuming and whether a quota is in force.
+	Quota *QuotaStatus `json:"quota,omitempty"`
+
+	// NetworkIsolation reports whether the environment is actually isolated, which is not
+	// the same question as whether isolation was turned on.
+	NetworkIsolation *NetworkIsolationStatus `json:"networkIsolation,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -540,6 +831,20 @@ type VestaConfigSpec struct {
 	Auth              *AuthConfig            `json:"auth,omitempty"`
 	Templates         *TemplatesConfig       `json:"templates,omitempty"`
 	PrometheusURL     string                 `json:"prometheusUrl,omitempty"`
+
+	// Cost prices what workloads reserve. Without it Vesta uses a documented default
+	// derived from one commodity node, which is an estimate and says so.
+	Cost *CostConfig `json:"cost,omitempty"`
+
+	// Security hardens what apps run as, and whether environments can reach each other.
+	// Absent, nothing changes: the default profile sets no security context at all, which
+	// is what every existing app already runs with.
+	Security *SecurityConfig `json:"security,omitempty"`
+
+	// QuotaDefaults apply to every environment that does not set its own. Report-only
+	// unless enforce is set, so configuring one here does not silently start refusing
+	// deploys across the whole instance.
+	QuotaDefaults *QuotaSpec `json:"quotaDefaults,omitempty"`
 
 	// HTTPSRedirect decides how an app's HTTP traffic is redirected to HTTPS.
 	//
@@ -668,7 +973,22 @@ type VestaSecret struct {
 
 type VestaSecretSpec struct {
 	// +kubebuilder:validation:Enum=Opaque;kubernetes.io/dockerconfigjson;kubernetes.io/tls
-	Type        string `json:"type"`
+	Type string `json:"type"`
+
+	// Scope decides who may see and use this secret.
+	//
+	//   "global" (the default) -- any caller the route already admits. Every registry
+	//     credential created before this field existed is global, which is why the empty
+	//     value has to keep meaning global: anything else would hide working credentials
+	//     from the apps and people already using them.
+	//   "project" -- only callers with access to Project below.
+	//
+	// The platform default for NEW secrets is settable at
+	// VestaConfig.spec.security.defaultSecretScope, so an instance can make project
+	// scoping the norm without reclassifying what already exists.
+	// +kubebuilder:validation:Enum=global;project
+	Scope string `json:"scope,omitempty"`
+
 	Project     string `json:"project,omitempty"`
 	App         string `json:"app,omitempty"`
 	Environment string `json:"environment,omitempty"`
@@ -690,7 +1010,32 @@ type VestaSecretSpec struct {
 type DockerSecretConfig struct {
 	Registry string `json:"registry"`
 	Username string `json:"username"`
-	Password string `json:"password"`
+
+	// Password is the credential in plain text, and it is deprecated.
+	//
+	// A VestaSecret is an ordinary namespaced object: anyone with `get vestasecrets` can
+	// read it, and it goes into project export bundles as written. Storing a registry
+	// password here contradicted the reasoning already applied to basicAuth and
+	// DrainSecretRef, both of which keep their credentials in a Kubernetes Secret.
+	//
+	// Kept readable so credentials written before PasswordSecretRef existed keep working.
+	// The operator migrates them: it copies the value into a Secret, points
+	// PasswordSecretRef at it, and only then clears this field.
+	Password string `json:"password,omitempty"`
+
+	// PasswordSecretRef points at a Kubernetes Secret holding the password. When set it
+	// wins over Password, which is what makes the migration a one-way door rather than a
+	// state both fields have to be kept consistent in.
+	PasswordSecretRef *DrainSecretRef `json:"passwordSecretRef,omitempty"`
+
+	// Flavor names the registry's API dialect, for listing repositories. Tag listing is
+	// the same everywhere; enumerating what exists is not, and Docker Hub in particular
+	// does not implement the standard catalog endpoint at all.
+	//
+	// Empty is detected from the host, which is a guess -- Harbor answers on any hostname
+	// -- so this overrides it.
+	// +kubebuilder:validation:Enum=generic-v2;harbor;dockerhub;ghcr
+	Flavor string `json:"flavor,omitempty"`
 }
 
 type TLSSecretConfig struct {
@@ -1198,3 +1543,95 @@ type VestaLogDrainList struct {
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []VestaLogDrain `json:"items"`
 }
+
+// ============================================================================
+// VestaAddon
+// ============================================================================
+
+// VestaAddon is a managed datastore an app can bind to.
+//
+// spec.addons existed on VestaApp long before anything reconciled it: the API accepted the
+// field, the CRD stored it, and no controller ever read it, so declaring an add-on did
+// nothing at all. This is the kind that makes it real.
+//
+// It is a kind of its own rather than a slice on the app because its lifecycle is not the
+// app's. A database outlives the app that first asked for it, its data must survive the
+// app being deleted, and two apps may share one.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
+// +kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:resource:shortName=vad;addon
+type VestaAddon struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   VestaAddonSpec   `json:"spec,omitempty"`
+	Status VestaAddonStatus `json:"status,omitempty"`
+}
+
+type VestaAddonSpec struct {
+	// +kubebuilder:validation:Enum=postgres;mysql;redis;mongodb
+	Type string `json:"type"`
+
+	// Provider decides who renders the add-on. "builtin" is a single-replica StatefulSet
+	// Vesta manages itself.
+	//
+	// Reserved rather than speculative: an operator-backed provider (CloudNativePG and the
+	// like) changes what is rendered, not what is declared, so having the field from the
+	// start means adding one later is not a schema change for every stored object.
+	// +kubebuilder:validation:Enum=builtin
+	Provider string `json:"provider,omitempty"`
+
+	Project string `json:"project"`
+	// Environment limits the add-on to one environment of the project. Empty means every
+	// environment gets its own instance, which is what keeps staging data out of
+	// production.
+	Environment string `json:"environment,omitempty"`
+
+	Version string `json:"version,omitempty"`
+	// Size names a PodSizePreset, resolved the same way an app's is.
+	Size string `json:"size,omitempty"`
+
+	Storage      string `json:"storage,omitempty"`
+	StorageClass string `json:"storageClass,omitempty"`
+
+	// DeletionPolicy decides what happens to the data when this add-on is deleted. Empty
+	// means Retain -- losing a database to a mistyped name is not something anyone should
+	// have to opt out of.
+	// +kubebuilder:validation:Enum=Retain;Delete
+	DeletionPolicy string `json:"deletionPolicy,omitempty"`
+}
+
+type VestaAddonStatus struct {
+	Ready  bool   `json:"ready,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	Phase  string `json:"phase,omitempty"`
+
+	// SecretName is the Secret holding connection details, present in every namespace the
+	// add-on was projected into.
+	SecretName string `json:"secretName,omitempty"`
+	// Namespaces lists where this add-on currently runs.
+	Namespaces []string `json:"namespaces,omitempty"`
+	// RetainedPVCs names claims left behind by a deletion under the Retain policy, so the
+	// data can be found and reclaimed deliberately.
+	RetainedPVCs []string `json:"retainedPVCs,omitempty"`
+
+	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
+	Conditions         []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+type VestaAddonList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []VestaAddon `json:"items"`
+}
+
+// Addon deletion policies.
+const (
+	AddonRetain = "Retain"
+	AddonDelete = "Delete"
+)

@@ -99,11 +99,13 @@ docker-build: ## Build all Docker images
 	docker build -t $(REGISTRY)/$(IMAGE_PREFIX)operator:$(VERSION) --build-arg APP_VERSION=$(VERSION) operator/
 	docker build -t $(REGISTRY)/$(IMAGE_PREFIX)api:$(VERSION) --build-arg APP_VERSION=$(VERSION) api/
 	docker build -t $(REGISTRY)/$(IMAGE_PREFIX)ui:$(VERSION) --build-arg APP_VERSION=$(VERSION) ui/
+	docker build -t $(REGISTRY)/$(IMAGE_PREFIX)activator:$(VERSION) -f operator/Dockerfile.activator --build-arg APP_VERSION=$(VERSION) operator/
 
 docker-push: docker-build ## Push all Docker images
 	docker push $(REGISTRY)/$(IMAGE_PREFIX)operator:$(VERSION)
 	docker push $(REGISTRY)/$(IMAGE_PREFIX)api:$(VERSION)
 	docker push $(REGISTRY)/$(IMAGE_PREFIX)ui:$(VERSION)
+	docker push $(REGISTRY)/$(IMAGE_PREFIX)activator:$(VERSION)
 
 # ── Helm ─────────────────────────────────────────────────────────────────
 
@@ -136,9 +138,19 @@ fmt: ## Format Go code
 	cd api && go fmt ./...
 	cd cli && go fmt ./...
 
-generate: ## Generate CRD manifests from Go types, then sync them into the chart
+generate: ## Generate CRD manifests and deepcopy methods from Go types
+	@# allowDangerousTypes is for the cost rate card, which is genuinely fractional: a rate
+	@# of 0.01712 per vCPU-hour has no sensible integer spelling, and the alternative --
+	@# a string the operator parses by hand -- moves a validation the API server already
+	@# does into our own code. Without this flag controller-gen refuses outright and every
+	@# CRD, not just that one, stops regenerating.
 	cd operator && GOFLAGS=-mod=mod go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) \
-		crd paths="./api/..." output:crd:dir=config/crd/bases
+		crd:allowDangerousTypes=true paths="./api/..." output:crd:dir=config/crd/bases
+	@# Deepcopy too. This used to be a separate invocation nobody ran, so adding a kind
+	@# failed to build with "does not implement runtime.Object" and the fix was a
+	@# controller-gen command line you had to already know.
+	cd operator && GOFLAGS=-mod=mod go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) \
+		object paths="./api/..."
 	@echo ""
 	@echo "Generated into operator/config/crd/bases only."
 	@echo "The chart's CRDs are deliberately more permissive: many Go fields lack"

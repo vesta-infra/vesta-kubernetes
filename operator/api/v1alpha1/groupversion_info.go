@@ -30,5 +30,6 @@ func init() {
 		&VestaSecret{}, &VestaSecretList{},
 		&VestaMiddleware{}, &VestaMiddlewareList{},
 		&VestaLogDrain{}, &VestaLogDrainList{},
+		&VestaAddon{}, &VestaAddonList{},
 	)
 }

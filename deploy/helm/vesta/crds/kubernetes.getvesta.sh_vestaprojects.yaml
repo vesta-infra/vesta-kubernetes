@@ -106,6 +106,54 @@ spec:
                     type: string
                   repository:
                     type: string
+                  connectionId:
+                    description: 'ConnectionID names the git connection that serves
+                      this repository, set when the
+
+                      repository is chosen through the UI. Empty is resolved by matching
+                      provider, host
+
+                      and path against the configured connections, which is what keeps
+                      apps written
+
+                      before connections existed working.'
+                    type: string
+                  host:
+                    description: 'Host is the git server, for self-managed GitLab
+                      and Bitbucket Data Center. Empty
+
+                      means the provider''s SaaS host. It is part of a repository''s
+                      identity: the same
+
+                      path can exist on gitlab.com and on gitlab.internal and they
+                      are not the same
+
+                      repository.'
+                    type: string
+                  tokenSecret:
+                    description: 'TokenSecret names a Secret in vesta-system holding
+                      a "token" key, used instead of a
+
+                      connection''s credentials.
+
+
+                      This field is new here but not new to the codebase: the API
+                      has been reading it and
+
+                      the UI collecting it since before it existed on the type. Because
+                      the CRD is a
+
+                      structural schema with no preserved unknown fields, the API
+                      server pruned it on
+
+                      every write, so the read could never succeed and the input was
+                      decorative. Same for
+
+                      commitSHA, which is not restored here -- it was observed state
+                      and belongs in
+
+                      status.lastCommitSHA, which already exists.'
+                    type: string
               defaultBuild:
                 type: object
                 description: Default build configuration inherited by apps.
@@ -213,6 +261,74 @@ spec:
                       url:
                         type: string
                     type: object
+              quota:
+                description: Quota applies to every environment of this project unless
+                  one narrows it.
+                properties:
+                  defaultLimitCpu:
+                    type: string
+                  defaultLimitMemory:
+                    type: string
+                  defaultRequestCpu:
+                    description: 'Defaults for the LimitRange that ships alongside
+                      the quota. Once a quota names
+
+                      requests.cpu, Kubernetes requires every new pod to set one;
+                      these are what pods that
+
+                      do not get.'
+                    type: string
+                  defaultRequestMemory:
+                    type: string
+                  enforce:
+                    description: 'Enforce is a pointer so absent is distinguishable
+                      from false. Absent means
+
+                      report-only: the controller creates no ResourceQuota at all
+                      and only computes what
+
+                      one would do.
+
+
+                      That default is the whole safety story. A ResourceQuota is not
+                      applied retroactively
+
+                      to pods that already exist -- it blocks the NEXT admission,
+                      which means the failure
+
+                      lands in the middle of somebody''s deploy rather than when the
+                      quota was set. Working
+
+                      out the answer first, and showing it, turns that into a decision.'
+                    type: boolean
+                  limitsCpu:
+                    description: 'Limits are opt-in and sharper than they look: a
+                      limits.* quota makes every pod
+
+                      without that limit set unadmittable, and most pods do not set
+                      one.'
+                    type: string
+                  limitsMemory:
+                    type: string
+                  maxDeployments:
+                    format: int32
+                    type: integer
+                  maxPods:
+                    format: int32
+                    type: integer
+                  maxPvcs:
+                    format: int32
+                    type: integer
+                  maxServices:
+                    format: int32
+                    type: integer
+                  requestsCpu:
+                    type: string
+                  requestsMemory:
+                    type: string
+                  storageTotal:
+                    type: string
+                type: object
           status:
             type: object
             properties:
