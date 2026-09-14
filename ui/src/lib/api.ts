@@ -29,7 +29,9 @@ export interface MiddlewarePayload {
   displayName?: string
   description?: string
   project?: string
-  config: Record<string, any>
+  config?: Record<string, any>
+  /** For type "raw": a middleware pasted as YAML or JSON, parsed server-side. */
+  configRaw?: string
 }
 
 const BASE = '/api/v1'

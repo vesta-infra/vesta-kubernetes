@@ -411,6 +411,21 @@ vesta middlewares detach office-only --app shop --env production
 }
 ```
 
+The `raw` type takes YAML or JSON, and accepts a whole `Middleware` manifest — paste one
+straight from Traefik's docs or from `kubectl get middleware -o yaml` and Vesta takes its
+`spec`:
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: coraza-forward-auth
+spec:
+  forwardAuth:
+    address: http://coraza-waf.my-namespace.svc.cluster.local:9080
+    trustForwardHeader: true
+```
+
 Ten types have validated forms in the UI — `rateLimit`, `basicAuth`, `ipAllowList`,
 `headers`, `stripPrefix`, `compress`, `retry`, `circuitBreaker`, `buffering` — plus `raw`,
 which passes a Traefik middleware spec through untouched for plugins and anything without
