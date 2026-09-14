@@ -151,5 +151,8 @@ jobs:
       - name: No dropped resources
         run: make helm-upgrade-safety
 
+      - name: Upgrades with --reuse-values still render
+        run: make check-reuse-values
+
       - name: Self-update RBAC covers every rendered kind
         run: make check-upgrader-rbac

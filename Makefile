@@ -188,6 +188,19 @@ CHART_BASELINES ?= 0.6.3 0.9.1
 helm-upgrade-safety: ## Fail if this chart drops a resource an earlier release rendered
 	@for v in $(CHART_BASELINES); do ./hack/check-no-dropped-resources.sh $$v || exit 1; done
 
+# Checked against the last release only, deliberately.
+#
+# It catches what it needs to catch: any key introduced in a NEW chart version, read without
+# a guard, which is the regression this exists to prevent. 0.10.0 shipped exactly that.
+#
+# Older baselines still fail, and that is pre-existing rather than new -- upgrading from
+# 0.6.3 with --reuse-values has been broken since api.jwt and api.encryption were added.
+# Fixing those needs a decision per key rather than mechanical guarding: defaulting
+# api.jwt.secret would rotate the signing key and log everybody out. Run the script with an
+# older version to see that list.
+check-reuse-values: ## Fail if `helm upgrade --reuse-values` would not render this chart
+	./hack/check-reuse-values.sh 0.9.1
+
 check-upgrader-rbac: ## Fail if self-update cannot apply everything the chart renders
 	./hack/check-upgrader-rbac.sh
 

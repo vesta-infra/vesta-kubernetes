@@ -1,4 +1,4 @@
-{{- if .Values.activator.enabled }}
+{{- if eq (include "vesta.enabled" (dict "Values" .Values "section" "activator" "default" true)) "true" }}
 # Permissions for the wake-on-traffic activators.
 #
 # An activator runs in each namespace that contains an app with wake-on-traffic enabled,

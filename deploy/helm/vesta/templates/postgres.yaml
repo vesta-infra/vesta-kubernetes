@@ -1,4 +1,4 @@
-{{- if .Values.postgres.enabled }}
+{{- if eq (include "vesta.enabled" (dict "Values" .Values "section" "postgres" "default" false)) "true" }}
 {{- /*
 An optional in-cluster database so evaluating Vesta does not require standing up Postgres
 first. Deliberately unglamorous: one replica, one PVC, no HA. Anything that needs failover

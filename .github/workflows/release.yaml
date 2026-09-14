@@ -147,6 +147,13 @@ jobs:
       # The upgrade Job runs helm as vesta-upgrader, so that account needs every verb the
       # chart's own resources require. 0.7.3 shipped without delete on RBAC resources and
       # the pre-upgrade hook failed with a forbidden error.
+      # --reuse-values uses the PREVIOUS release's values alone and does not layer the new
+      # chart's defaults over them, so a key added in this version is absent during such an
+      # upgrade and a direct read fails it. 0.10.0 shipped that for the new activator key:
+      # it rendered on a fresh install, passed helm lint, and broke every upgrade.
+      - name: Check --reuse-values upgrades still render
+        run: ./hack/check-reuse-values.sh 0.9.1
+
       - name: Check self-update can apply everything the chart renders
         run: ./hack/check-upgrader-rbac.sh
 
