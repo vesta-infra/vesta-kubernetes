@@ -1,4 +1,4 @@
-{{- if .Values.selfUpdate.enabled }}
+{{- if eq (include "vesta.enabled" (dict "Values" .Values "section" "selfUpdate" "default" true)) "true" }}
 {{- /*
 The identity the in-cluster `helm upgrade` Job runs as.
 

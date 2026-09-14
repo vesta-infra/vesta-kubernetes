@@ -60,14 +60,14 @@ spec:
               value: {{ .Release.Namespace | quote }}
             - name: VESTA_RELEASE_NAME
               value: {{ .Release.Name | quote }}
-            {{- if .Values.selfUpdate.enabled }}
+            {{- if eq (include "vesta.enabled" (dict "Values" .Values "section" "selfUpdate" "default" true)) "true" }}
             - name: VESTA_HELM_IMAGE
-              value: {{ .Values.selfUpdate.helmImage | quote }}
+              value: {{ include "vesta.selfUpdateHelmImage" . | quote }}
             {{- end }}
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  {{- if .Values.postgres.enabled }}
+                  {{- if eq (include "vesta.enabled" (dict "Values" .Values "section" "postgres" "default" false)) "true" }}
                   {{- /* The bundled database owns the URL, so api.database is ignored. */}}
                   name: {{ include "vesta.fullname" . }}-postgres
                   key: DATABASE_URL
@@ -88,7 +88,7 @@ spec:
             # cert-manager resolves a ClusterIssuer's secretRefs against its own controller
             # namespace, so SSL provider credentials must be written there, not here.
             - name: CERT_MANAGER_NAMESPACE
-              value: {{ .Values.certManager.namespace | quote }}
+              value: {{ include "vesta.value" (dict "Values" .Values "path" (list "certManager" "namespace") "default" "cert-manager") | quote }}
             {{- with .Values.api.security.publicUrl }}
             - name: VESTA_PUBLIC_URL
               value: {{ . | quote }}

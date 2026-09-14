@@ -1,4 +1,4 @@
-{{- if .Values.logging.enabled }}
+{{- if eq (include "vesta.enabled" (dict "Values" .Values "section" "logging" "default" false)) "true" }}
 # The log collector. Off by default: a cluster that already runs a logging stack should not
 # get a second agent tailing the same files, and an existing install must not gain a
 # DaemonSet it never asked for on upgrade.

@@ -1,4 +1,4 @@
-{{- if .Values.crdManagement.enabled }}
+{{- if eq (include "vesta.enabled" (dict "Values" .Values "section" "crdManagement" "default" true)) "true" }}
 {{- /*
 Helm installs the files in a chart's crds/ directory exactly once and then ignores them
 forever, which is why upgrading Vesta has always required a manual `kubectl apply` of
@@ -107,7 +107,7 @@ metadata:
 spec:
   backoffLimit: 2
   # Helm waits for the hook, so a hung apply must not hold the release open forever.
-  activeDeadlineSeconds: {{ .Values.crdManagement.timeoutSeconds }}
+  activeDeadlineSeconds: {{ include "vesta.value" (dict "Values" .Values "path" (list "crdManagement" "timeoutSeconds") "default" 300) }}
   template:
     metadata:
       labels:
@@ -121,8 +121,8 @@ spec:
         runAsUser: 65532
       containers:
         - name: kubectl
-          image: "{{ .Values.crdManagement.image.repository }}:{{ .Values.crdManagement.image.tag }}"
-          imagePullPolicy: {{ .Values.crdManagement.image.pullPolicy }}
+          image: "{{ include "vesta.value" (dict "Values" .Values "path" (list "crdManagement" "image" "repository") "default" "registry.k8s.io/kubectl") }}:{{ include "vesta.value" (dict "Values" .Values "path" (list "crdManagement" "image" "tag") "default" "v1.31.3") }}"
+          imagePullPolicy: {{ include "vesta.value" (dict "Values" .Values "path" (list "crdManagement" "image" "pullPolicy") "default" "IfNotPresent") }}
           # No shell wrapper: registry.k8s.io/kubectl is distroless and has no /bin/sh,
           # so a `sh -c` command fails to start the container at all rather than failing
           # the apply. The image's entrypoint is kubectl, so these are its arguments.

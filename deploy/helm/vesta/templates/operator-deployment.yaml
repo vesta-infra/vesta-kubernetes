@@ -38,7 +38,7 @@ spec:
             # app simply stays down rather than being answered by something that does not
             # exist.
             - name: VESTA_ACTIVATOR_IMAGE
-              value: {{ if .Values.activator.enabled }}"{{ .Values.activator.image.repository }}:{{ .Values.activator.image.tag | default .Chart.AppVersion }}"{{ else }}""{{ end }}
+              value: {{ if eq (include "vesta.enabled" (dict "Values" .Values "section" "activator" "default" true)) "true" }}"{{ include "vesta.activatorImage" . }}"{{ else }}""{{ end }}
             - name: VESTA_ACTIVATOR_NAMESPACE_ROLE
               value: {{ include "vesta.fullname" . }}-activator-namespace
             - name: VESTA_ACTIVATOR_WAKE_ROLE
