@@ -271,6 +271,20 @@ func DenyRole(roles ...string) gin.HandlerFunc {
 		userRole, _ := c.Get("role")
 		roleStr, _ := userRole.(string)
 
+		// An absent role is refused, not waved through.
+		//
+		// This is a deny-list, so it used to pass anything it did not recognise -- including
+		// the empty string. A request that reached here without a role claim is one where
+		// the auth middleware did not run or did not finish, which is exactly the case that
+		// should be refused hardest. It was instead the one case that bypassed the check.
+		if roleStr == "" {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code":    403,
+				"message": "your role does not have access to this resource",
+			})
+			return
+		}
+
 		for _, r := range roles {
 			if roleStr == r {
 				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
