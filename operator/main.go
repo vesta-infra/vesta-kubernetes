@@ -94,6 +94,8 @@ func main() {
 	if err = (&controllers.VestaSecretReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		// Uncached, for verifying a Secret immediately after writing it.
+		APIReader: mgr.GetAPIReader(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "VestaSecret")
 		os.Exit(1)

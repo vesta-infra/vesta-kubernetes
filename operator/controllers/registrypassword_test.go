@@ -3,6 +3,7 @@ package controllers
 import (
 	"encoding/base64"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -117,4 +118,60 @@ func mustDecode(t *testing.T, s string) []byte {
 		t.Fatalf("decoding auth: %v", err)
 	}
 	return out
+}
+
+// The migration verifies a Secret immediately after writing it, and that read must not go
+// through the informer cache.
+//
+// This shipped broken. The cached client had not observed the write yet, so the read-back
+// returned NotFound, verification failed, and the migration errored on every reconcile
+// without ever completing:
+//
+//	could not migrate registry password out of the CRD ...
+//	error: verifying password Secret: Secret "vesta-registry-huawei-registry" not found
+//
+// Reading source text rather than exercising it, because reproducing a stale cache needs
+// envtest and a real API server -- and the property worth protecting is simply that these
+// reads never go back to r.Get.
+func TestSecretReadsBypassTheCache(t *testing.T) {
+	src, err := os.ReadFile("registrypassword.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+
+	// Every Secret read here has to use the uncached reader.
+	if strings.Contains(text, "r.Get(ctx, client.ObjectKey") {
+		t.Error("a Secret is read through the cached client; immediately after a write that " +
+			"returns NotFound, which fails the verification and stalls the migration forever")
+	}
+	if !strings.Contains(text, "r.reader().Get(") {
+		t.Error("no uncached read found; the verification would be reading its own cache")
+	}
+
+	// And the verification must still happen at all -- it is the only thing standing
+	// between a failed write and a permanently lost password.
+	if !strings.Contains(text, "does not hold the expected value; not clearing the original") {
+		t.Error("the read-back comparison is gone; the migration could clear a password it " +
+			"never durably stored")
+	}
+}
+
+// The reconciler must keep working when no uncached reader is wired in, so the zero value
+// stays usable and a missed field in main.go is not a nil dereference at runtime.
+func TestReaderFallsBackToTheClient(t *testing.T) {
+	r := &VestaSecretReconciler{}
+	if r.reader() != nil {
+		// A nil Client yields a nil reader; the point is that it does not panic.
+		_ = r.reader()
+	}
+
+	src, err := os.ReadFile("../main.go")
+	if err != nil {
+		t.Skipf("main.go not readable: %v", err)
+	}
+	if !strings.Contains(string(src), "APIReader: mgr.GetAPIReader()") {
+		t.Error("main.go does not give VestaSecretReconciler an uncached reader, so it would " +
+			"silently fall back to the cached client and the migration would stall")
+	}
 }
