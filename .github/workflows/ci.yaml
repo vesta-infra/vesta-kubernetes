@@ -1,0 +1,155 @@
+name: CI
+
+# Nothing ran the test suite before this workflow existed. The repository had 397 test
+# functions -- including a whole class of guards written specifically to catch silent
+# failures: CRD properties that get pruned, enums that drift from the Go constants, routes
+# that ship with no authorisation gate, chart resources that disappear between releases.
+#
+# A guard nobody runs is worse than no guard, because it reads like protection. This makes
+# them load-bearing.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    strategy:
+      # Every module reports independently. A failure in the CLI should not hide whether
+      # the operator's tests pass.
+      fail-fast: false
+      matrix:
+        module: [operator, api, cli]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Read from the module being built rather than pinned here, so bumping a go.mod
+          # does not silently leave CI on an older toolchain. cli is on an older Go than
+          # the other two, which is exactly the case a single pinned version would hide.
+          go-version-file: ${{ matrix.module }}/go.mod
+          cache-dependency-path: ${{ matrix.module }}/go.sum
+
+      - name: Vet
+        working-directory: ${{ matrix.module }}
+        run: go vet ./...
+
+      - name: Test
+        working-directory: ${{ matrix.module }}
+        run: go test ./... -count=1
+
+      - name: Check formatting
+        working-directory: ${{ matrix.module }}
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+  ui:
+    name: UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # Vite 8 requires Node >= 20.19, so plain 20 sits on the edge of working. 22 is
+          # the current LTS and clears it comfortably.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install
+        working-directory: ui
+        run: npm ci
+
+      # tsc is the meaningful check: the UI talks to the API through hand-written types, so
+      # a type error here is usually a real disagreement about a response shape.
+      - name: Typecheck
+        working-directory: ui
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: ui
+        run: npm run build
+
+  generated:
+    name: Generated files are current
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: operator/go.mod
+          cache-dependency-path: operator/go.sum
+
+      # This job catches two different failures with one check.
+      #
+      # The first is a contributor editing types.go without regenerating, which leaves the
+      # shipped CRD missing the property -- and Kubernetes prunes undeclared fields
+      # silently, so the field is accepted on write and simply gone on read.
+      #
+      # The second is generation itself breaking. controller-gen fails the entire run on
+      # one bad type, so a single unsupported field stops every CRD regenerating, not just
+      # its own. That happened here and went unnoticed precisely because nothing ran it.
+      - name: Regenerate
+        run: |
+          make generate
+          make sync-crds
+
+      - name: Fail if anything changed
+        run: |
+          # Scoped to what generation actually writes, so the failure names the files to
+          # regenerate rather than every file in a dirty tree.
+          paths='operator/api operator/config/crd/bases deploy/helm/vesta/crds'
+          if ! git diff --quiet -- $paths; then
+            echo "Generated files are out of date." >&2
+            echo "Run 'make generate && make sync-crds' and commit the result." >&2
+            git --no-pager diff --stat -- $paths >&2
+            exit 1
+          fi
+
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Lint and render
+        run: make helm-lint
+
+      # The three guards that compare against a published baseline. Each exists because the
+      # failure it catches already happened: 0.7.0 dropped templates/namespace.yaml and
+      # deleted the vesta-system namespace -- every Secret and PVC with it -- of every
+      # cluster that upgraded.
+      #
+      # The baseline chart is public, so these pull anonymously. Deliberately no registry
+      # login: it would add a failure mode on pull requests from forks and buy nothing.
+      - name: CRD compatibility
+        run: make check-crds
+
+      - name: No dropped resources
+        run: make helm-upgrade-safety
+
+      - name: Self-update RBAC covers every rendered kind
+        run: make check-upgrader-rbac
