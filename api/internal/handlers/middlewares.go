@@ -47,6 +47,11 @@ type middlewareRequest struct {
 	App         string                 `json:"app"`
 	Environment string                 `json:"environment"`
 	Config      map[string]interface{} `json:"config"`
+
+	// ConfigRaw carries a raw middleware pasted as YAML or JSON, for type "raw". It is
+	// parsed server-side so the UI needs no YAML parser of its own -- two parsers would be
+	// two sets of rules about what is accepted, and they would drift.
+	ConfigRaw string `json:"configRaw"`
 }
 
 func (h *Handler) ListMiddlewares(c *gin.Context) {
@@ -89,6 +94,11 @@ func (h *Handler) CreateMiddleware(c *gin.Context) {
 	var req middlewareRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "invalid request body: " + err.Error()})
+		return
+	}
+
+	if err := req.resolveRawConfig(); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
 		return
 	}
 
@@ -151,6 +161,10 @@ func (h *Handler) UpdateMiddleware(c *gin.Context) {
 		return
 	}
 	req.Name = name
+	if err := req.resolveRawConfig(); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
+		return
+	}
 	if err := validateMiddlewarePayload(req); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
 		return
@@ -596,4 +610,22 @@ func basicAuthConfigFor(middlewareName string, usernames []string, submitted map
 		out["removeHeader"] = true
 	}
 	return out
+}
+
+// resolveRawConfig folds a pasted YAML or JSON middleware into Config, so everything
+// downstream sees one shape regardless of how it arrived.
+func (r *middlewareRequest) resolveRawConfig() error {
+	if strings.TrimSpace(r.ConfigRaw) == "" {
+		return nil
+	}
+	if r.Type != "raw" {
+		return fmt.Errorf("configRaw is only accepted for type \"raw\"; a %s middleware is configured field by field", r.Type)
+	}
+
+	parsed, err := parseRawMiddleware(r.ConfigRaw)
+	if err != nil {
+		return err
+	}
+	r.Config = parsed
+	return nil
 }

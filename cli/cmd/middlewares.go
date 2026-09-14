@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"sigs.k8s.io/yaml"
 )
 
 var middlewaresCmd = &cobra.Command{
@@ -92,15 +93,15 @@ var middlewaresGetCmd = &cobra.Command{
 
 var middlewaresCreateCmd = &cobra.Command{
 	Use:   "create -f <file.json>",
-	Short: "Create a middleware from a JSON file",
-	Long: "Create a middleware from a JSON file of the form:\n\n" +
-		"  {\n    \"name\": \"office-only\",\n    \"type\": \"ipAllowList\",\n" +
-		"    \"description\": \"Office and VPN ranges\",\n" +
-		"    \"config\": { \"sourceRange\": [\"10.0.0.0/8\"] }\n  }\n\n" +
+	Short: "Create a middleware from a YAML or JSON file",
+	Long: "Create a middleware from a YAML or JSON file, e.g.:\n\n" +
+		"  name: office-only\n  type: ipAllowList\n" +
+		"  description: Office and VPN ranges\n" +
+		"  config:\n    sourceRange:\n      - 10.0.0.0/8\n\n" +
 		"For basicAuth, give users directly and Vesta hashes them into a Secret it owns:\n\n" +
-		"  {\n    \"name\": \"staging-gate\",\n    \"type\": \"basicAuth\",\n" +
-		"    \"config\": { \"users\": [{ \"username\": \"alice\", \"password\": \"...\" }] }\n  }\n\n" +
-		"Or name a Secret you manage yourself with \"secretName\". Not both.\n\n" +
+		"  name: staging-gate\n  type: basicAuth\n" +
+		"  config:\n    users:\n      - username: alice\n        password: ...\n\n" +
+		"Or name a Secret you manage yourself with secretName. Not both.\n\n" +
 		"Use \"-\" to read from stdin.",
 	Run: func(cmd *cobra.Command, args []string) {
 		file, _ := cmd.Flags().GetString("file")
@@ -109,7 +110,7 @@ var middlewaresCreateCmd = &cobra.Command{
 		}
 
 		var payload map[string]interface{}
-		if err := readJSONFile(file, &payload); err != nil {
+		if err := readConfigFile(file, &payload); err != nil {
 			fail(err)
 		}
 
@@ -237,7 +238,9 @@ func mustAppEnv(cmd *cobra.Command) (string, string) {
 	return app, env
 }
 
-func readJSONFile(path string, out interface{}) error {
+// readConfigFile accepts YAML or JSON. JSON is valid YAML, so one parser handles both --
+// and the file people have to hand is usually a YAML manifest.
+func readConfigFile(path string, out interface{}) error {
 	var data []byte
 	var err error
 	if path == "-" {
@@ -248,8 +251,8 @@ func readJSONFile(path string, out interface{}) error {
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
-	if err := json.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("%s is not valid JSON: %w", path, err)
+	if err := yaml.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("%s is not valid YAML or JSON: %w", path, err)
 	}
 	return nil
 }
@@ -298,7 +301,7 @@ func truncate(s string, max int) string {
 
 func init() {
 	middlewaresListCmd.Flags().String("project", "", "Only show middlewares available to this project")
-	middlewaresCreateCmd.Flags().StringP("file", "f", "", "JSON file describing the middleware, or - for stdin")
+	middlewaresCreateCmd.Flags().StringP("file", "f", "", "YAML or JSON file describing the middleware, or - for stdin")
 	middlewaresDeleteCmd.Flags().Bool("force", false, "Delete even while apps still reference it")
 
 	for _, c := range []*cobra.Command{middlewaresAttachCmd, middlewaresDetachCmd} {

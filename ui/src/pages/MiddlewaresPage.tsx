@@ -235,7 +235,9 @@ function MiddlewareForm({ existing, onClose, onSaved }: {
     return initial
   })
   const [rawText, setRawText] = useState(
-    existing?.type === 'raw' ? JSON.stringify(existing.config, null, 2) : '{\n  "compress": {}\n}')
+    existing?.type === 'raw'
+      ? toYamlish(existing.config)
+      : 'forwardAuth:\n  address: http://waf.my-namespace.svc.cluster.local:9080\n  trustForwardHeader: true')
   const [error, setError] = useState('')
 
   const save = useMutation({
@@ -252,12 +254,19 @@ function MiddlewareForm({ existing, onClose, onSaved }: {
     let finalConfig = config
 
     if (type === 'raw') {
-      try {
-        finalConfig = JSON.parse(rawText)
-      } catch (e) {
-        setError('Raw configuration must be valid JSON: ' + (e as Error).message)
+      // Sent as text: the server parses YAML and JSON with one parser. Doing it here too
+      // would mean two sets of rules about what is accepted, which would drift.
+      if (!rawText.trim()) {
+        setError('Paste a middleware configuration.')
         return
       }
+      save.mutate({
+        name: existing ? undefined : name,
+        type,
+        description: description || undefined,
+        configRaw: rawText,
+      })
+      return
     } else {
       // Strip empty values so an untouched field is absent rather than an explicit zero.
       // Traefik distinguishes the two for several of these fields.
@@ -344,7 +353,7 @@ function MiddlewareForm({ existing, onClose, onSaved }: {
 
         {type === 'raw' ? (
           <div className="mb-4">
-            <label className="label">Traefik middleware spec</label>
+            <label className="label">Traefik middleware (YAML or JSON)</label>
             <textarea
               value={rawText}
               onChange={e => setRawText(e.target.value)}
@@ -352,7 +361,9 @@ function MiddlewareForm({ existing, onClose, onSaved }: {
               className="input-field w-full font-mono text-xs"
             />
             <p className="text-[10px] text-text-tertiary mt-1">
-              Exactly one top-level key naming the Traefik middleware type. Passed through untouched.
+              YAML or JSON. Paste a whole <span className="font-mono">Middleware</span> manifest and
+              Vesta takes its <span className="font-mono">spec</span>, or paste just the spec body.
+              Exactly one middleware type, passed to Traefik untouched.
             </p>
           </div>
         ) : (
@@ -530,4 +541,49 @@ function BasicAuthUsers({ value, existingUsernames, onChange }: {
       </p>
     </div>
   )
+}
+
+
+// Renders a stored raw middleware back into the textarea as YAML.
+//
+// Deliberately small rather than a YAML library: the values in a Traefik middleware spec
+// are nested maps, lists and scalars, and pulling in a serialiser to format a handful of
+// lines in one textarea is not worth the bundle. JSON stays valid input, so anything this
+// renders awkwardly still round-trips.
+function toYamlish(value: Record<string, any>, indent = 0): string {
+  const pad = '  '.repeat(indent)
+  const lines: string[] = []
+
+  for (const [key, v] of Object.entries(value ?? {})) {
+    if (v === null || v === undefined) continue
+
+    if (Array.isArray(v)) {
+      if (v.length === 0) { lines.push(`${pad}${key}: []`); continue }
+      lines.push(`${pad}${key}:`)
+      for (const item of v) {
+        lines.push(`${pad}  - ${yamlScalar(item)}`)
+      }
+    } else if (typeof v === 'object') {
+      if (Object.keys(v).length === 0) { lines.push(`${pad}${key}: {}`); continue }
+      lines.push(`${pad}${key}:`)
+      lines.push(toYamlish(v, indent + 1))
+    } else {
+      lines.push(`${pad}${key}: ${yamlScalar(v)}`)
+    }
+  }
+  return lines.join('\n')
+}
+
+// Quotes only what YAML would otherwise read as something else -- a bare "true", a leading
+// indicator character, an embedded ": ". JSON's string syntax is a valid YAML double-quoted
+// scalar, so it does the escaping.
+function yamlScalar(v: any): string {
+  if (typeof v !== 'string') return String(v)
+  const needsQuoting =
+    v === '' ||
+    /^[-?:,[\]{}#&*!|>'"%@`]/.test(v) ||
+    v.includes(': ') ||
+    v.includes(' #') ||
+    /^(true|false|null|~|-?\d+(\.\d+)?)$/i.test(v)
+  return needsQuoting ? JSON.stringify(v) : v
 }
