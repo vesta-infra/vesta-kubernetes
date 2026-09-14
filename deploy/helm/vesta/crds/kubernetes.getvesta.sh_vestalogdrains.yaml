@@ -504,6 +504,27 @@ spec:
                   tlsVerify:
                     type: boolean
                 type: object
+              excludeApps:
+                description: 'ExcludeApps names apps within the scope that must not
+                  ship here, as "<app>" for any
+
+                  project or "<project>/<app>" for one. It is how a project-wide drain
+                  skips the one
+
+                  app whose logs are too noisy or too sensitive to send.
+
+
+                  Exclusion is a list rather than a flag on the app because Fluent
+                  Bit has no negative
+
+                  Match: the collector routes by tag, so leaving an app out means
+                  enumerating the ones
+
+                  that remain. Keeping that list on the drain is what makes it computable
+                  at all.'
+                items:
+                  type: string
+                type: array
             required:
             - type
             type: object

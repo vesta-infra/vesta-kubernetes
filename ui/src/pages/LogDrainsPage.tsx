@@ -234,11 +234,26 @@ function LogDrainForm({ existing, onClose, onSaved }: {
   const [project, setProject] = useState(existing?.project ?? '')
   const [environment, setEnvironment] = useState(existing?.environment ?? '')
   const [app, setApp] = useState(existing?.app ?? '')
+  const [excludeApps, setExcludeApps] = useState<string[]>(existing?.excludeApps ?? [])
   const [config, setConfig] = useState<Record<string, any>>(existing?.config ?? {})
   const [credentials, setCredentials] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
 
   const { data: projects } = useQuery({ queryKey: ['projects'], queryFn: () => api.listProjects() })
+
+  // Environments belong to a project, so they can only be offered once one is chosen.
+  // Typing a free-form name here produced a drain that matched no namespace and shipped
+  // nothing, with nothing saying so.
+  const { data: environments } = useQuery({
+    queryKey: ['environments', project],
+    queryFn: () => api.listEnvironments(project),
+    enabled: !!project,
+  })
+
+  const { data: apps } = useQuery({
+    queryKey: ['apps', project],
+    queryFn: () => api.listApps(project ? { project } : undefined),
+  })
 
   const save = useMutation({
     mutationFn: (payload: LogDrainPayload) =>
@@ -271,6 +286,7 @@ function LogDrainForm({ existing, onClose, onSaved }: {
       project: project || undefined,
       environment: environment || undefined,
       app: app || undefined,
+      excludeApps: excludeApps.length > 0 ? excludeApps : undefined,
       config: plainConfig,
       credentials: Object.keys(credentials).length > 0 ? credentials : undefined,
     })
@@ -305,15 +321,20 @@ function LogDrainForm({ existing, onClose, onSaved }: {
         <div className="mb-4">
           <label className="label">Which apps ship here</label>
           <div className="flex gap-2">
-            <select value={project} onChange={e => { setProject(e.target.value); if (!e.target.value) setEnvironment('') }}
+            <select value={project} onChange={e => { setProject(e.target.value); setEnvironment(''); setApp(''); setExcludeApps([]) }}
               className="input-field flex-1 text-sm">
               <option value="">All projects</option>
               {projects?.items?.map((p: any) => <option key={p.name} value={p.name}>{p.name}</option>)}
             </select>
-            <input value={environment} onChange={e => setEnvironment(e.target.value)}
-              placeholder="environment" disabled={!project} className="input-field flex-1 text-sm" />
-            <input value={app} onChange={e => setApp(e.target.value)}
-              placeholder="app" className="input-field flex-1 text-sm" />
+            <select value={environment} onChange={e => setEnvironment(e.target.value)}
+              disabled={!project} className="input-field flex-1 text-sm">
+              <option value="">{project ? 'All environments' : 'Pick a project first'}</option>
+              {environments?.items?.map((e: any) => <option key={e.name} value={e.name}>{e.name}</option>)}
+            </select>
+            <select value={app} onChange={e => setApp(e.target.value)} className="input-field flex-1 text-sm">
+              <option value="">All apps</option>
+              {apps?.items?.map((a: any) => <option key={a.name} value={a.name}>{a.name}</option>)}
+            </select>
           </div>
           <p className="text-[10px] text-text-tertiary mt-1">
             Leave blank for everything. Scope is the attachment — an app ships to every drain
@@ -321,6 +342,39 @@ function LogDrainForm({ existing, onClose, onSaved }: {
             replacing it.
           </p>
         </div>
+
+        {!app && (
+          <div className="mb-4">
+            <label className="label">Except these apps</label>
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {excludeApps.map(name => (
+                <span key={name} className="text-[11px] font-mono px-2 py-1 rounded bg-surface-hover flex items-center gap-1.5">
+                  {name}
+                  <button type="button" onClick={() => setExcludeApps(excludeApps.filter(n => n !== name))}
+                    className="text-text-tertiary hover:text-status-failed">&times;</button>
+                </span>
+              ))}
+              {excludeApps.length === 0 && (
+                <span className="text-xs text-text-tertiary">None — every app in scope ships here.</span>
+              )}
+            </div>
+            <select value="" className="input-field text-xs w-full"
+              onChange={e => {
+                if (e.target.value && !excludeApps.includes(e.target.value)) {
+                  setExcludeApps([...excludeApps, e.target.value])
+                }
+              }}>
+              <option value="">+ Exempt an app…</option>
+              {apps?.items
+                ?.filter((a: any) => !excludeApps.includes(a.name))
+                .map((a: any) => <option key={a.name} value={a.name}>{a.name}</option>)}
+            </select>
+            <p className="text-[10px] text-text-tertiary mt-1">
+              For the app that is too noisy, or whose logs should not leave the cluster.
+              Everything else in scope still ships.
+            </p>
+          </div>
+        )}
 
         <div className="mb-4">
           <label className="label">Description</label>

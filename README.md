@@ -450,9 +450,24 @@ when a backlog drains and an hour of logs shares one timestamp. OpenObserve read
 **Scope is the attachment.** A drain with no `project` covers every app; add `project`,
 `environment` or `app` to narrow it. An app ships to *every* drain whose scope covers it, so
 a project drain adds to the platform one rather than replacing it — which is what makes
-"everything to S3, plus this project to Datadog" a two-line configuration. To exempt one app
-from a broader drain, declare a drain of the same name scoped to that app with
-`enabled: false`.
+"everything to S3, plus this project to Datadog" a two-line configuration.
+
+To exempt individual apps, list them under `excludeApps`:
+
+```yaml
+name: central-logging
+type: s3
+excludeApps:
+  - payments            # excluded wherever it runs
+  - shop-staging/api    # only this project's copy
+config:
+  bucket: credpal-logs
+```
+
+A bare name exempts the app in every namespace the drain covers; qualifying it with the
+namespace narrows that to one, which matters when two projects run an app of the same name.
+`enabled: false` turns the whole drain off instead, keeping its configuration and
+credentials for when it comes back.
 
 **Credentials never reach the drain.** Put them under a separate `credentials:` key and Vesta
 writes them to a Secret, storing only a reference:
