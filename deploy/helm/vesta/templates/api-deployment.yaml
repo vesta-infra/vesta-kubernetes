@@ -5,10 +5,15 @@ rollout that hangs with no error anywhere -- the probe just 404s in a loop. Catc
 render time instead, where the message can say what to do.
 */}}
 {{- $pinned := .Values.api.image.tag | default "" }}
-{{- if and $pinned (eq .Values.api.readinessPath "/readyz") }}
-  {{- $major := regexFind "^[0-9]+" $pinned }}
-  {{- $minor := regexFind "^[0-9]+\\.[0-9]+" $pinned }}
-  {{- if and $major (eq $major "0") (lt $minor "0.7") }}
+{{- if and $pinned (eq (include "vesta.value" (dict "Values" .Values "path" (list "api" "readinessPath") "default" "/readyz")) "/readyz") }}
+  {{- /*
+    semverCompare, not a string compare. The previous check did `lt $minor "0.7"` on the
+    text "0.10", and "0.10" sorts before "0.7" because "1" sorts before "7" -- so every
+    0.10.x and later pin was rejected as too old to serve /readyz. Guarded on the tag
+    actually looking like a version, because semverCompare errors on anything else and a
+    SHA or a branch name is a perfectly ordinary thing to pin.
+  */}}
+  {{- if and (regexMatch "^[0-9]+\\.[0-9]+\\.[0-9]+" $pinned) (semverCompare "<0.7.0" $pinned) }}
     {{- fail (printf "api.image.tag=%s does not serve /readyz (added in 0.7.0), but api.readinessPath=/readyz. The pod would never become Ready. Either unpin api.image.tag, or set api.readinessPath=/healthz." $pinned) }}
   {{- end }}
 {{- end }}
