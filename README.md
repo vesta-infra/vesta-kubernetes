@@ -563,6 +563,49 @@ or per app under `spec.ingress.httpsRedirect`, which overrides the platform sett
 either direction. Switching to `none` deletes the middlewares Vesta created and withdraws
 the annotations referencing them.
 
+### Troubleshooting: "middleware ... does not exist"
+
+If Traefik logs this on every router for an app:
+
+```
+ERR error="middleware \"<ns>-<app>-https-redirect@kubernetescrd\" does not exist"
+```
+
+check whether Traefik is running with `safeNaming` enabled:
+
+```bash
+kubectl get deploy -n traefik traefik \
+  -o 'jsonpath={.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep -i safe
+```
+
+`--providers.kubernetescrd.safeNaming=true` changes the internal name Traefik registers a
+CRD-sourced middleware under, so the conventional `<namespace>-<name>@kubernetescrd`
+reference that Vesta — and Traefik's own documentation — writes into the
+`traefik.ingress.kubernetes.io/router.middlewares` annotation no longer matches. The
+`Middleware` object is present and readable; Traefik just has it filed elsewhere.
+
+This is worth knowing because the failure is severe and misleading. Traefik drops the
+**entire router** when it cannot resolve a referenced middleware, so the symptom is a 404 on
+every request rather than a missing redirect — and `kubectl get middleware` shows the object
+sitting right there, which sends you looking at the wrong thing.
+
+Turn it off where it is actually defined. If it came from `additionalArguments` in your
+Traefik values, `--set providers.kubernetesCRD.safeNaming=false` will **not** override it —
+it adds an unrelated key while the original argument survives. Edit the values file:
+
+```yaml
+additionalArguments:
+  - "--providers.kubernetescrd.safeNaming=true"   # remove this line
+```
+
+Then confirm the argument is gone from the running Deployment before concluding anything
+about whether it helped.
+
+If you would rather keep `safeNaming`, Vesta's own HTTPS redirect middleware can be turned
+off entirely — see [HTTPS redirects](#https-redirects). That removes Vesta's dependency on
+the annotation, though any middleware you attach yourself is still subject to the same
+mismatch.
+
 ### Pod sizes
 
 Apps pick a resource preset rather than setting requests and limits by hand. Two families
