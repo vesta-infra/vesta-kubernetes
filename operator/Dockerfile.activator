@@ -1,0 +1,19 @@
+# The wake-on-traffic activator.
+#
+# Built from the operator module because it shares its types, but shipped as its own image:
+# it runs in application namespaces with a much narrower ServiceAccount, and giving it the
+# operator's binary would put the operator's code where the operator's permissions are not.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+ARG TARGETARCH
+RUN apk add --no-cache git
+WORKDIR /workspace
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH go build -a -o activator ./cmd/activator
+
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY --from=builder /workspace/activator .
+USER 65532:65532
+ENTRYPOINT ["/activator"]

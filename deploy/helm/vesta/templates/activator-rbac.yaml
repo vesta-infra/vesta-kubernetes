@@ -1,0 +1,43 @@
+{{- if .Values.activator.enabled }}
+# Permissions for the wake-on-traffic activators.
+#
+# An activator runs in each namespace that contains an app with wake-on-traffic enabled,
+# because an Ingress backend must name a Service in its own namespace. That means one
+# ServiceAccount per namespace, which the operator creates -- these ClusterRoles are what
+# those accounts are bound to.
+#
+# Two roles rather than one, because the activator needs different things in two places: it
+# reads routing from its own namespace, and it wakes apps whose custom resources all live in
+# vesta-system. Combining them would grant every activator read access to every namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "vesta.fullname" . }}-activator-namespace
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+rules:
+  # Routing: which host belongs to which app, and on which port.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch"]
+  # Readiness: whether the app it is standing in for can serve yet.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch"]
+---
+# Waking an app. Deliberately narrow: get and patch on vestaapps and nothing else, so an
+# activator can start an app and do nothing else to it.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "vesta.fullname" . }}-activator-wake
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["kubernetes.getvesta.sh"]
+    resources: ["vestaapps"]
+    verbs: ["get", "patch"]
+{{- end }}
