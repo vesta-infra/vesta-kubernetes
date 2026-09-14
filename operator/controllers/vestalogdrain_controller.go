@@ -51,6 +51,7 @@ type VestaLogDrainReconciler struct {
 // +kubebuilder:rbac:groups=kubernetes.getvesta.sh,resources=vestalogdrains,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kubernetes.getvesta.sh,resources=vestalogdrains/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 func (r *VestaLogDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -269,14 +270,97 @@ func (r *VestaLogDrainReconciler) rollCollector(ctx context.Context, checksum st
 		return err
 	}
 
-	if ds.Spec.Template.Annotations["checksum/config"] == checksum {
+	env, err := r.credentialEnv(ctx)
+	if err != nil {
+		return err
+	}
+
+	unchanged := ds.Spec.Template.Annotations["checksum/config"] == checksum &&
+		len(ds.Spec.Template.Spec.Containers) > 0 &&
+		envEqual(ds.Spec.Template.Spec.Containers[0].Env, env)
+	if unchanged {
 		return nil
 	}
+
 	if ds.Spec.Template.Annotations == nil {
 		ds.Spec.Template.Annotations = map[string]string{}
 	}
 	ds.Spec.Template.Annotations["checksum/config"] = checksum
+	if len(ds.Spec.Template.Spec.Containers) > 0 {
+		ds.Spec.Template.Spec.Containers[0].Env = env
+	}
 	return r.Update(ctx, ds)
+}
+
+// credentialEnv wires every drain's credentials Secret into the collector.
+//
+// The generated configuration references credentials as ${VESTA_DRAIN_<NAME>_<KEY>}, which
+// only resolves if the collector has them in its environment. Nothing else does this: the
+// API writes the Secret and the chart cannot know which drains exist, so without this the
+// references expand to empty strings and every authenticated destination rejects the
+// batch -- with the collector reporting a delivery error rather than a configuration one.
+//
+// It reads whatever keys the Secret holds rather than knowing each drain type's fields, so
+// adding a destination needs no change here.
+func (r *VestaLogDrainReconciler) credentialEnv(ctx context.Context) ([]corev1.EnvVar, error) {
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, client.InNamespace(drainHomeNamespace)); err != nil {
+		return nil, fmt.Errorf("list drain credentials: %w", err)
+	}
+
+	var env []corev1.EnvVar
+	for i := range secrets.Items {
+		secret := &secrets.Items[i]
+		drainName := secret.Labels["kubernetes.getvesta.sh/log-drain"]
+		if drainName == "" {
+			continue
+		}
+		for _, key := range sortedSecretKeys(secret.Data) {
+			env = append(env, corev1.EnvVar{
+				Name: DrainEnvVar(drainName, key),
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: secret.Name},
+						Key:                  key,
+					},
+				},
+			})
+		}
+	}
+
+	// Stable order, or the DaemonSet rolls on every reconcile.
+	sort.Slice(env, func(i, j int) bool { return env[i].Name < env[j].Name })
+	return env, nil
+}
+
+func sortedSecretKeys(data map[string][]byte) []string {
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func envEqual(a, b []corev1.EnvVar) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name != b[i].Name {
+			return false
+		}
+		if (a[i].ValueFrom == nil) != (b[i].ValueFrom == nil) {
+			return false
+		}
+		if a[i].ValueFrom != nil && b[i].ValueFrom != nil {
+			if a[i].ValueFrom.SecretKeyRef.Name != b[i].ValueFrom.SecretKeyRef.Name ||
+				a[i].ValueFrom.SecretKeyRef.Key != b[i].ValueFrom.SecretKeyRef.Key {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // outputStats is one drain's counters as the collector reports them.

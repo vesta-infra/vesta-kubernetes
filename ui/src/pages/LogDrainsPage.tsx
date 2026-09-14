@@ -23,6 +23,7 @@ const TYPE_FIELDS: Record<LogDrainType, { label: string; blurb: string; fields: 
       { key: 'uri', label: 'URL', kind: 'text', placeholder: 'https://logs.example.com/ingest' },
       { key: 'authHeader', label: 'Authorization header', kind: 'secret', help: 'Sent as the Authorization header. Stored in a Secret, never on the drain.' },
       { key: 'format', label: 'Format', kind: 'text', placeholder: 'json' },
+      { key: 'dateKey', label: 'Timestamp field', kind: 'text', placeholder: 'timestamp', help: 'The field the destination reads event time from. Leave blank unless it expects its own — a mismatch is accepted silently and every record gets its ingestion time instead.' },
       { key: 'headers', label: 'Extra headers', kind: 'map' },
     ],
   },
@@ -66,6 +67,26 @@ const TYPE_FIELDS: Record<LogDrainType, { label: string; blurb: string; fields: 
       { key: 'site', label: 'Site', kind: 'text', placeholder: 'datadoghq.com', help: 'Use datadoghq.eu for EU accounts — the wrong site is accepted and lands elsewhere.' },
       { key: 'service', label: 'Service', kind: 'text' },
       { key: 'tags', label: 'Extra tags', kind: 'map' },
+    ],
+  },
+  openobserve: {
+    label: 'OpenObserve',
+    blurb: 'OpenObserve\u2019s JSON ingest API. The endpoint path and timestamp field are filled in for you.',
+    fields: [
+      { key: 'endpoint', label: 'Endpoint', kind: 'text', placeholder: 'https://openobserve.example.com', help: 'Base URL only \u2014 no path. The ingest path is built from the organization and stream below.' },
+      { key: 'organization', label: 'Organization', kind: 'text', placeholder: 'default' },
+      { key: 'stream', label: 'Stream', kind: 'text', placeholder: 'vesta', help: 'Created on first write.' },
+      { key: 'credentials', label: 'Email and password', kind: 'secret', help: 'As email:password. Stored in a Secret; the collector does the encoding.' },
+    ],
+  },
+  forward: {
+    label: 'Fluent Bit / Fluentd (forward)',
+    blurb: 'Sends to an aggregator you already run, which keeps owning where logs finally go. Records arrive already tagged with project, namespace and app.',
+    fields: [
+      { key: 'host', label: 'Host', kind: 'text', placeholder: 'fluentd.logging.svc' },
+      { key: 'port', label: 'Port', kind: 'number', placeholder: '24224' },
+      { key: 'sharedKey', label: 'Shared key', kind: 'secret', help: 'Enables the handshake. Without it the aggregator accepts records from anything that can reach the port.' },
+      { key: 'tls', label: 'TLS', kind: 'boolean' },
     ],
   },
   s3: {

@@ -313,6 +313,16 @@ func outputBody(name string, spec vestav1alpha1.VestaLogDrainSpec) (string, erro
 			return "", fmt.Errorf("type is s3 but no bucket is set")
 		}
 		return renderS3(name, spec.S3), nil
+	case "forward":
+		if spec.Forward == nil || spec.Forward.Host == "" {
+			return "", fmt.Errorf("type is forward but no host is set")
+		}
+		return renderForward(name, spec.Forward), nil
+	case "openobserve":
+		if spec.OpenObserve == nil || spec.OpenObserve.Endpoint == "" {
+			return "", fmt.Errorf("type is openobserve but no endpoint is set")
+		}
+		return renderOpenObserve(name, spec.OpenObserve), nil
 	}
 	return "", fmt.Errorf("unknown drain type %q", spec.Type)
 }
@@ -497,12 +507,18 @@ func renderS3(name string, d *vestav1alpha1.S3Drain) string {
 	return b.String()
 }
 
-// secretEnvVar is the environment variable a drain's credential is mounted as. Derived from
+// DrainEnvVar is the environment variable a drain's credential is mounted as. Derived from
 // the drain name so two drains of the same type cannot collide.
-func secretEnvVar(drainName, suffix string) string {
+//
+// Exported because the controller uses it to build the collector's environment and the
+// renderer uses it to reference that environment. If the two disagreed, every credential
+// would expand to an empty string and every authenticated drain would fail to deliver.
+func DrainEnvVar(drainName, suffix string) string {
 	sanitised := nonAlphanumeric.ReplaceAllString(strings.ToUpper(drainName), "_")
 	return "VESTA_DRAIN_" + sanitised + "_" + suffix
 }
+
+func secretEnvVar(drainName, suffix string) string { return DrainEnvVar(drainName, suffix) }
 
 var nonAlphanumeric = regexp.MustCompile(`[^A-Z0-9]+`)
 
@@ -584,4 +600,60 @@ func splitEndpoint(uri string) (path, host, port string, tls bool) {
 		port = "80"
 	}
 	return path, host, port, tls
+}
+
+// renderOpenObserve emits the http output aimed at OpenObserve's JSON ingest API.
+func renderOpenObserve(name string, d *vestav1alpha1.OpenObserveDrain) string {
+	var b strings.Builder
+	b.WriteString(kv("Name", "http"))
+	b.WriteString(kv("Alias", name))
+
+	_, host, port, tls := splitEndpoint(d.Endpoint)
+	b.WriteString(kv("Host", host))
+	b.WriteString(kv("Port", port))
+	b.WriteString(kv("URI", fmt.Sprintf("/api/%s/%s/_json",
+		orDefault(d.Organization, "default"), orDefault(d.Stream, "vesta"))))
+	b.WriteString(kv("Format", "json"))
+
+	if tls {
+		b.WriteString(kv("tls", "On"))
+		b.WriteString(kv("tls.verify", onOff(d.TLSVerify, true)))
+	}
+	if d.Credentials != nil {
+		// http_user and http_passwd, not a hand-built Authorization header: the collector
+		// does the base64 itself, so nobody has to paste a pre-encoded credential.
+		b.WriteString(kv("http_user", "${"+secretEnvVar(name, "USER")+"}"))
+		b.WriteString(kv("http_passwd", "${"+secretEnvVar(name, "PASSWORD")+"}"))
+	}
+	if d.Compress != "" {
+		b.WriteString(kv("compress", d.Compress))
+	}
+	// OpenObserve orders on _timestamp; anything else leaves it stamping ingestion time.
+	b.WriteString(kv("json_date_key", "_timestamp"))
+	b.WriteString(kv("json_date_format", "iso8601"))
+	return b.String()
+}
+
+// renderForward emits the forward output, shipping to another Fluent Bit or Fluentd.
+func renderForward(name string, d *vestav1alpha1.ForwardDrain) string {
+	var b strings.Builder
+	b.WriteString(kv("Name", "forward"))
+	b.WriteString(kv("Alias", name))
+	b.WriteString(kv("Host", d.Host))
+	b.WriteString(kv("Port", portOrDefault(d.Port, 24224)))
+
+	if d.SharedKey != nil {
+		b.WriteString(kv("Shared_Key", "${"+secretEnvVar(name, "SHARED_KEY")+"}"))
+		// The handshake needs both sides to agree on a hostname. The pod name would change
+		// on every restart, so a stable default is used unless one is given.
+		b.WriteString(kv("Self_Hostname", orDefault(d.SelfHostname, "vesta-logs")))
+	}
+	if boolOr(d.TLS, false) {
+		b.WriteString(kv("tls", "On"))
+		b.WriteString(kv("tls.verify", onOff(d.TLSVerify, true)))
+	}
+	if boolOr(d.TimeAsInteger, false) {
+		b.WriteString(kv("Time_as_Integer", "On"))
+	}
+	return b.String()
 }

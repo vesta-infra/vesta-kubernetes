@@ -168,6 +168,50 @@ spec:
                 type: boolean
               environment:
                 type: string
+              forward:
+                description: |-
+                  ForwardDrain ships to another Fluent Bit or Fluentd over the forward protocol.
+
+                  For clusters that already run an aggregator: Vesta's per-node collectors become
+                  forwarders, and the aggregator keeps owning where logs ultimately go. That is the right
+                  shape when routing rules already live there, or when the real destination is reachable
+                  only from the aggregator.
+
+                  The aggregator sees records already tagged and enriched -- vesta_project, vesta_namespace
+                  and vesta_app are set before any output runs -- so its own routing can match on those
+                  rather than re-deriving them from the Kubernetes metadata.
+                properties:
+                  host:
+                    type: string
+                  port:
+                    format: int32
+                    type: integer
+                  selfHostname:
+                    type: string
+                  sharedKey:
+                    description: |-
+                      SharedKey enables Fluent Bit's handshake. Without it the aggregator accepts records
+                      from anything that can reach the port.
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  timeAsInteger:
+                    description: |-
+                      TimeAsInteger is needed by Fluentd v0.12 and earlier, which cannot read the
+                      event-time format newer versions use.
+                    type: boolean
+                  tls:
+                    type: boolean
+                  tlsVerify:
+                    type: boolean
+                required:
+                - host
+                type: object
               http:
                 properties:
                   authHeader:
@@ -245,6 +289,46 @@ spec:
                     type: boolean
                 required:
                 - host
+                type: object
+              openobserve:
+                description: |-
+                  OpenObserveDrain ships to OpenObserve's JSON ingest API.
+
+                  This is the http drain with the endpoint shape and timestamp field filled in. Worth a
+                  type of its own because both are easy to get subtly wrong: the URL is
+                  /api/<org>/<stream>/_json rather than anything guessable, and OpenObserve keys on
+                  "_timestamp" -- send "timestamp" and it accepts every record while stamping each with its
+                  ingestion time, which looks correct until a backlog drains.
+                properties:
+                  compress:
+                    type: string
+                  credentials:
+                    description: Credentials holds "email:password". OpenObserve authenticates
+                      with HTTP basic auth.
+                    properties:
+                      key:
+                        type: string
+                      name:
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  endpoint:
+                    description: Endpoint is the base URL, e.g. https://openobserve.example.com
+                      -- no path.
+                    type: string
+                  organization:
+                    description: Organization defaults to "default", which is what
+                      a single-tenant install uses.
+                    type: string
+                  stream:
+                    description: Stream is the destination stream; it is created on
+                      first write.
+                    type: string
+                  tlsVerify:
+                    type: boolean
+                required:
+                - endpoint
                 type: object
               project:
                 description: Project, App and Environment narrow which apps ship here.
@@ -348,6 +432,8 @@ spec:
                 - elasticsearch
                 - datadog
                 - s3
+                - openobserve
+                - forward
                 type: string
             required:
             - type
