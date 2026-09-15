@@ -10,6 +10,7 @@ import CopyEnvButton from '../components/CopyEnvButton'
 import RevealableInput from '../components/RevealableInput'
 import AppDiagnostics from '../components/AppDiagnostics'
 import { ImageRepositoryInput, ImageTagInput } from '../components/RegistryPicker'
+import { BranchPicker } from '../components/BranchPicker'
 import { providerKindLabel } from '../components/SSLProviders'
 
 // The cert-manager annotation that used to be the only way to pick an issuer. It is now
@@ -982,14 +983,6 @@ function EnvironmentRow({ env, envConfig, appEnvConfig, appImage, projectId, app
   const [branch, setBranch] = useState(envConfig?.branch || '')
   const [autoDeploy, setAutoDeploy] = useState(envConfig?.autoDeploy || false)
 
-  const { data: branchesData } = useQuery({
-    queryKey: ['repoBranches', appGitRepo],
-    queryFn: () => api.listRepoBranches(appGitRepo),
-    enabled: editing && !!appGitRepo && appGitRepo.includes('/'),
-    staleTime: 60_000,
-  })
-  const branches: string[] = branchesData?.branches || []
-
   const updateMutation = useMutation({
     mutationFn: () => api.updateEnvironment(projectId, env, { branch, autoDeploy }),
     onSuccess: () => {
@@ -1055,25 +1048,11 @@ function EnvironmentRow({ env, envConfig, appEnvConfig, appImage, projectId, app
           <div className="flex items-end gap-3">
             <div className="flex-1">
               <label className="text-[11px] text-text-tertiary mb-1 block">Branch</label>
-              {branches.length > 0 ? (
-                <select
-                  value={branch}
-                  onChange={(e) => setBranch(e.target.value)}
-                  className="input-field font-mono text-xs w-full"
-                >
-                  <option value="">No branch</option>
-                  {branches.map(b => (
-                    <option key={b} value={b}>{b}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  value={branch}
-                  onChange={(e) => setBranch(e.target.value)}
-                  className="input-field font-mono text-xs w-full"
-                  placeholder="main"
-                />
-              )}
+              <BranchPicker
+                repository={appGitRepo}
+                value={branch}
+                onChange={setBranch}
+              />
             </div>
             <label className="flex items-center gap-2 cursor-pointer pb-1.5">
               <input
@@ -1273,14 +1252,6 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const [gitBranch, setGitBranch] = useState(app.spec?.git?.branch || '')
   const [gitAutoDeploy, setGitAutoDeploy] = useState(app.spec?.git?.autoDeployOnPush || false)
   const [gitTokenSecret, setGitTokenSecret] = useState(app.spec?.git?.tokenSecret || '')
-
-  const { data: branchesData } = useQuery({
-    queryKey: ['repoBranches', gitRepo],
-    queryFn: () => api.listRepoBranches(gitRepo),
-    enabled: !!gitRepo && gitRepo.includes('/'),
-    staleTime: 60_000,
-  })
-  const branches: string[] = branchesData?.branches || []
 
   const { data: accessibleRepos } = useQuery({
     queryKey: ['accessibleRepos'],
@@ -2319,22 +2290,26 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             <div className={`grid ${ghStatus?.configured ? 'grid-cols-2' : 'grid-cols-3'} gap-3`}>
               <div>
                 <label className="text-xs text-text-tertiary mb-1 block">Branch</label>
-                {branches.length > 0 ? (
-                  <select value={gitBranch} onChange={e => setGitBranch(e.target.value)} className="input-field font-mono text-xs w-full">
-                    <option value="">Select branch</option>
-                    {branches.map(b => (
-                      <option key={b} value={b}>{b}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input value={gitBranch} onChange={e => setGitBranch(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="main" />
-                )}
+                <BranchPicker
+                  repository={gitRepo}
+                  provider={gitProvider}
+                  host={app.spec?.git?.host}
+                  connectionId={app.spec?.git?.connectionId}
+                  value={gitBranch}
+                  onChange={setGitBranch}
+                />
               </div>
-              {!ghStatus?.configured && (
+              {/* Gated on whether a connection covers THIS repository, not on whether the
+                  instance happens to have a GitHub App configured. An app pointing at
+                  GitLab needs its own credential even where a GitHub App exists, and a
+                  token set here overrides the connection's for every build. */}
+              {!app.spec?.git?.connectionId && (
                 <div>
                   <label className="text-xs text-text-tertiary mb-1 block">Token Secret</label>
                   <input value={gitTokenSecret} onChange={e => setGitTokenSecret(e.target.value)} className="input-field font-mono text-xs w-full" placeholder="github-token" />
-                  <p className="text-[10px] text-text-tertiary mt-0.5">K8s secret name with key &quot;token&quot;</p>
+                  <p className="text-[10px] text-text-tertiary mt-0.5">
+                    No connection covers this repository, so cloning needs a secret with key &quot;token&quot;.
+                  </p>
                 </div>
               )}
               <div className="flex items-end pb-1">
@@ -3702,14 +3677,6 @@ function AppBuilds({ appId, environments, gitRepo, deployments, role, onRollback
   const [branch, setBranch] = useState('')
   const [historyEnvFilter, setHistoryEnvFilter] = useState('')
 
-  const { data: branchesData } = useQuery({
-    queryKey: ['repoBranches', gitRepo],
-    queryFn: () => api.listRepoBranches(gitRepo),
-    enabled: !!gitRepo && gitRepo.includes('/'),
-    staleTime: 60_000,
-  })
-  const buildBranches: string[] = branchesData?.branches || []
-
   const { data: builds, isLoading } = useQuery({
     queryKey: ['builds', appId],
     queryFn: () => api.listBuilds(appId, { limit: 30 }),
@@ -3788,25 +3755,13 @@ function AppBuilds({ appId, environments, gitRepo, deployments, role, onRollback
             </div>
             <div>
               <label className="block text-xs text-text-tertiary mb-1">Branch (optional)</label>
-              {buildBranches.length > 0 ? (
-                <select
-                  value={branch}
-                  onChange={(e) => setBranch(e.target.value)}
-                  className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm"
-                >
-                  <option value="">Default branch</option>
-                  {buildBranches.map(b => (
-                    <option key={b} value={b}>{b}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  value={branch}
-                  onChange={(e) => setBranch(e.target.value)}
-                  placeholder="main"
-                  className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm"
-                />
-              )}
+              <BranchPicker
+                repository={gitRepo}
+                value={branch}
+                onChange={setBranch}
+                placeholder="Default branch"
+                className="w-full bg-surface-secondary border border-border rounded px-3 py-1.5 text-sm"
+              />
             </div>
             <div>
               <label className="block text-xs text-text-tertiary mb-1">Commit SHA (optional)</label>
