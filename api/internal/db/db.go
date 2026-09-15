@@ -298,13 +298,33 @@ CREATE INDEX IF NOT EXISTS idx_user_mfa_backup_codes_user ON user_mfa_backup_cod
 CREATE TABLE IF NOT EXISTS webauthn_sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    purpose TEXT NOT NULL CHECK (purpose IN ('register', 'authenticate')),
+    purpose TEXT NOT NULL CHECK (purpose IN ('register', 'authenticate', 'reauth')),
     session_data JSONB NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_webauthn_sessions_expires ON webauthn_sessions(expires_at);
+
+-- 'reauth' was added to webauthn_sessions.purpose after the table shipped, and
+-- CREATE TABLE IF NOT EXISTS cannot widen a CHECK on a database that already has
+-- the table — step-up reauth failed there with webauthn_sessions_purpose_check.
+-- Reconciled explicitly, and only when the existing constraint is the narrow one,
+-- so this is a no-op on a fresh database and on every run after the first.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'webauthn_sessions'::regclass
+          AND conname = 'webauthn_sessions_purpose_check'
+          AND pg_get_constraintdef(oid) NOT LIKE '%reauth%'
+    ) THEN
+        ALTER TABLE webauthn_sessions DROP CONSTRAINT webauthn_sessions_purpose_check;
+        ALTER TABLE webauthn_sessions
+            ADD CONSTRAINT webauthn_sessions_purpose_check
+            CHECK (purpose IN ('register', 'authenticate', 'reauth'));
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS mfa_lockouts (
     user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,

@@ -396,7 +396,7 @@ func (h *Handler) BeginWebAuthnRegistration(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
 	}
-	sessionID, err := h.DB.CreateWebAuthnSession(c.Request.Context(), userID, "register", encoded, time.Now().Add(webauthnCeremonyTTL))
+	sessionID, err := h.DB.CreateWebAuthnSession(c.Request.Context(), userID, db.PurposeRegister, encoded, time.Now().Add(webauthnCeremonyTTL))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
@@ -420,7 +420,7 @@ func (h *Handler) FinishWebAuthnRegistration(c *gin.Context) {
 	}
 
 	userID := c.GetString("userId")
-	raw, err := h.DB.TakeWebAuthnSession(c.Request.Context(), sessionID, userID, "register")
+	raw, err := h.DB.TakeWebAuthnSession(c.Request.Context(), sessionID, userID, db.PurposeRegister)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "that registration attempt has expired, start again"})
 		return
@@ -644,7 +644,7 @@ func (h *Handler) BeginWebAuthnAuthentication(c *gin.Context) {
 	}
 
 	encoded, _ := json.Marshal(session)
-	sessionID, err := h.DB.CreateWebAuthnSession(c.Request.Context(), userID, "authenticate", encoded, time.Now().Add(webauthnCeremonyTTL))
+	sessionID, err := h.DB.CreateWebAuthnSession(c.Request.Context(), userID, db.PurposeAuthenticate, encoded, time.Now().Add(webauthnCeremonyTTL))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
 		return
@@ -677,7 +677,7 @@ func (h *Handler) FinishWebAuthnAuthentication(c *gin.Context) {
 		return
 	}
 
-	raw, err := h.DB.TakeWebAuthnSession(ctx, sessionID, userID, "authenticate")
+	raw, err := h.DB.TakeWebAuthnSession(ctx, sessionID, userID, db.PurposeAuthenticate)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "that attempt has expired, start again"})
 		return

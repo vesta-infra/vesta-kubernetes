@@ -210,6 +210,16 @@ func (d *DB) RenameWebAuthnCredential(ctx context.Context, userID, id, name stri
 
 // ---------- WebAuthn ceremony sessions ----------
 
+// WebAuthn ceremony purposes. A ceremony started for one purpose can never satisfy
+// another: TakeWebAuthnSession matches on this, so a login challenge cannot be
+// replayed to pass a step-up. Every value here must also be allowed by the
+// webauthn_sessions.purpose CHECK in db.go — see TestWebAuthnPurposesAllowedBySchema.
+const (
+	PurposeRegister     = "register"
+	PurposeAuthenticate = "authenticate"
+	PurposeReauth       = "reauth"
+)
+
 func (d *DB) CreateWebAuthnSession(ctx context.Context, userID, purpose string, data []byte, expiresAt time.Time) (string, error) {
 	var id string
 	err := d.QueryRowContext(ctx, `
