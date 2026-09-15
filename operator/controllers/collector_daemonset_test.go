@@ -1,6 +1,8 @@
 package controllers
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -109,5 +111,79 @@ func TestCollectorCarriesSecretBackedCredentials(t *testing.T) {
 	}
 	if env[0].Value != "" {
 		t.Error("a credential value is set literally on the pod spec")
+	}
+}
+
+// The collector would not start at all:
+//
+//	error mounting ".../volumes/kubernetes.io~empty-dir/storage" to rootfs at
+//	"/var/log/flb-storage": create mountpoint: mkdirat ...: read-only file system
+//
+// /var/log is a read-only bind mount from the host, and runc cannot create a mountpoint
+// inside one. The buffer was nested there, so the container died before Fluent Bit ran.
+//
+// Both mounts are necessary and both must stay as they are — /var/log read-only because an
+// agent that can write to the node's log directory corrupts what every other agent reads,
+// and the buffer writable because it holds the filesystem queue and the tail position
+// database. They simply cannot be nested.
+func TestWritableMountsAreNotInsideReadOnlyOnes(t *testing.T) {
+	ds := BuildCollectorDaemonSet("vesta-system", "x", CollectorOptions{})
+	mounts := ds.Spec.Template.Spec.Containers[0].VolumeMounts
+
+	for _, w := range mounts {
+		if w.ReadOnly {
+			continue
+		}
+		for _, ro := range mounts {
+			if !ro.ReadOnly || ro.MountPath == w.MountPath {
+				continue
+			}
+			if strings.HasPrefix(w.MountPath, strings.TrimSuffix(ro.MountPath, "/")+"/") {
+				t.Errorf("writable mount %q is inside read-only mount %q; the container "+
+					"cannot start, because runc must create the mountpoint and cannot write "+
+					"there", w.MountPath, ro.MountPath)
+			}
+		}
+	}
+}
+
+// The buffer path in the DaemonSet and the one in the generated configuration are set in
+// different files and nothing connects them. A mismatch is not a startup failure — the
+// container comes up and Fluent Bit writes its queue into the container's own filesystem,
+// which is read-only, so it degrades to memory buffering and loses its tail position on
+// every restart.
+func TestBufferPathMatchesTheGeneratedConfig(t *testing.T) {
+	ds := BuildCollectorDaemonSet("vesta-system", "x", CollectorOptions{})
+
+	var buffer string
+	for _, m := range ds.Spec.Template.Spec.Containers[0].VolumeMounts {
+		if m.Name == "storage" {
+			buffer = m.MountPath
+		}
+	}
+	if buffer == "" {
+		t.Fatal("no buffer volume is mounted")
+	}
+
+	raw, err := os.ReadFile("fluentbit_config.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := string(raw)
+
+	for _, setting := range []string{"storage.path", "DB "} {
+		i := strings.Index(config, setting)
+		if i < 0 {
+			t.Errorf("the generated config sets no %s", strings.TrimSpace(setting))
+			continue
+		}
+		line := config[i:]
+		if end := strings.Index(line, "\n"); end > 0 {
+			line = line[:end]
+		}
+		if !strings.Contains(line, buffer) {
+			t.Errorf("%s points outside the mounted buffer %q: %s",
+				strings.TrimSpace(setting), buffer, strings.TrimSpace(line))
+		}
 	}
 }

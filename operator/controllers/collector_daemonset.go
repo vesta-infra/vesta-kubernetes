@@ -142,7 +142,14 @@ func BuildCollectorDaemonSet(namespace, checksum string, opts CollectorOptions) 
 							// reads.
 							{Name: "varlog", MountPath: "/var/log", ReadOnly: true},
 							{Name: "varlibdockercontainers", MountPath: "/var/lib/docker/containers", ReadOnly: true},
-							{Name: "storage", MountPath: "/var/log/flb-storage"},
+							// Top level on purpose, NOT under /var/log. That directory is a
+							// read-only bind mount from the host, and runc cannot create a
+							// mountpoint inside one -- the container fails to start with
+							// "mkdirat ... read-only file system" before Fluent Bit runs at
+							// all. The buffer holds the filesystem queue and the tail
+							// position database, so it cannot simply be dropped: losing it
+							// re-ships every log file from the beginning after a restart.
+							{Name: "storage", MountPath: "/flb-storage"},
 						},
 						LivenessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
