@@ -557,6 +557,17 @@ type VestaProjectSpec struct {
 
 	// Quota applies to every environment of this project unless one narrows it.
 	Quota *QuotaSpec `json:"quota,omitempty"`
+
+	// NetworkIsolation walls this project's environments off from everything outside them.
+	//
+	// Set here rather than only platform-wide because isolation is usually wanted for the
+	// one project holding something sensitive, and turning it on for the whole instance to
+	// get that is a much larger change than the need justifies.
+	//
+	// The environments of an isolated project do NOT reach each other: each namespace is
+	// isolated from everything outside itself, so staging cannot reach production's
+	// database any more than another project can.
+	NetworkIsolation *NetworkIsolationConfig `json:"networkIsolation,omitempty"`
 }
 
 type ProjectEnvironment struct {
@@ -733,7 +744,11 @@ type SecurityConfig struct {
 // enabling this is not on its own evidence that anything is isolated -- the operator reports
 // what it found in the environment's status.
 type NetworkIsolationConfig struct {
-	Enabled bool `json:"enabled,omitempty"`
+	// Enabled is a pointer so that a project turning isolation OFF is distinguishable from
+	// a project that says nothing about it. With a plain bool the two are the same value
+	// and the platform default would always win, which makes an exemption impossible to
+	// express. Same reason QuotaSpec.Enforce is a pointer.
+	Enabled *bool `json:"enabled,omitempty"`
 
 	// TrustedNamespaces may reach apps. Left empty, a default list covering the usual
 	// ingress-controller and monitoring namespaces is used; setting it REPLACES that list
@@ -762,6 +777,10 @@ type VestaEnvironmentSpec struct {
 	// Quota bounds what this environment may consume. Empty inherits the project's, then
 	// the platform default.
 	Quota *QuotaSpec `json:"quota,omitempty"`
+
+	// NetworkIsolation for this environment alone. Empty inherits the project's, then the
+	// platform default.
+	NetworkIsolation *NetworkIsolationConfig `json:"networkIsolation,omitempty"`
 }
 
 // NetworkIsolationStatus reports what isolation is actually doing.

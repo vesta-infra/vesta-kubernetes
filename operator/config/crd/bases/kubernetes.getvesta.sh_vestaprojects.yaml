@@ -189,6 +189,48 @@ spec:
                 additionalProperties:
                   type: string
                 type: object
+              networkIsolation:
+                description: |-
+                  NetworkIsolation walls this project's environments off from everything outside them.
+
+                  Set here rather than only platform-wide because isolation is usually wanted for the
+                  one project holding something sensitive, and turning it on for the whole instance to
+                  get that is a much larger change than the need justifies.
+
+                  The environments of an isolated project do NOT reach each other: each namespace is
+                  isolated from everything outside itself, so staging cannot reach production's
+                  database any more than another project can.
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled is a pointer so that a project turning isolation OFF is distinguishable from
+                      a project that says nothing about it. With a plain bool the two are the same value
+                      and the platform default would always win, which makes an exemption impossible to
+                      express. Same reason QuotaSpec.Enforce is a pointer.
+                    type: boolean
+                  metricsPort:
+                    description: |-
+                      MetricsPort, when set, stays reachable from anywhere. A scraper that cannot be located
+                      by namespace is common, and a closed metrics port fails silently -- the dashboard just
+                      goes blank.
+                    format: int32
+                    type: integer
+                  trustedNamespaceLabels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      TrustedNamespaceLabels is for clusters that label namespaces by purpose rather than
+                      naming them predictably.
+                    type: object
+                  trustedNamespaces:
+                    description: |-
+                      TrustedNamespaces may reach apps. Left empty, a default list covering the usual
+                      ingress-controller and monitoring namespaces is used; setting it REPLACES that list
+                      rather than adding to it.
+                    items:
+                      type: string
+                    type: array
+                type: object
               notifications:
                 properties:
                   discord:

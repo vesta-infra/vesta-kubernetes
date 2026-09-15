@@ -142,6 +142,54 @@ spec:
                   storageTotal:
                     type: string
                 type: object
+              networkIsolation:
+                description: 'NetworkIsolation for this environment alone. Empty inherits
+                  the project''s, then the
+
+                  platform default.'
+                properties:
+                  enabled:
+                    description: 'Enabled is a pointer so that a project turning isolation
+                      OFF is distinguishable from
+
+                      a project that says nothing about it. With a plain bool the
+                      two are the same value
+
+                      and the platform default would always win, which makes an exemption
+                      impossible to
+
+                      express. Same reason QuotaSpec.Enforce is a pointer.'
+                    type: boolean
+                  metricsPort:
+                    description: 'MetricsPort, when set, stays reachable from anywhere.
+                      A scraper that cannot be located
+
+                      by namespace is common, and a closed metrics port fails silently
+                      -- the dashboard just
+
+                      goes blank.'
+                    format: int32
+                    type: integer
+                  trustedNamespaceLabels:
+                    additionalProperties:
+                      type: string
+                    description: 'TrustedNamespaceLabels is for clusters that label
+                      namespaces by purpose rather than
+
+                      naming them predictably.'
+                    type: object
+                  trustedNamespaces:
+                    description: 'TrustedNamespaces may reach apps. Left empty, a
+                      default list covering the usual
+
+                      ingress-controller and monitoring namespaces is used; setting
+                      it REPLACES that list
+
+                      rather than adding to it.'
+                    items:
+                      type: string
+                    type: array
+                type: object
           status:
             type: object
             properties:
