@@ -174,6 +174,11 @@ check-crds: ## Fail if the chart's CRDs would reject data an earlier release acc
 	@# not validate CRD schemas and helm template renders it happily.
 	./hack/check-crd-structural.sh deploy/helm/vesta/crds
 	./hack/check-crd-structural.sh operator/config/crd/bases
+	@# And that no enum in the chart is narrower than the Go types. sync-crds cannot fix
+	@# this class: it copies absent properties and never edits one that exists, so a value
+	@# added to an existing enum never arrives. That shipped openobserve as a drain whose
+	@# config block validated and whose type value did not.
+	./hack/check-crd-enums.sh
 
 helm-lint: ## Lint and render the chart the way CI does
 	helm lint deploy/helm/vesta
