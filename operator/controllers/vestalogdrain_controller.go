@@ -77,18 +77,20 @@ func (r *VestaLogDrainReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	collectorMissing := false
 	if err := r.rollCollector(ctx, checksum); err != nil {
 		// A missing DaemonSet is the normal state when logging is disabled in the chart.
 		if !errors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
-		logger.V(1).Info("collector is not deployed; configuration written but nothing is shipping",
+		collectorMissing = true
+		logger.Info("collector is not deployed; configuration written but nothing is shipping",
 			"hint", "set logging.enabled=true in the chart")
 	}
 
 	stats := r.collectorStats(ctx)
 	for i := range drains.Items {
-		if err := r.updateStatus(ctx, &drains.Items[i], targets, renderErrors, stats); err != nil {
+		if err := r.updateStatus(ctx, &drains.Items[i], targets, renderErrors, stats, collectorMissing); err != nil {
 			logger.Error(err, "failed to update drain status", "drain", drains.Items[i].Name)
 		}
 	}
@@ -428,6 +430,7 @@ func (r *VestaLogDrainReconciler) updateStatus(
 	targets []DrainTarget,
 	renderErrors map[string]string,
 	stats map[string]outputStats,
+	collectorMissing bool,
 ) error {
 	status := vestav1alpha1.VestaLogDrainStatus{
 		ObservedGeneration: drain.Generation,
@@ -439,6 +442,13 @@ func (r *VestaLogDrainReconciler) updateStatus(
 		status.Reason = "disabled"
 	case renderErrors[drain.Name] != "":
 		status.Reason = renderErrors[drain.Name]
+	case collectorMissing:
+		// Rendering succeeded, so this drain is in targets and would otherwise report Ready
+		// while not a single line is being shipped. A drain that claims to work and does
+		// not is worse than one that says it cannot: the first sign of trouble would be an
+		// empty dashboard during an incident.
+		status.Reason = "no log collector is running — set logging.enabled=true in the chart"
+
 	default:
 		for _, t := range targets {
 			if t.Drain.Name != drain.Name {
