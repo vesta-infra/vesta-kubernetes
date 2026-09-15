@@ -77,15 +77,28 @@ func (r *VestaLogDrainReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	collectorMissing := false
-	if err := r.rollCollector(ctx, checksum); err != nil {
-		// A missing DaemonSet is the normal state when logging is disabled in the chart.
-		if !errors.IsNotFound(err) {
-			return ctrl.Result{}, err
+	// Nothing left to ship: take the collector down rather than leaving a pod on every node
+	// tailing logs for no destination. Only one this operator created — a DaemonSet the
+	// chart rendered belongs to Helm, and deleting it here would have it reappear on the
+	// next upgrade and vanish on the next reconcile.
+	if len(targets) == 0 {
+		if err := r.removeOwnCollector(ctx); err != nil {
+			logger.Error(err, "could not remove the log collector")
 		}
-		collectorMissing = true
-		logger.Info("collector is not deployed; configuration written but nothing is shipping",
-			"hint", "set logging.enabled=true in the chart")
+	}
+
+	collectorMissing := false
+	if len(targets) > 0 {
+		if err := r.rollCollector(ctx, checksum); err != nil {
+			// rollCollector creates one when it is absent, so reaching here means the
+			// create itself failed.
+			if !errors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			collectorMissing = true
+			logger.Info("collector is not deployed; configuration written but nothing is shipping",
+				"hint", "set logging.enabled=true in the chart")
+		}
 	}
 
 	stats := r.collectorStats(ctx)
@@ -284,7 +297,22 @@ func (r *VestaLogDrainReconciler) writeConfig(ctx context.Context, config string
 // through `kubectl rollout status` and atomic per node.
 func (r *VestaLogDrainReconciler) rollCollector(ctx context.Context, checksum string) error {
 	ds := &appsv1.DaemonSet{}
-	if err := r.Get(ctx, client.ObjectKey{Namespace: drainHomeNamespace, Name: collectorName}, ds); err != nil {
+	err := r.Get(ctx, client.ObjectKey{Namespace: drainHomeNamespace, Name: collectorName}, ds)
+	if errors.IsNotFound(err) {
+		// Nothing is running one, so start it. The operator is the only thing that knows a
+		// drain exists; the chart cannot, which is why configuring a drain in the UI used
+		// to write a configuration and leave it unshipped until somebody ran helm.
+		env, credErr := r.credentialEnv(ctx)
+		if credErr != nil {
+			return credErr
+		}
+		created := BuildCollectorDaemonSet(drainHomeNamespace, checksum, r.collectorOptions(env))
+		if createErr := r.Create(ctx, created); createErr != nil {
+			return createErr
+		}
+		return nil
+	}
+	if err != nil {
 		return err
 	}
 
