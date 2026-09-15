@@ -1092,6 +1092,11 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   // below the domain template, so on an instance with a template it never applies — and
   // dropping it from the patch would take the ingress away from an app relying on it.
   const existingDomain: string = app.spec?.ingress?.domain || ''
+  // Removing the app-level domain needs an explicit act, because the field itself is gone.
+  // Without this there was no way to clear one: the value rides through on the spread, so
+  // an app that had a URL could never stop having it.
+  const [removeAppDomain, setRemoveAppDomain] = useState(false)
+  const appDomain = removeAppDomain ? '' : existingDomain
   // Read only: configured per environment now, kept here so an app that already has TLS
   // keeps its ingress block when something unrelated is saved.
   const existingTls: boolean = app.spec?.ingress?.tls || false
@@ -1349,21 +1354,23 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       ingressAnns[CLUSTER_ISSUER_ANNOTATION] = legacyIssuerAnnotation
     }
 
-    if (existingDomain || Object.keys(ingressAnns).length > 0 || existingTls) {
+    if (appDomain || Object.keys(ingressAnns).length > 0 || existingTls) {
       const existingIngress = app.spec?.ingress || {}
       patch.ingress = {
-        // The spread already carries the stored domain through; re-sending it from state
-        // would only be a second copy of the same value.
-        // The spread carries the stored TLS settings through untouched. They are no longer
-        // edited here -- TLS belongs with the domains it secures, which are per environment
-        // -- and re-sending them from state that nothing updates would write back whatever
-        // the form happened to load with.
+        // The spread carries the stored domain and TLS settings through untouched. Neither
+        // is edited here any more -- both belong with the environments they apply to -- and
+        // re-sending them from state nothing updates would write back whatever the form
+        // happened to load with.
         ...existingIngress,
         annotations: Object.keys(ingressAnns).length > 0 ? ingressAnns : undefined,
       }
       // Remove undefined keys so they don't serialize as null
       if (!patch.ingress.annotations) delete patch.ingress.annotations
-    } else if (!existingDomain && !app.spec?.ingress?.clusterIssuer && !app.spec?.ingress?.ingressClassName) {
+      // Dropping the key is what removes it: the API preserves fields a patch leaves out,
+      // but domain is not on that list, so an omitted one is gone. A null would be a string
+      // field set to null, which the schema does not accept.
+      if (removeAppDomain) delete patch.ingress.domain
+    } else if (!appDomain && !app.spec?.ingress?.clusterIssuer && !app.spec?.ingress?.ingressClassName) {
       patch.ingress = null
     }
 
@@ -1572,6 +1579,36 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             <p className="text-[10px] text-text-tertiary mt-1">When set, the command runs in exec form (no shell) — works on distroless images and forwards signals for graceful shutdown.</p>
           </div>
         </div>
+
+        {/* The app-level domain is no longer editable — domains belong to environments —
+            but one already set has to be removable, or an app that has a URL can never stop
+            having it. Shown only when there is one, so it does not clutter the common case. */}
+        {existingDomain && (
+          <div className="rounded-lg border border-border bg-surface-1 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs text-text-secondary">
+                  App-level domain{' '}
+                  <span className={`font-mono ${removeAppDomain ? 'line-through text-text-quaternary' : 'text-text-primary'}`}>
+                    {existingDomain}
+                  </span>
+                </p>
+                <p className="text-[11px] text-text-tertiary mt-0.5">
+                  {removeAppDomain
+                    ? 'Will be removed when you save. Environments with their own domains are unaffected.'
+                    : 'Used by environments that set no domain of their own. Set domains per environment instead.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRemoveAppDomain(v => !v)}
+                className={`text-xs whitespace-nowrap ${removeAppDomain ? 'text-text-tertiary hover:text-accent' : 'text-status-failed hover:text-red-300'}`}
+              >
+                {removeAppDomain ? 'Keep it' : 'Remove'}
+              </button>
+            </div>
+          </div>
+        )}
 
         {!useServiceConfig ? (
           <div className="grid grid-cols-3 gap-4">
@@ -1813,8 +1850,8 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                   </div>
                   {cfg.domains.length === 0 && (
                     <p className="text-[10px] text-text-tertiary italic">
-                      {existingDomain
-                        ? `Falls back to the app-level domain: ${existingDomain}`
+                      {appDomain
+                        ? `Falls back to the app-level domain: ${appDomain}`
                         : 'No domain configured — this environment gets no ingress unless a domain template is set.'}
                     </p>
                   )}
