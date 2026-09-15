@@ -383,7 +383,7 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 
 		// Same reasoning as the image overrides: the certificate selection lives inside
 		// spec.ingress, which the shallow merge below replaces wholesale.
-		existingCertFields := collectIngressCertFields(spec)
+		existingCertFields := collectPreservedIngressFields(spec)
 
 		for k, v := range patch {
 			if v == nil {
@@ -412,8 +412,9 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 			spec["environments"] = restoreEnvImages(patchEnvs, existingEnvImages)
 		}
 
-		// Restore the certificate selection the patch left out, app level and per env.
-		restoreIngressCertFields(spec, existingCertFields)
+		// Restore what the patch left out -- certificate selection and middleware
+		// attachments -- at app level and per environment.
+		restorePreservedIngressFields(spec, existingCertFields)
 
 		// Same for the app-level tag: a config update that only sets the repository
 		// keeps the deployed tag rather than resetting the app to "latest".
@@ -565,20 +566,29 @@ func (h *Handler) CloneApp(c *gin.Context) {
 		map[string]interface{}{"clonedFrom": appID})
 }
 
-// certFields are the ingress keys that select a certificate. They are preserved across a
+// preservedIngressFields are the ingress keys that select a certificate. They are preserved across a
 // patch that omits them because the update path replaces spec.ingress wholesale: a client
 // that PUTs {"ingress":{"domain":..,"tls":true}} — the CLI, an API token, any integration
 // that does not first read the app back — would otherwise silently drop the app's SSL
 // provider and quietly re-issue its certificate from the instance default.
-var certFields = []string{"clusterIssuer", "tlsSecretName", "tlsMode"}
+// preservedIngressFields survive a patch that does not mention them.
+//
+// The app edit form rebuilds spec.ingress and each environment's ingress from the fields it
+// shows, so anything it does not render would be dropped on every save. Certificate
+// selection was the first casualty; middlewares were the second -- attaching one and then
+// editing anything else about the app silently detached it, because the attachment lives at
+// spec.environments[].ingress.middlewares and the form never sends that key.
+//
+// A patch that names a field wins, including an explicit null, which clears it.
+var preservedIngressFields = []string{"clusterIssuer", "tlsSecretName", "tlsMode", "middlewares"}
 
-// collectIngressCertFields snapshots the certificate selection at app level and for each
-// environment, keyed by environment name ("" for the app level).
-func collectIngressCertFields(spec map[string]interface{}) map[string]map[string]interface{} {
+// collectPreservedIngressFields snapshots the fields worth carrying across a patch, at app
+// level and for each environment, keyed by environment name ("" for the app level).
+func collectPreservedIngressFields(spec map[string]interface{}) map[string]map[string]interface{} {
 	out := map[string]map[string]interface{}{}
 
 	if ing, _, _ := unstructuredNestedMap(spec, "ingress"); ing != nil {
-		out[""] = pickCertFields(ing)
+		out[""] = pickPreservedFields(ing)
 	}
 
 	envs, _, _ := unstructuredNestedSlice(spec, "environments")
@@ -588,15 +598,15 @@ func collectIngressCertFields(spec map[string]interface{}) map[string]map[string
 			continue
 		}
 		if ing, ok := envMap["ingress"].(map[string]interface{}); ok {
-			out[getNestedString(envMap, "name")] = pickCertFields(ing)
+			out[getNestedString(envMap, "name")] = pickPreservedFields(ing)
 		}
 	}
 	return out
 }
 
-func pickCertFields(ingress map[string]interface{}) map[string]interface{} {
+func pickPreservedFields(ingress map[string]interface{}) map[string]interface{} {
 	kept := map[string]interface{}{}
-	for _, f := range certFields {
+	for _, f := range preservedIngressFields {
 		if v, ok := ingress[f]; ok && v != nil && v != "" {
 			kept[f] = v
 		}
@@ -604,11 +614,11 @@ func pickCertFields(ingress map[string]interface{}) map[string]interface{} {
 	return kept
 }
 
-// restoreIngressCertFields carries the previous certificate selection onto an incoming
-// patch. A patch that names a field — including an explicit null, which clears it — wins.
-func restoreIngressCertFields(spec map[string]interface{}, existing map[string]map[string]interface{}) {
+// restorePreservedIngressFields carries the previous values onto an incoming patch. A patch
+// that names a field — including an explicit null, which clears it — wins.
+func restorePreservedIngressFields(spec map[string]interface{}, existing map[string]map[string]interface{}) {
 	if ing, _, _ := unstructuredNestedMap(spec, "ingress"); ing != nil {
-		mergeCertFields(ing, existing[""])
+		mergePreservedFields(ing, existing[""])
 		spec["ingress"] = ing
 	}
 
@@ -622,12 +632,12 @@ func restoreIngressCertFields(spec map[string]interface{}, existing map[string]m
 		if !ok {
 			continue
 		}
-		mergeCertFields(ing, existing[getNestedString(envMap, "name")])
+		mergePreservedFields(ing, existing[getNestedString(envMap, "name")])
 	}
 }
 
-func mergeCertFields(ingress map[string]interface{}, previous map[string]interface{}) {
-	for _, f := range certFields {
+func mergePreservedFields(ingress map[string]interface{}, previous map[string]interface{}) {
+	for _, f := range preservedIngressFields {
 		if v, ok := ingress[f]; ok {
 			// An explicit null is a deliberate clear, not an omission.
 			if v == nil {

@@ -18,13 +18,13 @@ func TestRestoreIngressCertFieldsPreservesOmittedSelection(t *testing.T) {
 			"clusterIssuer": "zerossl",
 		}),
 	}
-	existing := collectIngressCertFields(stored)
+	existing := collectPreservedIngressFields(stored)
 
 	// A patch that only changes the domain.
 	spec := map[string]interface{}{
 		"ingress": ingress(map[string]interface{}{"domain": "new.example.com", "tls": true}),
 	}
-	restoreIngressCertFields(spec, existing)
+	restorePreservedIngressFields(spec, existing)
 
 	got := spec["ingress"].(map[string]interface{})
 	if got["clusterIssuer"] != "zerossl" {
@@ -42,10 +42,10 @@ func TestRestoreIngressCertFieldsPreservesManualCertificate(t *testing.T) {
 			"tlsMode":       "manual",
 		}),
 	}
-	existing := collectIngressCertFields(stored)
+	existing := collectPreservedIngressFields(stored)
 
 	spec := map[string]interface{}{"ingress": ingress(map[string]interface{}{"tls": true})}
-	restoreIngressCertFields(spec, existing)
+	restorePreservedIngressFields(spec, existing)
 
 	got := spec["ingress"].(map[string]interface{})
 	if got["tlsSecretName"] != "wildcard-example-com" {
@@ -62,12 +62,12 @@ func TestRestoreIngressCertFieldsHonoursExplicitClear(t *testing.T) {
 	stored := map[string]interface{}{
 		"ingress": ingress(map[string]interface{}{"clusterIssuer": "zerossl"}),
 	}
-	existing := collectIngressCertFields(stored)
+	existing := collectPreservedIngressFields(stored)
 
 	spec := map[string]interface{}{
 		"ingress": ingress(map[string]interface{}{"tls": true, "clusterIssuer": nil}),
 	}
-	restoreIngressCertFields(spec, existing)
+	restorePreservedIngressFields(spec, existing)
 
 	got := spec["ingress"].(map[string]interface{})
 	if _, present := got["clusterIssuer"]; present {
@@ -88,7 +88,7 @@ func TestRestoreIngressCertFieldsPerEnvironment(t *testing.T) {
 			},
 		},
 	}
-	existing := collectIngressCertFields(stored)
+	existing := collectPreservedIngressFields(stored)
 
 	// A patch that rewrites both environments' domains and omits both issuers.
 	spec := map[string]interface{}{
@@ -103,7 +103,7 @@ func TestRestoreIngressCertFieldsPerEnvironment(t *testing.T) {
 			},
 		},
 	}
-	restoreIngressCertFields(spec, existing)
+	restorePreservedIngressFields(spec, existing)
 
 	envs := spec["environments"].([]interface{})
 	for i, want := range []string{"letsencrypt-staging", "letsencrypt-prod"} {
@@ -125,14 +125,14 @@ func TestRestoreIngressCertFieldsDoesNotLeakBetweenEnvironments(t *testing.T) {
 			},
 		},
 	}
-	existing := collectIngressCertFields(stored)
+	existing := collectPreservedIngressFields(stored)
 
 	spec := map[string]interface{}{
 		"environments": []interface{}{
 			map[string]interface{}{"name": "preview", "ingress": ingress(map[string]interface{}{"tls": true})},
 		},
 	}
-	restoreIngressCertFields(spec, existing)
+	restorePreservedIngressFields(spec, existing)
 
 	got := spec["environments"].([]interface{})[0].(map[string]interface{})["ingress"].(map[string]interface{})
 	if v, present := got["clusterIssuer"]; present {

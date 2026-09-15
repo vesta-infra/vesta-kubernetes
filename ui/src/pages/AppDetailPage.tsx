@@ -1462,6 +1462,12 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         const envAnns = { ...(env.ingress?.annotations || {}) }
         delete envAnns[CLUSTER_ISSUER_ANNOTATION]
         env.ingress = {
+          // Spread what is already there first, the same as the app-level branch below.
+          // This form renders only some of an ingress: rebuilding it from those fields
+          // dropped everything else, which is how attaching a middleware and then editing
+          // anything about the app silently detached it. The API preserves omitted fields
+          // too, but a client should not depend on that to avoid destroying its own data.
+          ...(env.ingress || {}),
           ...(filteredDomains.length > 0 && { domains: filteredDomains }),
           tls: cfg.tls,
           // Explicit null means "inherit the app-level provider", which is distinct from
@@ -1471,6 +1477,11 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           ...(filteredRedirectDomains.length > 0 && { redirectDomains: filteredRedirectDomains }),
           ...(cfg.redirectTarget.trim() && { redirectTarget: cfg.redirectTarget.trim() }),
         }
+      } else if (env.ingress?.middlewares?.length) {
+        // No domains, so nothing to route -- but keep the middleware attachment rather than
+        // discarding it. Removing the last domain is not a request to detach middlewares,
+        // and re-adding one should not mean wiring them up again.
+        env.ingress = { middlewares: env.ingress.middlewares }
       } else {
         env.ingress = null
       }
