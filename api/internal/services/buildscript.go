@@ -53,11 +53,21 @@ fi
 rm -f "$CRED_FILE"
 `
 
-// nixpacksScript builds and pushes with nixpacks.
+// nixpacksScript clones and writes a Dockerfile. It does not build.
+//
+// nixpacks itself shells out to `docker build`, and a pod has no daemon to shell out to, so
+// building here was never going to work. What it can do is generate: --out writes the
+// Dockerfile it would have built, and kaniko builds that in the container after this one.
+//
+// The old script called `crane push "$IMAGE_DEST" "$IMAGE_DEST"`, which is not a thing
+// either -- crane push takes a tarball and a destination, not an image pushed to itself.
 const nixpacksScript = cloneScript + `
-nixpacks build . --name "$IMAGE_DEST"
-crane push "$IMAGE_DEST" "$IMAGE_DEST"
-echo "Build and push complete"
+nixpacks build . --out /workspace
+test -f /workspace/.nixpacks/Dockerfile || {
+  echo "nixpacks produced no Dockerfile; it could not detect how to build this repository" >&2
+  exit 1
+}
+echo "Dockerfile generated"
 `
 
 // buildpacksScript builds and pushes with the CNB lifecycle.

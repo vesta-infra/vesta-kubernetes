@@ -21,10 +21,23 @@ func TestBuildJobUsesTheConstantScripts(t *testing.T) {
 	}
 	body := string(src)
 
-	for _, want := range []string{"script := nixpacksScript", "script := buildpacksScript"} {
+	// Referenced by name, however the call site is spelled. Pinning one phrasing made this
+	// fail when nixpacks moved into an init container -- the constant was still the only
+	// thing passed, which is the property that matters.
+	for _, want := range []string{"nixpacksScript", "buildpacksScript"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("builder.go no longer contains %q -- if the script is being assembled "+
+			t.Errorf("builder.go no longer references %q -- if the script is being assembled "+
 				"again, the branch and commit SHA from the webhook are back in shell context", want)
+		}
+	}
+
+	// The property itself: no script is built by formatting. A const passed straight in
+	// cannot carry a value from the request; a Sprintf next to one of these names can.
+	for _, name := range []string{"nixpacksScript", "buildpacksScript", "cloneScript"} {
+		for _, bad := range []string{"fmt.Sprintf(" + name, name + " + fmt.Sprintf", name + " +  fmt.Sprintf"} {
+			if strings.Contains(body, bad) {
+				t.Errorf("builder.go contains %q; the script is being assembled from the request", bad)
+			}
 		}
 	}
 
