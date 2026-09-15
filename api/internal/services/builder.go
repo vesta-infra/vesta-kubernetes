@@ -19,6 +19,11 @@ import (
 )
 
 const (
+	// nixpacksImage carries the nixpacks CLI. Built and published from this repository
+	// because no official image ships it: ghcr.io/railwayapp/nixpacks is the nix base that
+	// built applications run on, with no nixpacks binary in it at all.
+	nixpacksImage = "ghcr.io/vesta-infra/kubernetes-nixpacks:latest"
+
 	BuildStrategyDockerfile = "dockerfile"
 	BuildStrategyNixpacks   = "nixpacks"
 	BuildStrategyBuildpacks = "buildpacks"
@@ -200,6 +205,7 @@ func (b *Builder) TriggerBuild(ctx context.Context, req BuildRequest) (string, e
 
 func (b *Builder) createBuildJob(req BuildRequest, jobName string) (*batchv1.Job, error) {
 	var container corev1.Container
+	var initContainers []corev1.Container
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
 
@@ -297,32 +303,22 @@ func (b *Builder) createBuildJob(req BuildRequest, jobName string) (*batchv1.Job
 		}
 		volumes = append(volumes, workspaceVolume)
 
-		nixMounts := []corev1.VolumeMount{
-			{Name: "workspace", MountPath: "/workspace"},
+		// Two steps, because nixpacks cannot build here. It shells out to `docker build`,
+		// and a pod has no daemon; what it can do is write the Dockerfile it would have
+		// built. So the init container clones and generates, and kaniko -- which builds
+		// without a daemon, and is already how the dockerfile strategy works -- builds it.
+		prepare := corev1.Container{
+			Name:    "generate",
+			Image:   nixpacksImage,
+			Command: []string{"/bin/sh", "-c"},
+			Args:    []string{nixpacksScript},
+			VolumeMounts: []corev1.VolumeMount{
+				{Name: "workspace", MountPath: "/workspace"},
+			},
+			Env: buildScriptEnv(req),
 		}
-		if req.RegistrySecret != "" {
-			nixMounts = append(nixMounts, corev1.VolumeMount{
-				Name:      "docker-config",
-				MountPath: "/root/.docker",
-			})
-		}
-
-		script := nixpacksScript
-
-		container = corev1.Container{
-			Name:         "build",
-			Image:        "ghcr.io/railwayapp/nixpacks:latest",
-			Command:      []string{"/bin/sh", "-c"},
-			Args:         []string{script},
-			VolumeMounts: nixMounts,
-		}
-
-		// Everything the script reads arrives as an environment variable, so the script
-		// itself stays a constant and a branch name cannot become shell.
-		container.Env = append(container.Env, buildScriptEnv(req)...)
-
 		if req.GitSecretName != "" {
-			container.Env = append(container.Env,
+			prepare.Env = append(prepare.Env,
 				corev1.EnvVar{
 					Name: "GIT_TOKEN",
 					ValueFrom: &corev1.EnvVarSource{
@@ -343,6 +339,33 @@ func (b *Builder) createBuildJob(req BuildRequest, jobName string) (*batchv1.Job
 					},
 				},
 			)
+		}
+		initContainers = append(initContainers, prepare)
+
+		kanikoMounts := []corev1.VolumeMount{
+			{Name: "workspace", MountPath: "/workspace"},
+		}
+		if req.RegistrySecret != "" {
+			kanikoMounts = append(kanikoMounts, corev1.VolumeMount{
+				Name:      "docker-config",
+				MountPath: "/kaniko/.docker",
+			})
+		}
+
+		container = corev1.Container{
+			Name:  "build",
+			Image: "gcr.io/kaniko-project/executor:latest",
+			Args: []string{
+				// A local context, unlike the dockerfile strategy's git:// one: the
+				// Dockerfile does not exist in the repository, it was written into the
+				// workspace a moment ago.
+				"--context=dir:///workspace",
+				"--dockerfile=/workspace/.nixpacks/Dockerfile",
+				"--destination=" + req.ImageDest,
+				"--cache=true",
+				"--snapshot-mode=redo",
+			},
+			VolumeMounts: kanikoMounts,
 		}
 
 	case BuildStrategyBuildpacks:
@@ -435,8 +458,12 @@ func (b *Builder) createBuildJob(req BuildRequest, jobName string) (*batchv1.Job
 				},
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
-					Containers:    []corev1.Container{container},
-					Volumes:       volumes,
+					// Init containers run to completion before the build does, which is how
+					// a strategy that has to prepare its context gets to. Empty for the
+					// strategies that do not.
+					InitContainers: initContainers,
+					Containers:     []corev1.Container{container},
+					Volumes:        volumes,
 				},
 			},
 		},

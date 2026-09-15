@@ -36,6 +36,13 @@ jobs:
             image: kubernetes-activator
             context: operator
             dockerfile: operator/Dockerfile.activator
+          # The nixpacks CLI, for the build strategy that generates a Dockerfile. No
+          # official image carries it -- ghcr.io/railwayapp/nixpacks is the nix base that
+          # built applications run on, with no binary in it -- so this one is ours.
+          - component: nixpacks
+            image: kubernetes-nixpacks
+            context: build
+            dockerfile: build/Dockerfile.nixpacks
 
     steps:
       - name: Checkout
