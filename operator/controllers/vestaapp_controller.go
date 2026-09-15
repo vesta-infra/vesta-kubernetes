@@ -403,6 +403,13 @@ func (r *VestaAppReconciler) reconcileServiceAccount(ctx context.Context, app *v
 			}
 		}
 	}
+	// Platform-wide first, then narrower. These were configurable in the chart and read by
+	// nothing: GetGlobalImagePullSecrets had no callers, so a value set there was plumbed
+	// end to end and silently ignored — which is worse than not offering it, because the
+	// only symptom is ImagePullBackOff on an app whose registry was supposedly configured.
+	if r.ConfigResolver != nil {
+		addRef(r.ConfigResolver.GetGlobalImagePullSecrets())
+	}
 	addRef(projectPullSecrets)
 	if app.Spec.Image != nil {
 		addRef(app.Spec.Image.ImagePullSecrets)
@@ -985,6 +992,10 @@ func (r *VestaAppReconciler) buildPodSpec(app *vestav1alpha1.VestaApp, container
 				seen[ref.Name] = true
 			}
 		}
+	}
+	// Same order as the ServiceAccount above: platform, project, app, environment.
+	if r.ConfigResolver != nil {
+		addPullSecret(r.ConfigResolver.GetGlobalImagePullSecrets())
 	}
 	addPullSecret(projectPullSecrets)
 	if app.Spec.Image != nil {
