@@ -222,10 +222,22 @@ export default function LogDrainsPage() {
 }
 
 function scopeLabel(drain: LogDrain): string {
-  if (drain.app && drain.environment) return `${drain.app} in ${drain.project}/${drain.environment}`
+  // Both forms, unioned, the same way the operator reads them. A drain that names several
+  // projects would otherwise read as "all apps" here, which is the one description that is
+  // certainly wrong for a drain that named projects explicitly.
+  const projects = [...new Set([...(drain.project ? [drain.project] : []), ...(drain.projects ?? [])])]
+  // Named up to three, then counted: a drain covering a dozen projects should not push the
+  // rest of the row off the screen.
+  const list = projects.length > 3
+    ? `${projects.slice(0, 3).join(', ')} +${projects.length - 3} more`
+    : projects.join(', ')
+
+  if (drain.app && drain.environment) return `${drain.app} in ${list}/${drain.environment}`
   if (drain.app) return `app ${drain.app}`
-  if (drain.environment) return `${drain.project}/${drain.environment}`
-  if (drain.project) return `project ${drain.project}`
+  if (drain.environment && projects.length > 0) return `${list}/${drain.environment}`
+  if (drain.environment) return `environment ${drain.environment}`
+  if (projects.length === 1) return `project ${list}`
+  if (projects.length > 1) return `projects ${list}`
   return 'all apps'
 }
 
@@ -237,7 +249,20 @@ function LogDrainForm({ existing, onClose, onSaved }: {
   const [name, setName] = useState(existing?.name ?? '')
   const [type, setType] = useState<LogDrainType>(existing?.type ?? 'http')
   const [description, setDescription] = useState(existing?.description ?? '')
-  const [project, setProject] = useState(existing?.project ?? '')
+  // A drain usually belongs to a team rather than to one project. Covering several used to
+  // mean several drains pointed at the same destination, each with its own credentials to
+  // rotate and its own status to read.
+  //
+  // Seeded from the singular field as well, so editing a drain written before this does not
+  // quietly drop the project it already had.
+  const [projects, setProjects] = useState<string[]>(() => {
+    const many = existing?.projects ?? []
+    if (many.length > 0) return many
+    return existing?.project ? [existing.project] : []
+  })
+  // Environments and apps are listed from the first selected project. Environment names are
+  // shared across projects in practice, and the value applies to every project selected.
+  const project = projects[0] ?? ''
   const [environment, setEnvironment] = useState(existing?.environment ?? '')
   const [app, setApp] = useState(existing?.app ?? '')
   const [excludeApps, setExcludeApps] = useState<string[]>(existing?.excludeApps ?? [])
@@ -245,7 +270,7 @@ function LogDrainForm({ existing, onClose, onSaved }: {
   const [credentials, setCredentials] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
 
-  const { data: projects } = useQuery({ queryKey: ['projects'], queryFn: () => api.listProjects() })
+  const { data: allProjects } = useQuery({ queryKey: ['projects'], queryFn: () => api.listProjects() })
 
   // Environments belong to a project, so they can only be offered once one is chosen.
   // Typing a free-form name here produced a drain that matched no namespace and shipped
@@ -289,7 +314,11 @@ function LogDrainForm({ existing, onClose, onSaved }: {
       name: existing ? undefined : name,
       type,
       description: description || undefined,
-      project: project || undefined,
+      // Only the list is sent. The singular field stays readable for drains written before
+      // it existed -- the form seeds from it -- but writing both would leave two places
+      // saying what the scope is, and they could disagree on the next edit.
+      project: undefined,
+      projects: projects.length > 0 ? projects : undefined,
       environment: environment || undefined,
       app: app || undefined,
       excludeApps: excludeApps.length > 0 ? excludeApps : undefined,
@@ -327,10 +356,20 @@ function LogDrainForm({ existing, onClose, onSaved }: {
         <div className="mb-4">
           <label className="label">Which apps ship here</label>
           <div className="flex gap-2">
-            <select value={project} onChange={e => { setProject(e.target.value); setEnvironment(''); setApp(''); setExcludeApps([]) }}
-              className="input-field flex-1 text-sm">
-              <option value="">All projects</option>
-              {projects?.items?.map((p: any) => <option key={p.name} value={p.name}>{p.name}</option>)}
+            <select
+              value=""
+              onChange={e => {
+                const chosen = e.target.value
+                if (!chosen) return
+                setProjects(prev => prev.includes(chosen) ? prev : [...prev, chosen])
+                setEnvironment(''); setApp(''); setExcludeApps([])
+              }}
+              className="input-field flex-1 text-sm"
+            >
+              <option value="">{projects.length === 0 ? 'All projects' : '+ Add a project'}</option>
+              {allProjects?.items
+                ?.filter((p: any) => !projects.includes(p.name))
+                .map((p: any) => <option key={p.name} value={p.name}>{p.name}</option>)}
             </select>
             <select value={environment} onChange={e => setEnvironment(e.target.value)}
               disabled={!project} className="input-field flex-1 text-sm">
@@ -342,10 +381,29 @@ function LogDrainForm({ existing, onClose, onSaved }: {
               {apps?.items?.map((a: any) => <option key={a.name} value={a.name}>{a.name}</option>)}
             </select>
           </div>
+          {projects.length > 0 && (
+            <div className="flex flex-wrap gap-2 mt-2">
+              {projects.map(name => (
+                <span key={name} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-surface-2 border border-border rounded-lg text-xs font-mono text-text-secondary">
+                  {name}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = projects.filter(p => p !== name)
+                      setProjects(next)
+                      if (next.length === 0) { setEnvironment(''); setApp(''); setExcludeApps([]) }
+                    }}
+                    className="text-text-tertiary hover:text-status-failed"
+                  >&times;</button>
+                </span>
+              ))}
+            </div>
+          )}
           <p className="text-[10px] text-text-tertiary mt-1">
             Leave blank for everything. Scope is the attachment — an app ships to every drain
             whose scope covers it, so a project drain adds to the platform one rather than
             replacing it.
+            {projects.length > 1 && ' The environment applies to each project selected.'}
           </p>
         </div>
 

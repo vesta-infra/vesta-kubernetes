@@ -198,6 +198,24 @@ func resolveExclusions(spec vestav1alpha1.VestaLogDrainSpec, allApps []string) [
 	return out
 }
 
+// scopeProjects returns the projects a drain covers, empty meaning every project.
+//
+// Project and Projects are unioned rather than one overriding the other: a drain written
+// before the list existed keeps working, and projects can be added to it without having to
+// move the original value into the list first.
+func scopeProjects(spec vestav1alpha1.VestaLogDrainSpec) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range append([]string{spec.Project}, spec.Projects...) {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
 // scopeCovers reports whether a drain's scope includes a given "<namespace>/<app>".
 func scopeCovers(spec vestav1alpha1.VestaLogDrainSpec, pair string) bool {
 	ns, app, found := strings.Cut(pair, "/")
@@ -207,38 +225,59 @@ func scopeCovers(spec vestav1alpha1.VestaLogDrainSpec, pair string) bool {
 	if spec.App != "" && spec.App != app {
 		return false
 	}
-	if spec.Project != "" {
-		expected := spec.Project + "-"
+
+	projects := scopeProjects(spec)
+	if len(projects) == 0 {
+		return true
+	}
+
+	for _, project := range projects {
 		if spec.Environment != "" {
-			return ns == spec.Project+"-"+spec.Environment
+			if ns == project+"-"+spec.Environment {
+				return true
+			}
+			continue
 		}
 		// Prefix alone is ambiguous between "shop" and "shop-extra", so this is only a
 		// cheap pre-filter; namespacesForScope is what decides the real list.
-		if !strings.HasPrefix(ns, expected) {
-			return false
+		if strings.HasPrefix(ns, project+"-") {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 func (r *VestaLogDrainReconciler) namespacesForScope(ctx context.Context, spec vestav1alpha1.VestaLogDrainSpec) []string {
-	if spec.Project == "" {
+	projects := scopeProjects(spec)
+	if len(projects) == 0 {
 		return nil
 	}
+
 	if spec.Environment != "" {
-		return []string{spec.Project + "-" + spec.Environment}
+		out := make([]string, 0, len(projects))
+		for _, project := range projects {
+			out = append(out, project+"-"+spec.Environment)
+		}
+		sort.Strings(out)
+		return out
 	}
 
-	var envs vestav1alpha1.VestaEnvironmentList
-	if err := r.List(ctx, &envs, client.MatchingLabels{
-		"kubernetes.getvesta.sh/project": spec.Project,
-	}); err != nil {
-		return nil
-	}
-
-	out := make([]string, 0, len(envs.Items))
-	for _, env := range envs.Items {
-		out = append(out, spec.Project+"-"+env.Name)
+	// Every environment of every project in scope. Listed per project rather than once with
+	// a selector, because the label carries a single project name.
+	var out []string
+	for _, project := range projects {
+		var envs vestav1alpha1.VestaEnvironmentList
+		if err := r.List(ctx, &envs, client.MatchingLabels{
+			"kubernetes.getvesta.sh/project": project,
+		}); err != nil {
+			// One unreadable project must not silently narrow the drain to the others:
+			// shipping a subset of what was asked for looks like the destination dropping
+			// records rather than like a failure here.
+			return nil
+		}
+		for _, env := range envs.Items {
+			out = append(out, project+"-"+env.Name)
+		}
 	}
 	sort.Strings(out)
 	return out
