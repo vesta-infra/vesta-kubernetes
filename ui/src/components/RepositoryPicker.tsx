@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type AccessibleRepo } from '../lib/api'
 
 /**
@@ -32,12 +32,18 @@ export function RepositoryPicker({
   /** Called when the user wants to type a value the list does not offer. */
   onClear?: () => void
 }) {
-  const { data, isLoading, error } = useQuery({
+  const queryClient = useQueryClient()
+  const { data, isLoading, isFetching, error } = useQuery({
     queryKey: ['accessible-repos'],
     queryFn: () => api.listAccessibleRepos(),
     staleTime: 60_000,
     retry: false,
   })
+
+  // Granting access happens on the provider's site, in another tab, so the list here is
+  // stale by construction the moment it matters. There was no way to reload it: the list is
+  // cached for a minute and the only advice was to close the form and open it again.
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['accessible-repos'] })
 
   const repos = data?.repos ?? []
   const problems = data?.problems ?? []
@@ -114,7 +120,21 @@ export function RepositoryPicker({
         </button>
       )}
 
-      <ConnectMoreRepos provider={provider} />
+      <div className="flex flex-wrap items-center gap-3 pt-1">
+        <ConnectMoreRepos provider={provider} />
+        {/* Next to the grant link, because granting access and reloading the list are one
+            action from where the user is standing. isFetching rather than isLoading: a
+            refetch of already-cached data leaves isLoading false, so the button would look
+            inert on exactly the press that matters. */}
+        <button
+          type="button"
+          onClick={refresh}
+          disabled={isFetching}
+          className="text-[11px] text-text-tertiary hover:text-accent disabled:text-text-quaternary"
+        >
+          {isFetching ? 'Refreshing…' : 'Refresh list'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -137,8 +157,11 @@ function ConnectMoreRepos({ provider }: { provider: string }) {
   const withInstall = (data?.items ?? []).filter(c => c.installUrl && (!provider || c.provider === provider))
   if (withInstall.length === 0) return null
 
+  // Returns the links bare rather than wrapping them: the caller lays them out beside the
+  // refresh control, and a nested flex container would give this group a different gap from
+  // the button it sits next to.
   return (
-    <div className="flex flex-wrap items-center gap-3 pt-1">
+    <>
       {withInstall.map(c => (
         <a
           key={c.id}
@@ -148,13 +171,13 @@ function ConnectMoreRepos({ provider }: { provider: string }) {
           className="text-[11px] text-accent hover:text-accent-glow"
           title={
             c.provider === 'github'
-              ? 'Grant the Vesta app access to more repositories, then reopen this list'
-              : 'Access follows this token’s scope — widen or replace it, then reopen this list'
+              ? 'Grant the Vesta app access to more repositories, then use Refresh list'
+              : 'Access follows this token’s scope — widen or replace it, then use Refresh list'
           }
         >
           Add repositories in {c.displayName} →
         </a>
       ))}
-    </div>
+    </>
   )
 }
