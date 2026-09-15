@@ -187,3 +187,41 @@ func TestBufferPathMatchesTheGeneratedConfig(t *testing.T) {
 		}
 	}
 }
+
+// Creating the collector was not enough: rollCollector only ever updated the checksum
+// annotation and the environment, so a DaemonSet kept whatever spec it was first created
+// with. The buffer mounted inside a read-only /var/log stopped the container from starting,
+// and shipping the fix repaired nothing — no code path looked at the mounts again, so the
+// broken DaemonSet sat there until somebody deleted it by hand.
+//
+// A collector this operator owns has to have its whole spec reconciled.
+func TestOperatorOwnedCollectorHasItsSpecReconciled(t *testing.T) {
+	src, err := os.ReadFile("vestalogdrain_controller.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	roll := string(src)
+	i := strings.Index(roll, "func (r *VestaLogDrainReconciler) rollCollector")
+	if i < 0 {
+		t.Fatal("rollCollector not found")
+	}
+	body := roll[i:]
+	if end := strings.Index(body, "\nfunc "); end > 0 {
+		body = body[:end]
+	}
+
+	if !strings.Contains(body, "BuildCollectorDaemonSet") {
+		t.Error("rollCollector never rebuilds the desired spec, so a collector created with a " +
+			"broken one is never repaired")
+	}
+	if !strings.Contains(body, "ds.Spec = desired.Spec") {
+		t.Error("the desired spec is built but not assigned")
+	}
+
+	// And it must only do that for its own: rewriting a chart-rendered DaemonSet starts a
+	// fight where Helm restores it on upgrade and this rewrites it on the next reconcile.
+	if !strings.Contains(body, `ds.Labels["app.kubernetes.io/managed-by"] == "vesta-operator"`) {
+		t.Error("the spec is reconciled without checking ownership; a chart-rendered " +
+			"collector would be fought over with Helm")
+	}
+}
