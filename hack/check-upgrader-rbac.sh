@@ -17,7 +17,8 @@ CHART_DIR="${CHART_DIR:-deploy/helm/vesta}"
 command -v helm >/dev/null || { echo "helm is required" >&2; exit 2; }
 
 helm template vesta "$CHART_DIR" -n vesta-system \
-  --set selfUpdate.enabled=true --set postgres.enabled=true --set logging.enabled=true 2>/dev/null \
+  --set selfUpdate.enabled=true --set postgres.enabled=true --set logging.enabled=true \
+  --set containerRegistry.enabled=true --set containerRegistry.ingress.host=registry.example.com 2>/dev/null \
 | python3 -c '
 import sys, yaml
 
@@ -40,6 +41,7 @@ KINDS = {
     "RoleBinding":              ("rbac.authorization.k8s.io", "rolebindings"),
     "CustomResourceDefinition": ("apiextensions.k8s.io", "customresourcedefinitions"),
     "VestaConfig":              ("kubernetes.getvesta.sh", "vestaconfigs"),
+    "VestaSecret":              ("kubernetes.getvesta.sh", "vestasecrets"),
 }
 
 # Everything the chart owns is created and recreated, so it needs the full set -- except

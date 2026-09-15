@@ -307,6 +307,37 @@ logging:
 # Enabled by default because the alternative is worse: without it a sleeping app's requests
 # simply fail, and scale-to-zero is a feature nobody can use. Nothing runs until an app opts
 # in, so a cluster that never uses it pays nothing.
+# An in-cluster container registry, so a self-contained install needs no external one.
+#
+# A hostname is required when this is on, and the chart refuses to render without one. Images
+# are pulled by the kubelet, which resolves through the node's DNS rather than the cluster's,
+# so the in-cluster Service name is unreachable from the thing doing the pulling. It needs a
+# real name and a certificate a node will trust.
+containerRegistry:
+  enabled: false
+  ingress:
+    # -- Required when enabled. The name apps will pull from, e.g. registry.example.com.
+    host: ""
+    # -- Defaults to config.ingressClassName.
+    ingressClassName: ""
+    annotations: {}
+  image:
+    repository: registry
+    tag: "2"
+    pullPolicy: IfNotPresent
+  # -- Generated and remembered across upgrades when empty. Set only to adopt an existing one.
+  username: vesta
+  password: ""
+  storage: 20Gi
+  # -- Defaults to the cluster's default StorageClass.
+  storageClass: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
 activator:
   enabled: true
   image:

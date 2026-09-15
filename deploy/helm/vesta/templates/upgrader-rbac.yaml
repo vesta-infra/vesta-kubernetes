@@ -72,6 +72,17 @@ rules:
   - apiGroups: ["kubernetes.getvesta.sh"]
     resources: ["vestaconfigs"]
     verbs: ["get", "list", "create", "update", "patch"]
+  # vestasecrets: the in-cluster registry registers itself as an ordinary Vesta credential,
+  # so enabling it makes the chart render one. Without this, self-update fails partway
+  # through with a forbidden error on any cluster with the registry turned on.
+  #
+  # delete is included, unlike vestaconfigs: turning the registry off has to take its
+  # credential with it, or apps are left pointing at a registry that no longer exists. Helm
+  # only deletes what it rendered itself, so a credential someone created by hand is not in
+  # reach of this.
+  - apiGroups: ["kubernetes.getvesta.sh"]
+    resources: ["vestasecrets"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
   # Re-applying the chart re-applies the platform's own RBAC. delete is required because
   # the CRD hook's ClusterRole is recreated on every upgrade under before-hook-creation.
   - apiGroups: ["rbac.authorization.k8s.io"]
