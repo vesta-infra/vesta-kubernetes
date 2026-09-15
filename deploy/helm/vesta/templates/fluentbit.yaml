@@ -1,7 +1,14 @@
-{{- if eq (include "vesta.enabled" (dict "Values" .Values "section" "logging" "default" false)) "true" }}
-# The log collector. Off by default: a cluster that already runs a logging stack should not
-# get a second agent tailing the same files, and an existing install must not gain a
-# DaemonSet it never asked for on upgrade.
+# Scaffolding for the log collector, rendered always.
+#
+# These four objects cost nothing to have and run nothing: a ServiceAccount, the ClusterRole
+# that lets Fluent Bit read pod metadata, its binding, and a Service for the metrics port.
+# Rendering them unconditionally is what lets the OPERATOR create the DaemonSet when a drain
+# is configured, without needing the power to mint cluster roles — an operator that can
+# grant cluster-wide permissions is a much larger thing to trust than one that can run a
+# DaemonSet.
+#
+# Before this, configuring a drain in the UI wrote a configuration and produced no collector
+# to run it, and finishing the job meant a helm upgrade from a terminal.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -59,7 +66,12 @@ spec:
     - name: metrics
       port: 2020
       targetPort: 2020
+{{- if eq (include "vesta.enabled" (dict "Values" .Values "section" "logging" "default" false)) "true" }}
 ---
+# Rendered only when explicitly enabled, which keeps an install that already sets
+# logging.enabled=true working exactly as before, with Helm owning the DaemonSet. Left off,
+# the operator creates and removes one as drains come and go, and never touches this one:
+# it checks the managed-by label before deleting anything.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
