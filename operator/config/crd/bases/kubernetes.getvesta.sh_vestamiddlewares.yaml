@@ -211,6 +211,13 @@ spec:
                     type: boolean
                   frameDeny:
                     type: boolean
+                  permissionsPolicy:
+                    description: |-
+                      PermissionsPolicy sets the Permissions-Policy response header, e.g.
+                      "geolocation=(), camera=(), microphone=()". Traefik has always supported it; this
+                      field was simply missing, so the only way to send the header was to spell it out
+                      under customResponseHeaders.
+                    type: string
                   referrerPolicy:
                     type: string
                   stsIncludeSubdomains:

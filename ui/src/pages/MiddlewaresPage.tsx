@@ -47,7 +47,20 @@ const TYPE_FIELDS: Record<MiddlewareType, { blurb: string; fields: FieldSpec[] }
       { key: 'accessControlMaxAge', label: 'CORS max age (seconds)', kind: 'number' },
       { key: 'customRequestHeaders', label: 'Request headers', kind: 'map' },
       { key: 'customResponseHeaders', label: 'Response headers', kind: 'map' },
+      // Security headers. These all existed on the CRD before they appeared here, so a
+      // middleware written as YAML carried settings this form could not show -- and
+      // re-saving it through the form silently dropped them.
+      { key: 'contentSecurityPolicy', label: 'Content-Security-Policy', kind: 'text',
+        placeholder: "default-src 'self'" },
+      { key: 'referrerPolicy', label: 'Referrer-Policy', kind: 'text',
+        placeholder: 'no-referrer-when-downgrade' },
+      { key: 'permissionsPolicy', label: 'Permissions-Policy', kind: 'text',
+        placeholder: 'geolocation=(), camera=(), microphone=()' },
       { key: 'stsSeconds', label: 'HSTS max-age (seconds)', kind: 'number' },
+      { key: 'stsIncludeSubdomains', label: 'HSTS includes subdomains', kind: 'boolean' },
+      // Preload asks browsers to hardcode this domain as HTTPS-only. Getting off that list
+      // takes months, so it is worth meaning it.
+      { key: 'stsPreload', label: 'HSTS preload', kind: 'boolean' },
       { key: 'frameDeny', label: 'Deny framing (X-Frame-Options)', kind: 'boolean' },
       { key: 'contentTypeNosniff', label: 'Disable MIME sniffing', kind: 'boolean' },
     ],
