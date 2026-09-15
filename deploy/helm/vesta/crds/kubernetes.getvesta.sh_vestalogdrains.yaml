@@ -404,6 +404,8 @@ spec:
                 - elasticsearch
                 - datadog
                 - s3
+                - openobserve
+                - forward
                 type: string
               forward:
                 description: 'ForwardDrain ships to another Fluent Bit or Fluentd

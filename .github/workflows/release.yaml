@@ -152,6 +152,12 @@ jobs:
           ./hack/check-crd-structural.sh deploy/helm/vesta/crds
           ./hack/check-crd-structural.sh operator/config/crd/bases
 
+      # A value added to an existing enum never reaches the chart: merge-crd-properties.py
+      # only copies properties that are absent. The feature's config block validates and the
+      # type that selects it does not, which is how openobserve shipped unusable.
+      - name: Check no shipped CRD enum is narrower than the Go types
+        run: ./hack/check-crd-enums.sh
+
       # The upgrade Job runs helm as vesta-upgrader, so that account needs every verb the
       # chart's own resources require. 0.7.3 shipped without delete on RBAC resources and
       # the pre-upgrade hook failed with a forbidden error.
