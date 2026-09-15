@@ -108,3 +108,65 @@ func TestNormalizeDesiredState(t *testing.T) {
 		}
 	}
 }
+
+// Setting an environment's replicas to zero reported Pending.
+//
+// It is a deliberate act with the same outcome as sleeping, but it leaves desiredState
+// alone, so restingPhase said nothing and every "totalDesired > 0" case in the phase switch
+// failed. The app fell through to the default — Pending, which reads as "coming up shortly"
+// for something that is never coming up, and shows no reason because there is nothing wrong.
+func TestScalingToZeroReportsSleepingNotPending(t *testing.T) {
+	phase, ok := zeroReplicaPhase(1, 0)
+	if !ok {
+		t.Fatal("an app whose Deployment asks for zero replicas reported no resting phase")
+	}
+	if phase != "Sleeping" {
+		t.Errorf("phase = %q, want Sleeping", phase)
+	}
+}
+
+// The two zeroes have to stay apart. Nothing deployed yet is genuinely Pending; saying
+// Sleeping there would report a brand new app as deliberately asleep before it had ever
+// been asked to run.
+func TestNothingDeployedYetIsStillPending(t *testing.T) {
+	if _, ok := zeroReplicaPhase(0, 0); ok {
+		t.Error("an app with no Deployment at all was called Sleeping; it has not been " +
+			"created yet, which is what Pending means")
+	}
+}
+
+// A running app must not be swept up by this.
+func TestRunningAppsAreUnaffected(t *testing.T) {
+	cases := []struct {
+		name     string
+		observed int
+		desired  int32
+	}{
+		{"one replica", 1, 1},
+		{"several replicas", 2, 6},
+		{"one environment up, one scaled down", 2, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, ok := zeroReplicaPhase(tc.observed, tc.desired); ok {
+				t.Error("an app with replicas was reported as resting")
+			}
+		})
+	}
+}
+
+// Sleep and stop still win. They are read from the spec and say why there are no pods,
+// which a replica count cannot: "asleep until traffic arrives" and "scaled to zero" are
+// different states an operator should be able to tell apart.
+func TestExplicitRestingStatesTakePrecedence(t *testing.T) {
+	for _, state := range []string{"sleeping", "stopped"} {
+		phase, ok := restingPhase(state)
+		if !ok {
+			t.Fatalf("%s reported no resting phase", state)
+		}
+		if state == "stopped" && phase != "Stopped" {
+			t.Errorf("a stopped app reported %q; scaling to zero must not make it "+
+				"indistinguishable from a sleeping one", phase)
+		}
+	}
+}

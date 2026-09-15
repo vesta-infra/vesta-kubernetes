@@ -2160,6 +2160,7 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 		}
 
 		var totalDesired, totalAvailable, totalReady int32
+		deploymentsObserved := 0
 		hasCrashLoop := false
 		hasImagePullErr := false
 		autoscaleActive := false
@@ -2177,6 +2178,7 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 			if err := r.Get(ctx, deployKey, &deploy); err != nil {
 				continue // Deployment may not exist yet
 			}
+			deploymentsObserved++
 			issues = append(issues, diagnoseDeployment(target.Config.Name, &deploy)...)
 
 			if deploy.Spec.Replicas != nil {
@@ -2230,9 +2232,14 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 		// replicas because something went wrong" look identical from the cluster, and
 		// only the spec distinguishes them.
 		resting, isResting := restingPhase(app.Spec.DesiredState)
+		zeroed, isZeroed := zeroReplicaPhase(deploymentsObserved, totalDesired)
 		switch {
 		case isResting:
 			app.Status.Phase = resting
+		case isZeroed:
+			// Scaled to zero on purpose. Checked before the failure cases below so an app
+			// with no pods is not diagnosed from the absence of them.
+			app.Status.Phase = zeroed
 		case hasImagePullErr:
 			app.Status.Phase = "Failed"
 		case hasCrashLoop:

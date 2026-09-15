@@ -30,6 +30,13 @@ type VestaApp struct {
 	Status VestaAppStatus `json:"status,omitempty"`
 }
 
+// Phases an app reports. Named so the operator and anything reading status agree on the
+// spelling, which the CRD enum also has to match.
+const (
+	PhaseSleeping = "Sleeping"
+	PhaseStopped  = "Stopped"
+)
+
 type VestaAppSpec struct {
 	Project      string                 `json:"project"`
 	Environments []AppEnvironmentConfig `json:"environments,omitempty"`

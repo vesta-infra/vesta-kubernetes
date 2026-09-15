@@ -68,3 +68,20 @@ func restingPhase(desiredState string) (string, bool) {
 	}
 	return "", false
 }
+
+// zeroReplicaPhase reports the phase for an app whose Deployments exist and ask for no pods.
+//
+// Scaling an environment to zero replicas is a deliberate act with the same outcome as
+// sleeping, but it leaves desiredState alone -- so restingPhase above says nothing about it
+// and every "totalDesired > 0" case below fails. The app fell through to Pending, which
+// reads as "coming up shortly" for something that is never coming up.
+//
+// The Deployment having been observed is what separates the two zeroes. No Deployment at all
+// means nothing has been created yet, and Pending is the honest answer; a Deployment asking
+// for zero replicas means somebody asked for zero.
+func zeroReplicaPhase(deploymentsObserved int, desiredReplicas int32) (string, bool) {
+	if deploymentsObserved > 0 && desiredReplicas == 0 {
+		return vestav1alpha1.PhaseSleeping, true
+	}
+	return "", false
+}
