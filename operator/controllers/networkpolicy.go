@@ -7,6 +7,8 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+
+	vestav1alpha1 "kubernetes.getvesta.sh/operator/api/v1alpha1"
 )
 
 // Network isolation between environments.
@@ -58,6 +60,42 @@ var defaultTrustedNamespaces = []string{
 	"ingress-nginx",
 	"monitoring",
 	"vesta-system",
+}
+
+// ResolveNetworkIsolation merges the three levels, narrowest last.
+//
+// Field by field rather than whole-object, the same way ResolveQuota does it, so a project
+// can switch isolation on without restating the platform's trusted-namespace list — and an
+// environment can be exempted from a project that has it on.
+//
+// The semantics do not change with the level: an isolated namespace denies inbound traffic
+// from everywhere except itself and the trusted namespaces. Environments of the same
+// project do not reach each other, which is what makes this worth having for a project
+// holding something sensitive.
+func ResolveNetworkIsolation(platform, project, env *vestav1alpha1.NetworkIsolationConfig) NetworkIsolation {
+	var out NetworkIsolation
+
+	for _, layer := range []*vestav1alpha1.NetworkIsolationConfig{platform, project, env} {
+		if layer == nil {
+			continue
+		}
+		// A nil Enabled means the layer says nothing about it; false means it says no.
+		if layer.Enabled != nil {
+			out.Enabled = *layer.Enabled
+		}
+		if len(layer.TrustedNamespaces) > 0 {
+			// Replaces rather than appends: a layer naming its trusted namespaces is
+			// stating the whole list, and merging would silently trust more than it asked.
+			out.TrustedNamespaces = layer.TrustedNamespaces
+		}
+		if len(layer.TrustedNamespaceLabels) > 0 {
+			out.TrustedNamespaceLabels = layer.TrustedNamespaceLabels
+		}
+		if layer.MetricsPort > 0 {
+			out.MetricsPort = layer.MetricsPort
+		}
+	}
+	return out
 }
 
 // BuildNetworkPolicies renders the policies for one namespace.

@@ -276,16 +276,20 @@ func (r *VestaEnvironmentReconciler) reconcileNetworkPolicies(
 
 	logger := log.FromContext(ctx)
 
-	var cfg NetworkIsolation
-	if c := r.ConfigResolver.GetConfig(); c != nil && c.Security != nil && c.Security.NetworkIsolation != nil {
-		ni := c.Security.NetworkIsolation
-		cfg = NetworkIsolation{
-			Enabled:                ni.Enabled,
-			TrustedNamespaces:      ni.TrustedNamespaces,
-			TrustedNamespaceLabels: ni.TrustedNamespaceLabels,
-			MetricsPort:            ni.MetricsPort,
-		}
+	// Platform, then project, then this environment -- the same three levels quotas use,
+	// so isolating one sensitive project does not mean turning it on for the instance.
+	var platformIso *vestav1alpha1.NetworkIsolationConfig
+	if c := r.ConfigResolver.GetConfig(); c != nil && c.Security != nil {
+		platformIso = c.Security.NetworkIsolation
 	}
+
+	var projectIso *vestav1alpha1.NetworkIsolationConfig
+	var project vestav1alpha1.VestaProject
+	if err := r.Get(ctx, client.ObjectKey{Namespace: env.Namespace, Name: env.Spec.Project}, &project); err == nil {
+		projectIso = project.Spec.NetworkIsolation
+	}
+
+	cfg := ResolveNetworkIsolation(platformIso, projectIso, env.Spec.NetworkIsolation)
 
 	desired := BuildNetworkPolicies(namespace, cfg)
 

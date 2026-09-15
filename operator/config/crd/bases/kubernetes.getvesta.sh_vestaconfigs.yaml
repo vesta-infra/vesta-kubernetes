@@ -335,6 +335,11 @@ spec:
                       each other.
                     properties:
                       enabled:
+                        description: |-
+                          Enabled is a pointer so that a project turning isolation OFF is distinguishable from
+                          a project that says nothing about it. With a plain bool the two are the same value
+                          and the platform default would always win, which makes an exemption impossible to
+                          express. Same reason QuotaSpec.Enforce is a pointer.
                         type: boolean
                       metricsPort:
                         description: |-
