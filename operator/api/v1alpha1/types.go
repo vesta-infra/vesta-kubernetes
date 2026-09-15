@@ -1209,11 +1209,16 @@ type HeadersMiddleware struct {
 	AccessControlMaxAge           int64    `json:"accessControlMaxAge,omitempty"`
 	AddVaryHeader                 bool     `json:"addVaryHeader,omitempty"`
 
-	FrameDeny               bool   `json:"frameDeny,omitempty"`
-	ContentTypeNosniff      bool   `json:"contentTypeNosniff,omitempty"`
-	BrowserXSSFilter        bool   `json:"browserXssFilter,omitempty"`
-	ContentSecurityPolicy   string `json:"contentSecurityPolicy,omitempty"`
-	ReferrerPolicy          string `json:"referrerPolicy,omitempty"`
+	FrameDeny             bool   `json:"frameDeny,omitempty"`
+	ContentTypeNosniff    bool   `json:"contentTypeNosniff,omitempty"`
+	BrowserXSSFilter      bool   `json:"browserXssFilter,omitempty"`
+	ContentSecurityPolicy string `json:"contentSecurityPolicy,omitempty"`
+	ReferrerPolicy        string `json:"referrerPolicy,omitempty"`
+	// PermissionsPolicy sets the Permissions-Policy response header, e.g.
+	// "geolocation=(), camera=(), microphone=()". Traefik has always supported it; this
+	// field was simply missing, so the only way to send the header was to spell it out
+	// under customResponseHeaders.
+	PermissionsPolicy       string `json:"permissionsPolicy,omitempty"`
 	StsSeconds              int64  `json:"stsSeconds,omitempty"`
 	StsIncludeSubdomains    bool   `json:"stsIncludeSubdomains,omitempty"`
 	StsPreload              bool   `json:"stsPreload,omitempty"`
