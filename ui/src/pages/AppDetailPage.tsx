@@ -1087,7 +1087,12 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const [port, setPort] = useState(String(app.spec?.runtime?.port || 3000))
   const [startCommand, setStartCommand] = useState(app.spec?.runtime?.command || '')
   const [startArgs, setStartArgs] = useState<string>((app.spec?.runtime?.args || []).join('\n'))
-  const [domain, setDomain] = useState(app.spec?.ingress?.domain || '')
+  // The app-level domain is no longer editable here: domains belong to environments, which
+  // is where every app that has more than one already sets them. It is still read, because
+  // the operator honours it as the last fallback before an app gets no ingress at all --
+  // below the domain template, so on an instance with a template it never applies — and
+  // dropping it from the patch would take the ingress away from an app relying on it.
+  const existingDomain: string = app.spec?.ingress?.domain || ''
   const [tls, setTls] = useState(app.spec?.ingress?.tls || false)
   const [ingressAnnotations, setIngressAnnotations] = useState<{ key: string; value: string }[]>(() => {
     const a = app.spec?.ingress?.annotations || {}
@@ -1353,11 +1358,12 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       ingressAnns[CLUSTER_ISSUER_ANNOTATION] = legacyIssuerAnnotation
     }
 
-    if (domain || Object.keys(ingressAnns).length > 0 || tls) {
+    if (existingDomain || Object.keys(ingressAnns).length > 0 || tls) {
       const existingIngress = app.spec?.ingress || {}
       patch.ingress = {
+        // The spread already carries the stored domain through; re-sending it from state
+        // would only be a second copy of the same value.
         ...existingIngress,
-        ...(domain && { domain }),
         tls,
         // Explicit nulls, not omissions: the API preserves fields a patch leaves out, so
         // clearing a provider has to be said out loud.
@@ -1368,7 +1374,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       }
       // Remove undefined keys so they don't serialize as null
       if (!patch.ingress.annotations) delete patch.ingress.annotations
-    } else if (!domain && !app.spec?.ingress?.clusterIssuer && !app.spec?.ingress?.ingressClassName) {
+    } else if (!existingDomain && !app.spec?.ingress?.clusterIssuer && !app.spec?.ingress?.ingressClassName) {
       patch.ingress = null
     }
 
@@ -1652,10 +1658,6 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
               <label className="label">Port</label>
               <input type="number" value={port} onChange={e => setPort(e.target.value)} className="input-field" />
             </div>
-            <div>
-              <label className="label">Domain</label>
-              <input value={domain} onChange={e => setDomain(e.target.value)} className="input-field" placeholder="app.example.com" />
-            </div>
             <TlsControls />
           </div>
         ) : (
@@ -1668,10 +1670,6 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                   <option value="NodePort">NodePort</option>
                   <option value="LoadBalancer">LoadBalancer</option>
                 </select>
-              </div>
-              <div>
-                <label className="label">Domain</label>
-                <input value={domain} onChange={e => setDomain(e.target.value)} className="input-field" placeholder="app.example.com" />
               </div>
               <TlsControls />
             </div>
@@ -1809,111 +1807,6 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       </div>
 
       <div>
-        <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={sleepEnabled}
-            onChange={(e) => setSleepEnabled(e.target.checked)}
-            className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
-          />
-          <span className="label mb-0">Scale-to-Zero (Sleep Mode)</span>
-        </label>
-        <p className="text-[11px] text-text-tertiary mt-1 ml-6">
-          Allow this app to be scaled to zero. On its own this only enables the Sleep and Wake
-          buttons — the two options below are what make it happen by itself.
-        </p>
-
-        {sleepEnabled && (
-          <div className="mt-3 ml-6 space-y-4">
-            <div>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoSleep}
-                  onChange={(e) => setAutoSleep(e.target.checked)}
-                  className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
-                />
-                <span className="text-xs text-text-secondary">Sleep automatically when idle</span>
-              </label>
-              <p className="text-[11px] text-text-tertiary mt-1 ml-6">
-                Needs Prometheus. Without a request metric for this app Vesta cannot tell idle
-                from unmeasured, and deliberately does nothing rather than guess — the reason
-                is shown on the overview tab.
-              </p>
-            </div>
-
-            {autoSleep && (
-              <div className="ml-6 grid grid-cols-2 gap-3 max-w-lg">
-                <div>
-                  <label className="text-xs text-text-tertiary">Idle for</label>
-                  <select value={sleepTimeout} onChange={(e) => setSleepTimeout(e.target.value)} className="input-field w-full mt-1 text-xs">
-                    <option value="5m">5 minutes</option>
-                    <option value="15m">15 minutes</option>
-                    <option value="30m">30 minutes</option>
-                    <option value="1h">1 hour</option>
-                    <option value="2h">2 hours</option>
-                    <option value="6h">6 hours</option>
-                    <option value="12h">12 hours</option>
-                    <option value="24h">24 hours</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="text-xs text-text-tertiary">Stay up at least</label>
-                  <select value={minAwake} onChange={(e) => setMinAwake(e.target.value)} className="input-field w-full mt-1 text-xs">
-                    <option value="1m">1 minute</option>
-                    <option value="5m">5 minutes</option>
-                    <option value="15m">15 minutes</option>
-                    <option value="30m">30 minutes</option>
-                  </select>
-                  <p className="text-[11px] text-text-tertiary mt-1">
-                    After waking. Stops the request that woke it being the only traffic in the
-                    window, which would put it straight back to sleep.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            <div>
-              <label className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={wakeOnTraffic}
-                  onChange={(e) => setWakeOnTraffic(e.target.checked)}
-                  className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
-                />
-                <span className="text-xs text-text-secondary">Wake on the next request</span>
-              </label>
-              <p className="text-[11px] text-text-tertiary mt-1 ml-6">
-                Routes this app through a small proxy while it is down, which starts it and
-                holds the request until it can answer. Without this a sleeping app's requests
-                simply fail.
-              </p>
-            </div>
-
-            {wakeOnTraffic && (
-              <div className="ml-6 max-w-lg">
-                <label className="text-xs text-text-tertiary">Paths that should not wake it</label>
-                <textarea
-                  value={noWakePaths}
-                  onChange={(e) => setNoWakePaths(e.target.value)}
-                  rows={3}
-                  className="input-field font-mono text-xs w-full mt-1"
-                  placeholder={'/healthz\n/status\n/internal/*'}
-                />
-                <p className="text-[11px] text-text-tertiary mt-1">
-                  One per line, with a trailing * for a prefix. Answered by the proxy while the
-                  app is down, and proxied through normally once it is up. Without this an
-                  uptime check wakes the app on every poll and it never sleeps again. A path
-                  listed here is one the app will never be woken for, so listing / turns
-                  wake-on-request off entirely.
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div>
         <div className="flex items-center justify-between mb-2">
           <label className="label">Volumes</label>
           <button type="button" onClick={() => setVolumes(prev => [...prev, { name: '', mountPath: '', claimName: '' }])} className="text-xs text-accent hover:text-accent-glow">+ Add</button>
@@ -1998,9 +1891,12 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                       >+ Add Domain</button>
                     </div>
                   </div>
-                  <p className="text-[10px] text-text-tertiary mb-1.5">Overrides the app-level domain for this environment.</p>
                   {cfg.domains.length === 0 && (
-                    <p className="text-[10px] text-text-tertiary italic">{domain ? `Inherits: ${domain}` : 'No domain configured'}</p>
+                    <p className="text-[10px] text-text-tertiary italic">
+                      {existingDomain
+                        ? `Falls back to the app-level domain: ${existingDomain}`
+                        : 'No domain configured — this environment gets no ingress unless a domain template is set.'}
+                    </p>
                   )}
                   {cfg.domains.map((d, di) => (
                     <div key={di} className="flex gap-2 items-center mb-1.5">
@@ -2197,6 +2093,107 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           </div>
         </div>
       )}
+
+      {/* Scale to zero, below the environments it applies to and folded away until it is
+          switched on. Open, this ran to a hundred lines of prose on a page that is long
+          already; the explanations that carry a real consequence are kept, the rest are
+          gone. */}
+      <details open={sleepEnabled} className="rounded-lg border border-border bg-surface-1 p-3">
+        <summary className="text-xs text-text-secondary cursor-pointer">
+          Scale to zero
+          <span className="text-text-quaternary ml-2">
+            {sleepEnabled
+              ? `${autoSleep ? `idle ${sleepTimeout}` : 'manual'}${wakeOnTraffic ? ', wakes on request' : ''}`
+              : 'off'}
+          </span>
+        </summary>
+
+        <div className="mt-3 space-y-3">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={sleepEnabled}
+              onChange={(e) => setSleepEnabled(e.target.checked)}
+              className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+            />
+            <span className="text-xs text-text-secondary">
+              Allow this app to scale to zero
+              <span className="text-text-tertiary"> — on its own this only enables the Sleep and Wake buttons.</span>
+            </span>
+          </label>
+
+          {sleepEnabled && (
+            <div className="ml-6 space-y-3">
+              <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoSleep}
+                    onChange={(e) => setAutoSleep(e.target.checked)}
+                    className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                  />
+                  <span className="text-xs text-text-secondary">Sleep when idle</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={wakeOnTraffic}
+                    onChange={(e) => setWakeOnTraffic(e.target.checked)}
+                    className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
+                  />
+                  <span className="text-xs text-text-secondary">Wake on the next request</span>
+                </label>
+              </div>
+
+              {autoSleep && (
+                <div className="flex flex-wrap items-end gap-3">
+                  <div>
+                    <label className="text-[11px] text-text-tertiary">Idle for</label>
+                    <select value={sleepTimeout} onChange={(e) => setSleepTimeout(e.target.value)} className="input-field text-xs w-32 mt-1">
+                      {['5m', '15m', '30m', '1h', '2h', '6h', '12h', '24h'].map(v => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[11px] text-text-tertiary">Stay up at least</label>
+                    <select value={minAwake} onChange={(e) => setMinAwake(e.target.value)} className="input-field text-xs w-32 mt-1">
+                      {['1m', '5m', '15m', '30m'].map(v => (
+                        <option key={v} value={v}>{v}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {/* Kept because it is the one thing that silently does nothing: with no
+                      request metric Vesta cannot tell idle from unmeasured, and refuses to
+                      guess. The reason it gives is on the overview tab. */}
+                  <p className="text-[11px] text-text-tertiary flex-1 min-w-[16rem]">
+                    Needs Prometheus. Without a request metric this does nothing, and says so
+                    on the overview tab.
+                  </p>
+                </div>
+              )}
+
+              {wakeOnTraffic && (
+                <div className="max-w-lg">
+                  <label className="text-[11px] text-text-tertiary">Paths that should not wake it</label>
+                  <textarea
+                    value={noWakePaths}
+                    onChange={(e) => setNoWakePaths(e.target.value)}
+                    rows={2}
+                    className="input-field font-mono text-xs w-full mt-1"
+                    placeholder={'/healthz\n/internal/*'}
+                  />
+                  <p className="text-[11px] text-text-tertiary mt-1">
+                    One per line, trailing * for a prefix. Health check paths are excluded by
+                    default; setting this replaces that list. Listing / turns waking off
+                    entirely.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </details>
 
       {(registrySecrets?.items?.length ?? 0) > 0 && (
         <div>
