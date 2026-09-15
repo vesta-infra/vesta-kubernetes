@@ -138,8 +138,11 @@ spec:
             - name: varlibdockercontainers
               mountPath: /var/lib/docker/containers
               readOnly: true
+            # Top level, not under /var/log: that is a read-only bind mount from the
+            # host and runc cannot create a mountpoint inside one, so the container
+            # never starts.
             - name: storage
-              mountPath: /var/log/flb-storage
+              mountPath: /flb-storage
           livenessProbe:
             httpGet:
               path: /

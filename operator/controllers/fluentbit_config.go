@@ -56,7 +56,7 @@ func RenderFluentBitConfig(targets []DrainTarget) (string, error) {
     HTTP_Listen               0.0.0.0
     HTTP_Port                 2020
     Health_Check              On
-    storage.path              /var/log/flb-storage/
+    storage.path              /flb-storage/
     storage.sync              normal
     storage.checksum          off
     storage.backlog.mem_limit 16M
@@ -73,7 +73,7 @@ func RenderFluentBitConfig(targets []DrainTarget) (string, error) {
     Refresh_Interval    10
     storage.type        filesystem
     # Without this the collector re-ships every log on the node after a restart.
-    DB                  /var/log/flb-storage/tail.db
+    DB                  /flb-storage/tail.db
     DB.locking          true
 
 [FILTER]
