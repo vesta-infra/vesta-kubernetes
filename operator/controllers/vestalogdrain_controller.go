@@ -14,6 +14,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -319,6 +320,27 @@ func (r *VestaLogDrainReconciler) rollCollector(ctx context.Context, checksum st
 	env, err := r.credentialEnv(ctx)
 	if err != nil {
 		return err
+	}
+
+	// A collector this operator created is one it owns, so the whole pod spec is reconciled
+	// rather than just the checksum. Patching only the annotation left an existing
+	// DaemonSet on whatever spec it was first created with, for good: the buffer mounted
+	// inside a read-only /var/log kept the container from starting, and shipping the fix
+	// repaired nothing, because nothing ever looked at the mounts again.
+	//
+	// A chart-rendered one is Helm's. Rewriting its spec here would be overwritten on the
+	// next upgrade and rewritten on the next reconcile, so that one keeps the narrow patch.
+	if ds.Labels["app.kubernetes.io/managed-by"] == "vesta-operator" {
+		desired := BuildCollectorDaemonSet(drainHomeNamespace, checksum, r.collectorOptions(env))
+		if len(desired.Spec.Template.Spec.Containers) > 0 {
+			desired.Spec.Template.Spec.Containers[0].Env = env
+		}
+		if apiequality.Semantic.DeepEqual(ds.Spec, desired.Spec) {
+			return nil
+		}
+		ds.Spec = desired.Spec
+		ds.Labels = desired.Labels
+		return r.Update(ctx, ds)
 	}
 
 	unchanged := ds.Spec.Template.Annotations["checksum/config"] == checksum &&
