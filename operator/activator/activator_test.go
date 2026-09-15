@@ -129,7 +129,14 @@ func TestGivesUpWithRetryAfter(t *testing.T) {
 
 // A wake that fails is reported, not waited out for the full timeout.
 func TestWakeFailureIsReported(t *testing.T) {
-	waker := &fakeWaker{wakeErr: errors.New("forbidden")}
+	// readyAfter must be high enough that the app is never ready, or this does not test
+	// what it says. The handler checks readiness first and proxies when the app is already
+	// up, so a fake that reports ready immediately never reaches the wake at all -- it
+	// proxied to web.ns.svc.cluster.local instead, and the assertion below was really
+	// measuring how fast the local resolver rejects an unresolvable name. On a machine
+	// where that takes five seconds rather than microseconds, the test failed with a
+	// message about readiness timeouts and nothing to do with the bug it guards.
+	waker := &fakeWaker{wakeErr: errors.New("forbidden"), readyAfter: 1 << 30}
 	a := New(waker, Options{Namespace: "ns", WakeTimeout: time.Second, PollInterval: time.Millisecond})
 
 	start := time.Now()
