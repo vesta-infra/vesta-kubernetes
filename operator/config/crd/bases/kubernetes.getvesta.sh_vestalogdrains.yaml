@@ -343,9 +343,21 @@ spec:
                 - endpoint
                 type: object
               project:
-                description: Project, App and Environment narrow which apps ship here.
-                  All empty is platform-wide.
+                description: |-
+                  Project, App and Environment narrow which apps ship here. All empty is platform-wide.
+
+                  Project is the original single-project form and still works. Projects is the list
+                  form: a drain usually belongs to a team rather than to one project, and expressing
+                  "these four projects" previously meant four drains pointed at the same destination,
+                  each with its own credentials to rotate and its own status to read.
+
+                  Both are honoured together, as a union, so a drain that already names Project keeps
+                  working unchanged and can have projects added to it without rewriting the field.
                 type: string
+              projects:
+                items:
+                  type: string
+                type: array
               retry:
                 description: LogRetryPolicy controls what the collector does with
                   records it cannot deliver.

@@ -523,15 +523,24 @@ func secretEnvVar(drainName, suffix string) string { return DrainEnvVar(drainNam
 var nonAlphanumeric = regexp.MustCompile(`[^A-Z0-9]+`)
 
 func describeScope(spec vestav1alpha1.VestaLogDrainSpec) string {
+	projects := scopeProjects(spec)
+	// Named rather than counted: "3 projects" in a status field is the start of a question
+	// instead of the end of one.
+	list := strings.Join(projects, ", ")
+
 	switch {
 	case spec.App != "" && spec.Environment != "":
-		return fmt.Sprintf("app %s in %s/%s", spec.App, spec.Project, spec.Environment)
+		return fmt.Sprintf("app %s in %s/%s", spec.App, list, spec.Environment)
 	case spec.App != "":
 		return "app " + spec.App
+	case spec.Environment != "" && len(projects) > 0:
+		return fmt.Sprintf("projects %s, environment %s", list, spec.Environment)
 	case spec.Environment != "":
-		return fmt.Sprintf("project %s, environment %s", spec.Project, spec.Environment)
-	case spec.Project != "":
-		return "project " + spec.Project
+		return "environment " + spec.Environment
+	case len(projects) == 1:
+		return "project " + list
+	case len(projects) > 1:
+		return "projects " + list
 	}
 	return "all apps"
 }

@@ -2419,6 +2419,11 @@ func (in *VestaLogDrainSpec) DeepCopyInto(out *VestaLogDrainSpec) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.Projects != nil {
+		in, out := &in.Projects, &out.Projects
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.ExcludeApps != nil {
 		in, out := &in.ExcludeApps, &out.ExcludeApps
 		*out = make([]string, len(*in))

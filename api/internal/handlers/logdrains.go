@@ -96,6 +96,7 @@ type logDrainRequest struct {
 	Description string                 `json:"description"`
 	Enabled     *bool                  `json:"enabled"`
 	Project     string                 `json:"project"`
+	Projects    []string               `json:"projects"`
 	App         string                 `json:"app"`
 	Environment string                 `json:"environment"`
 	ExcludeApps []string               `json:"excludeApps"`
@@ -118,10 +119,8 @@ func (h *Handler) ListLogDrains(c *gin.Context) {
 	out := make([]map[string]interface{}, 0, len(list.Items))
 	for i := range list.Items {
 		item := logDrainToResponse(&list.Items[i])
-		if project != "" {
-			if scoped, _ := item["project"].(string); scoped != "" && scoped != project {
-				continue
-			}
+		if project != "" && !drainCoversProject(item, project) {
+			continue
 		}
 		out = append(out, item)
 	}
@@ -373,7 +372,7 @@ func validateLogDrain(req logDrainRequest) error {
 
 	// An environment without a project names nothing: namespaces are "<project>-<env>", so
 	// there is no way to resolve which environments are meant.
-	if req.Environment != "" && req.Project == "" {
+	if req.Environment != "" && req.Project == "" && len(req.Projects) == 0 {
 		return fmt.Errorf("environment requires a project")
 	}
 
@@ -438,6 +437,21 @@ func logDrainSpecFrom(req logDrainRequest) map[string]interface{} {
 			spec[key] = value
 		}
 	}
+
+	// Separately, because the loop above is over strings. Written as []interface{} since
+	// this map becomes unstructured content, and a []string there is not a type the
+	// converter accepts.
+	if len(req.Projects) > 0 {
+		projects := make([]interface{}, 0, len(req.Projects))
+		for _, p := range req.Projects {
+			if p != "" {
+				projects = append(projects, p)
+			}
+		}
+		if len(projects) > 0 {
+			spec["projects"] = projects
+		}
+	}
 	if req.Enabled != nil {
 		spec["enabled"] = *req.Enabled
 	}
@@ -483,6 +497,9 @@ func logDrainToResponse(obj *unstructured.Unstructured) map[string]interface{} {
 		"displayName": spec["displayName"],
 		"description": spec["description"],
 		"project":     spec["project"],
+		// Normalised to []string so callers get one shape whether it came from a typed
+		// request or from unstructured content.
+		"projects":    toStringSlice(spec["projects"]),
 		"app":         spec["app"],
 		"environment": spec["environment"],
 		"enabled":     enabled,
@@ -508,4 +525,28 @@ func logDrainToResponse(obj *unstructured.Unstructured) map[string]interface{} {
 		}
 	}
 	return out
+}
+
+// drainCoversProject reports whether a drain is in scope for one project.
+//
+// Both forms are checked. A drain that names several projects would otherwise vanish from
+// the list on every one of them: the old filter read a single field, found it empty, and
+// treated the drain as platform-wide — which is the one reading that is certainly wrong for
+// a drain that named projects explicitly.
+func drainCoversProject(item map[string]interface{}, project string) bool {
+	single, _ := item["project"].(string)
+	many := toStringSlice(item["projects"])
+
+	if single == "" && len(many) == 0 {
+		return true // platform-wide
+	}
+	if single == project {
+		return true
+	}
+	for _, p := range many {
+		if p == project {
+			return true
+		}
+	}
+	return false
 }

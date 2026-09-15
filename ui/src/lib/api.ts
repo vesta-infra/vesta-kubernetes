@@ -7,6 +7,8 @@ export interface LogDrain {
   displayName?: string
   description?: string
   project?: string
+  /** Several projects. Unioned with `project`, so a drain can name both. */
+  projects?: string[]
   app?: string
   environment?: string
   enabled: boolean
@@ -27,6 +29,8 @@ export interface LogDrainPayload {
   displayName?: string
   description?: string
   project?: string
+  /** Several projects. Sent instead of `project` by the form. */
+  projects?: string[]
   app?: string
   environment?: string
   enabled?: boolean

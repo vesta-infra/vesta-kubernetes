@@ -1365,9 +1365,18 @@ type VestaLogDrainSpec struct {
 	Enabled *bool `json:"enabled,omitempty"`
 
 	// Project, App and Environment narrow which apps ship here. All empty is platform-wide.
-	Project     string `json:"project,omitempty"`
-	App         string `json:"app,omitempty"`
-	Environment string `json:"environment,omitempty"`
+	//
+	// Project is the original single-project form and still works. Projects is the list
+	// form: a drain usually belongs to a team rather than to one project, and expressing
+	// "these four projects" previously meant four drains pointed at the same destination,
+	// each with its own credentials to rotate and its own status to read.
+	//
+	// Both are honoured together, as a union, so a drain that already names Project keeps
+	// working unchanged and can have projects added to it without rewriting the field.
+	Project     string   `json:"project,omitempty"`
+	Projects    []string `json:"projects,omitempty"`
+	App         string   `json:"app,omitempty"`
+	Environment string   `json:"environment,omitempty"`
 
 	// ExcludeApps names apps within the scope that must not ship here, as "<app>" for any
 	// project or "<project>/<app>" for one. It is how a project-wide drain skips the one

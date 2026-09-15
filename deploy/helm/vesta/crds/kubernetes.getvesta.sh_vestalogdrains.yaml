@@ -527,6 +527,10 @@ spec:
                 items:
                   type: string
                 type: array
+              projects:
+                items:
+                  type: string
+                type: array
             required:
             - type
             type: object

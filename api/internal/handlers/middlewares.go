@@ -402,6 +402,11 @@ func resolveMiddlewaresForEnv(app map[string]interface{}, env string) (names []s
 }
 
 func toStringSlice(raw interface{}) []string {
+	// Already a []string when it came from a typed request rather than from unstructured
+	// content, which is where the []interface{} shape comes from.
+	if direct, ok := raw.([]string); ok {
+		return direct
+	}
 	items, ok := raw.([]interface{})
 	if !ok {
 		return nil
