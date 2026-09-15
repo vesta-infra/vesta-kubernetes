@@ -1,0 +1,225 @@
+{{- if eq (include "vesta.enabled" (dict "Values" .Values "section" "containerRegistry" "default" false)) "true" }}
+{{- $cr := .Values.containerRegistry | default dict }}
+{{- $ing := $cr.ingress | default dict }}
+{{- $host := $ing.host | default "" }}
+{{- /*
+An in-cluster container registry, so a self-contained install needs no external one.
+
+It must be reachable by HOSTNAME over TLS, and that is not a preference. Images are pulled
+by the kubelet, which resolves through the node's DNS and not the cluster's -- so the
+in-cluster Service name is unreachable from the thing that does the pulling. The
+alternatives are worse: a NodePort with an insecure-registries entry, or a CA distributed to
+every node, both of which need per-node containerd configuration that differs by
+distribution and that Vesta has no way to perform.
+
+So a host is required. Rendering without one would produce a registry that accepts pushes
+and that nothing in the cluster can pull from, and the only symptom would be
+ImagePullBackOff naming the image rather than the registry.
+*/}}
+{{- if not $host }}
+{{- fail "containerRegistry.enabled is true but containerRegistry.ingress.host is empty. Images are pulled by the kubelet, which cannot resolve in-cluster Service names, so the registry needs a hostname with a TLS certificate. Set containerRegistry.ingress.host." }}
+{{- end }}
+{{- $name := printf "%s-registry" (include "vesta.fullname" .) }}
+{{- $username := $cr.username | default "vesta" }}
+{{- /*
+Reuse what is installed rather than regenerating on every render, the same reason as the
+postgres password. A new password here would leave every app's pull secret pointing at
+credentials the registry no longer accepts, and the volume holding the images would be
+perfectly intact behind it.
+
+The htpasswd hash is kept as well, not just the password: bcrypt salts randomly, so
+re-hashing the same password still produces a different file and would roll the registry on
+every upgrade.
+*/}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $name }}
+{{- $password := $cr.password | default "" }}
+{{- $htpasswd := "" }}
+{{- if and $existing (index $existing.data "password") }}
+  {{- $password = index $existing.data "password" | b64dec }}
+  {{- if index $existing.data "htpasswd" }}
+    {{- $htpasswd = index $existing.data "htpasswd" | b64dec }}
+  {{- end }}
+{{- end }}
+{{- if not $password }}
+  {{- $password = randAlphaNum 32 }}
+{{- end }}
+{{- if not $htpasswd }}
+  {{- $htpasswd = htpasswd $username $password }}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: container-registry
+type: Opaque
+stringData:
+  username: {{ $username | quote }}
+  # Read by the VestaSecret below through passwordSecretRef, so the credential never carries
+  # a password in the CRD itself.
+  password: {{ $password | quote }}
+  htpasswd: {{ $htpasswd | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: container-registry
+spec:
+  selector:
+    app.kubernetes.io/name: {{ $name }}
+  ports:
+    - name: http
+      port: 5000
+      targetPort: 5000
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: container-registry
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "vesta.labels" . | nindent 8 }}
+        app.kubernetes.io/name: {{ $name }}
+        app.kubernetes.io/component: container-registry
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+        - name: registry
+          image: "{{ (($cr.image) | default dict).repository | default "registry" }}:{{ (($cr.image) | default dict).tag | default "2" }}"
+          imagePullPolicy: {{ (($cr.image) | default dict).pullPolicy | default "IfNotPresent" }}
+          ports:
+            - name: http
+              containerPort: 5000
+          env:
+            - name: REGISTRY_AUTH
+              value: htpasswd
+            - name: REGISTRY_AUTH_HTPASSWD_REALM
+              value: "Vesta Registry"
+            - name: REGISTRY_AUTH_HTPASSWD_PATH
+              value: /auth/htpasswd
+            - name: REGISTRY_STORAGE_FILESYSTEM_ROOTDIRECTORY
+              value: /var/lib/registry
+            # Without this every restart invalidates in-flight uploads, which for a large
+            # image means a push that was nearly done starts again from nothing.
+            - name: REGISTRY_HTTP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $name }}
+                  key: password
+          volumeMounts:
+            - name: auth
+              mountPath: /auth
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/registry
+          resources:
+            {{- toYaml ($cr.resources | default dict) | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: auth
+          secret:
+            secretName: {{ $name }}
+            items:
+              - key: htpasswd
+                path: htpasswd
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with $cr.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $cr.storage | default "20Gi" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    app.kubernetes.io/component: container-registry
+  annotations:
+    # Image layers are large and nginx caps request bodies at 1MB by default, which fails a
+    # push partway through with a 413 that reads like a registry fault. Ignored by Traefik.
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    {{- with $ing.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- with (default .Values.config.ingressClassName $ing.ingressClassName) }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  tls:
+    - hosts:
+        - {{ $host | quote }}
+      secretName: {{ $name }}-tls
+  rules:
+    - host: {{ $host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $name }}
+                port:
+                  number: 5000
+---
+{{- /*
+Registered as an ordinary Vesta credential, so it appears in the registry pickers and can be
+attached as a pull secret exactly like an external one. The password is referenced rather
+than written here: a VestaSecret is readable by anyone who can get vestasecrets, and it goes
+into project export bundles as written.
+*/}}
+apiVersion: kubernetes.getvesta.sh/v1alpha1
+kind: VestaSecret
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "vesta.labels" . | nindent 4 }}
+    kubernetes.getvesta.sh/type: registry
+spec:
+  type: kubernetes.io/dockerconfigjson
+  scope: global
+  dockerConfig:
+    registry: {{ $host | quote }}
+    username: {{ $username | quote }}
+    flavor: generic-v2
+    passwordSecretRef:
+      name: {{ $name }}
+      key: password
+{{- end }}
