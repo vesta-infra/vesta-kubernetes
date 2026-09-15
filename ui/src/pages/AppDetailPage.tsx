@@ -1547,6 +1547,30 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         </div>
       </div>
 
+      {/* Belongs with the image whose entrypoint it overrides, not with Networking, where it
+          sat between the heading and the port. Open when something is set, so an app that
+          overrides its command still shows that at a glance. */}
+      <details open={!!(startCommand || startArgs)} className="rounded-lg border border-border bg-surface-1 p-3">
+        <summary className="text-xs text-text-secondary cursor-pointer">
+          Start command
+          <span className="text-text-quaternary ml-2 font-mono">
+            {startCommand || startArgs ? (startCommand || 'image default') : 'image default'}
+          </span>
+        </summary>
+        <div className="grid grid-cols-2 gap-4 mt-3">
+          <div>
+            <label className="label">Start command</label>
+            <input value={startCommand} onChange={e => setStartCommand(e.target.value)} className="input-field font-mono" placeholder="e.g. blnk  or  npm start" />
+            <p className="text-[10px] text-text-tertiary mt-1">Overrides the image entrypoint. Leave blank to use the image default. With no arguments below, it runs via <code>/bin/sh -c</code>.</p>
+          </div>
+          <div>
+            <label className="label">Arguments <span className="text-text-tertiary font-normal">(one per line)</span></label>
+            <textarea value={startArgs} onChange={e => setStartArgs(e.target.value)} className="input-field font-mono h-[38px]" rows={1} placeholder="start" />
+            <p className="text-[10px] text-text-tertiary mt-1">When set, the command runs in exec form (no shell) — works on distroless images and forwards signals for graceful shutdown.</p>
+          </div>
+        </div>
+      </details>
+
       <div className="space-y-3">
         <div className="flex items-center justify-between">
           <label className="label mb-0">Networking</label>
@@ -1565,19 +1589,6 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             />
             <span className="text-xs text-text-secondary">Multi-port / Service config</span>
           </label>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="label">Start command</label>
-            <input value={startCommand} onChange={e => setStartCommand(e.target.value)} className="input-field font-mono" placeholder="e.g. blnk  or  npm start" />
-            <p className="text-[10px] text-text-tertiary mt-1">Overrides the image entrypoint. Leave blank to use the image default. With no arguments below, it runs via <code>/bin/sh -c</code>.</p>
-          </div>
-          <div>
-            <label className="label">Arguments <span className="text-text-tertiary font-normal">(one per line)</span></label>
-            <textarea value={startArgs} onChange={e => setStartArgs(e.target.value)} className="input-field font-mono h-[38px]" rows={1} placeholder="start" />
-            <p className="text-[10px] text-text-tertiary mt-1">When set, the command runs in exec form (no shell) — works on distroless images and forwards signals for graceful shutdown.</p>
-          </div>
         </div>
 
         {/* The app-level domain is no longer editable — domains belong to environments —
@@ -1611,11 +1622,17 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         )}
 
         {!useServiceConfig ? (
-          <div className="grid grid-cols-3 gap-4">
+          // One field on its own, so it takes the width of a port number rather than a
+          // third of the form. It shared a row with the app-level domain until that moved
+          // to the environments.
+          <div className="flex items-end gap-3">
             <div>
               <label className="label">Port</label>
-              <input type="number" value={port} onChange={e => setPort(e.target.value)} className="input-field" />
+              <input type="number" value={port} onChange={e => setPort(e.target.value)} className="input-field w-32" />
             </div>
+            <p className="text-[11px] text-text-tertiary pb-2">
+              The port your app listens on. Domains and TLS are set per environment below.
+            </p>
           </div>
         ) : (
           <>
