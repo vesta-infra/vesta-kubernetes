@@ -31,6 +31,30 @@ jobs:
       fail-fast: false
       matrix:
         module: [operator, api, cli]
+
+    # Postgres for the api module's migration tests. They skip without
+    # VESTA_TEST_DATABASE_URL, so the one test that proves a schema migration works against a
+    # real database was the one test that never ran -- which is how the webauthn_sessions
+    # CHECK constraint shipped unable to accept the value the reauth handler writes.
+    #
+    # Started for every module rather than conditionally: a service block cannot depend on a
+    # matrix value, and an unused container costs a few seconds against a class of bug that
+    # has cost several releases.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vesta_test
+          POSTGRES_PASSWORD: vesta_test
+          POSTGRES_DB: vesta_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -48,6 +72,10 @@ jobs:
 
       - name: Test
         working-directory: ${{ matrix.module }}
+        env:
+          # Only the api module reads this; the others ignore it. Set here rather than in a
+          # conditional step so there is one Test step to read.
+          VESTA_TEST_DATABASE_URL: postgres://vesta_test:vesta_test@localhost:5432/vesta_test?sslmode=disable
         run: go test ./... -count=1
 
       - name: Check formatting
