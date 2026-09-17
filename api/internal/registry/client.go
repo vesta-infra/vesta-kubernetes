@@ -43,9 +43,27 @@ func DetectFlavor(registry string) string {
 		return FlavorGHCR
 	case strings.Contains(key, "harbor"):
 		return FlavorHarbor
+	// Hosted Harbor that does not say "harbor" anywhere in its hostname. Detecting these
+	// matters more than it looks: read as generic v2, listing goes to /v2/_catalog, which
+	// Harbor restricts to administrators — so the repository picker comes back empty and
+	// the name gets typed by hand. Harbor then rejects a single-segment repository, because
+	// everything there lives under a project, and the first sign of it is a BAD_REQUEST
+	// from the registry partway through a build.
+	case strings.Contains(key, "container-registry.ovh.net"):
+		return FlavorHarbor
 	default:
 		return FlavorGenericV2
 	}
+}
+
+// RequiresProjectPath reports whether a flavor rejects a single-segment repository.
+//
+// Harbor organises every repository under a project, so "atom-website" is not a name it can
+// accept — it has to be "<project>/atom-website". Worth knowing before a build rather than
+// after: the push is the last step, so the failure arrives once the image has already been
+// built, and the message names the repository rather than the missing project.
+func RequiresProjectPath(flavor string) bool {
+	return flavor == FlavorHarbor
 }
 
 func (c Credentials) flavor() string {
