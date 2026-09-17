@@ -102,9 +102,9 @@ func (r *VestaLogDrainReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		}
 	}
 
-	stats := r.collectorStats(ctx)
+	stats, statsRead := r.collectorStats(ctx)
 	for i := range drains.Items {
-		if err := r.updateStatus(ctx, &drains.Items[i], targets, renderErrors, stats, collectorMissing); err != nil {
+		if err := r.updateStatus(ctx, &drains.Items[i], targets, renderErrors, stats, collectorMissing, statsRead); err != nil {
 			logger.Error(err, "failed to update drain status", "drain", drains.Items[i].Name)
 		}
 	}
@@ -482,7 +482,13 @@ type outputStats struct {
 // This is what separates a drain that is working from one that is merely configured.
 // Without it a misconfigured destination is indistinguishable from an app that logged
 // nothing, and the first sign of trouble is an empty dashboard during an incident.
-func (r *VestaLogDrainReconciler) collectorStats(ctx context.Context) map[string]outputStats {
+// collectorStats reads the collector's own counters, and says whether it managed to.
+//
+// The second return is the whole point. Every failure here used to come back as a nil map,
+// which updateStatus could not tell apart from "read fine, this drain delivered nothing" --
+// so it set Ready and moved on. A drain answering 401 on every flush reported healthy, and
+// the first sign of trouble was an empty dashboard.
+func (r *VestaLogDrainReconciler) collectorStats(ctx context.Context) (map[string]outputStats, bool) {
 	url := r.MetricsURL
 	if url == "" {
 		url = fmt.Sprintf("http://%s.%s.svc:2020/api/v1/metrics", collectorName, drainHomeNamespace)
@@ -490,27 +496,27 @@ func (r *VestaLogDrainReconciler) collectorStats(ctx context.Context) map[string
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	// Short: this runs inside a reconcile, and a hung collector must not stall it.
 	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
 	if err != nil {
-		return nil
+		return nil, false
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil
+		return nil, false
 	}
 
 	var parsed struct {
 		Output map[string]outputStats `json:"output"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return nil
+		return nil, false
 	}
-	return parsed.Output
+	return parsed.Output, true
 }
 
 func (r *VestaLogDrainReconciler) updateStatus(
@@ -520,6 +526,7 @@ func (r *VestaLogDrainReconciler) updateStatus(
 	renderErrors map[string]string,
 	stats map[string]outputStats,
 	collectorMissing bool,
+	statsRead bool,
 ) error {
 	status := vestav1alpha1.VestaLogDrainStatus{
 		ObservedGeneration: drain.Generation,
@@ -544,6 +551,14 @@ func (r *VestaLogDrainReconciler) updateStatus(
 				continue
 			}
 			status.Ready = true
+
+			// Confirmed delivery is the only thing that earns a clean Ready. Without the
+			// collector's counters there is no evidence either way, and claiming health on
+			// no evidence is how a drain answering 401 on every flush reported itself fine.
+			if !statsRead {
+				status.Reason = "delivery unconfirmed: the collector's metrics could not be read"
+			}
+
 			if s, ok := stats[drain.Name]; ok {
 				status.RecordsDelivered = s.ProcRecords
 				status.Errors = s.Errors
