@@ -124,6 +124,12 @@ func (h *Handler) TestRegistryCredential(c *gin.Context) {
 		// True when the stored value already normalises to itself, which is what kubelet
 		// will look for.
 		"normalized": creds.Registry == authsKey,
+		// Harbor keeps every repository under a project, so an image named
+		// "<host>/app" is rejected and "<host>/<project>/app" is not. Reported here
+		// because the alternative is finding out from the registry at push time, after the
+		// image has been built, in a message that names the repository rather than the
+		// missing project.
+		"requiresProjectPath": registry.RequiresProjectPath(registryFlavor(creds)),
 	}
 
 	if err := h.Registry.Ping(c.Request.Context(), creds); err != nil {
