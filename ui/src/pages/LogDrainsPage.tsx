@@ -185,8 +185,12 @@ export default function LogDrainsPage() {
                     <span className="text-status-failed"> · {drain.errors.toLocaleString()} errors</span>
                   )}
                 </p>
-                {!drain.ready && drain.reason && (
-                  <p className="text-[11px] text-status-failed mt-1">{drain.reason}</p>
+                {/* Shown whenever there is one, not only on failure. A drain can be ready
+                    and still have something worth saying -- "delivery unconfirmed" is the
+                    case that matters, because it is what a drain answering 401 on every
+                    flush looks like from here. */}
+                {drain.reason && (
+                  <p className={`text-[11px] mt-1 ${drain.ready ? 'text-status-pending' : 'text-status-failed'}`}>{drain.reason}</p>
                 )}
               </div>
               <div className="flex gap-2 shrink-0">
