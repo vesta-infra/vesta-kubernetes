@@ -330,6 +330,28 @@ func (r *VestaLogDrainReconciler) writeConfig(ctx context.Context, config string
 	return checksum, err
 }
 
+// credentialChecksumAnnotation carries the digest of the credential values.
+//
+// Separate from checksum/config so the two reasons to restart stay distinguishable when
+// reading a live DaemonSet: the configuration changed, or a credential behind it did.
+const credentialChecksumAnnotation = "checksum/credentials"
+
+// stampCredentials records the credential digest on the pod template.
+//
+// An empty digest removes the annotation rather than writing an empty value, so a collector
+// with no credentials at all compares equal to a freshly built one instead of rolling
+// forever on a field that is present in one and absent in the other.
+func stampCredentials(ds *appsv1.DaemonSet, digest string) {
+	if digest == "" {
+		delete(ds.Spec.Template.Annotations, credentialChecksumAnnotation)
+		return
+	}
+	if ds.Spec.Template.Annotations == nil {
+		ds.Spec.Template.Annotations = map[string]string{}
+	}
+	ds.Spec.Template.Annotations[credentialChecksumAnnotation] = digest
+}
+
 // rollCollector stamps the config checksum on the DaemonSet's pod template.
 //
 // Fluent Bit's hot reload is deliberately not used: a reload that half-applies leaves nodes
@@ -342,11 +364,12 @@ func (r *VestaLogDrainReconciler) rollCollector(ctx context.Context, checksum st
 		// Nothing is running one, so start it. The operator is the only thing that knows a
 		// drain exists; the chart cannot, which is why configuring a drain in the UI used
 		// to write a configuration and leave it unshipped until somebody ran helm.
-		env, credErr := r.credentialEnv(ctx)
+		env, digest, credErr := r.credentialEnv(ctx)
 		if credErr != nil {
 			return credErr
 		}
 		created := BuildCollectorDaemonSet(drainHomeNamespace, checksum, r.collectorOptions(env))
+		stampCredentials(created, digest)
 		if createErr := r.Create(ctx, created); createErr != nil {
 			return createErr
 		}
@@ -356,7 +379,7 @@ func (r *VestaLogDrainReconciler) rollCollector(ctx context.Context, checksum st
 		return err
 	}
 
-	env, err := r.credentialEnv(ctx)
+	env, digest, err := r.credentialEnv(ctx)
 	if err != nil {
 		return err
 	}
@@ -371,6 +394,7 @@ func (r *VestaLogDrainReconciler) rollCollector(ctx context.Context, checksum st
 	// next upgrade and rewritten on the next reconcile, so that one keeps the narrow patch.
 	if ds.Labels["app.kubernetes.io/managed-by"] == "vesta-operator" {
 		desired := BuildCollectorDaemonSet(drainHomeNamespace, checksum, r.collectorOptions(env))
+		stampCredentials(desired, digest)
 		if len(desired.Spec.Template.Spec.Containers) > 0 {
 			desired.Spec.Template.Spec.Containers[0].Env = env
 		}
@@ -383,6 +407,7 @@ func (r *VestaLogDrainReconciler) rollCollector(ctx context.Context, checksum st
 	}
 
 	unchanged := ds.Spec.Template.Annotations["checksum/config"] == checksum &&
+		ds.Spec.Template.Annotations[credentialChecksumAnnotation] == digest &&
 		len(ds.Spec.Template.Spec.Containers) > 0 &&
 		envEqual(ds.Spec.Template.Spec.Containers[0].Env, env)
 	if unchanged {
@@ -393,6 +418,7 @@ func (r *VestaLogDrainReconciler) rollCollector(ctx context.Context, checksum st
 		ds.Spec.Template.Annotations = map[string]string{}
 	}
 	ds.Spec.Template.Annotations["checksum/config"] = checksum
+	stampCredentials(ds, digest)
 	if len(ds.Spec.Template.Spec.Containers) > 0 {
 		ds.Spec.Template.Spec.Containers[0].Env = env
 	}
@@ -409,13 +435,23 @@ func (r *VestaLogDrainReconciler) rollCollector(ctx context.Context, checksum st
 //
 // It reads whatever keys the Secret holds rather than knowing each drain type's fields, so
 // adding a destination needs no change here.
-func (r *VestaLogDrainReconciler) credentialEnv(ctx context.Context) ([]corev1.EnvVar, error) {
+//
+// The second return is a digest of the credential values, which the caller stamps on the pod
+// template. It is needed because a SecretKeyRef names a Secret and a key and nothing else:
+// editing a password leaves this env slice byte-identical, leaves the rendered configuration
+// byte-identical -- it holds ${VAR}, not the value -- and so rolls nothing, while the running
+// pods keep serving the value they read at startup. The drain then fails to authenticate with
+// no way to fix it short of deleting something to force a restart.
+func (r *VestaLogDrainReconciler) credentialEnv(ctx context.Context) ([]corev1.EnvVar, string, error) {
 	var secrets corev1.SecretList
 	if err := r.List(ctx, &secrets, client.InNamespace(drainHomeNamespace)); err != nil {
-		return nil, fmt.Errorf("list drain credentials: %w", err)
+		return nil, "", fmt.Errorf("list drain credentials: %w", err)
 	}
 
 	var env []corev1.EnvVar
+	// Collected alongside the env, then hashed in name order so the digest is stable across
+	// reconciles. Only the hash is kept; no credential value is stored or logged.
+	values := map[string][]byte{}
 	for i := range secrets.Items {
 		secret := &secrets.Items[i]
 		drainName := secret.Labels["kubernetes.getvesta.sh/log-drain"]
@@ -423,8 +459,10 @@ func (r *VestaLogDrainReconciler) credentialEnv(ctx context.Context) ([]corev1.E
 			continue
 		}
 		for _, key := range sortedSecretKeys(secret.Data) {
+			name := DrainEnvVar(drainName, key)
+			values[name] = secret.Data[key]
 			env = append(env, corev1.EnvVar{
-				Name: DrainEnvVar(drainName, key),
+				Name: name,
 				ValueFrom: &corev1.EnvVarSource{
 					SecretKeyRef: &corev1.SecretKeySelector{
 						LocalObjectReference: corev1.LocalObjectReference{Name: secret.Name},
@@ -437,7 +475,32 @@ func (r *VestaLogDrainReconciler) credentialEnv(ctx context.Context) ([]corev1.E
 
 	// Stable order, or the DaemonSet rolls on every reconcile.
 	sort.Slice(env, func(i, j int) bool { return env[i].Name < env[j].Name })
-	return env, nil
+	return env, credentialDigest(values), nil
+}
+
+// credentialDigest hashes credential values so a change to one is visible to a comparison
+// that can only see references.
+//
+// The env var name is hashed along with the value, so renaming a drain rolls the collector
+// too. Length-prefixed rather than delimited, because a value containing the delimiter would
+// otherwise let two different credential sets hash the same.
+func credentialDigest(values map[string][]byte) string {
+	if len(values) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	h := sha256.New()
+	for _, name := range names {
+		fmt.Fprintf(h, "%d:%s", len(name), name)
+		fmt.Fprintf(h, "%d:", len(values[name]))
+		h.Write(values[name])
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 func sortedSecretKeys(data map[string][]byte) []string {
@@ -605,6 +668,26 @@ func (r *VestaLogDrainReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&vestav1alpha1.VestaApp{},
 			handler.EnqueueRequestsFromMapFunc(func(context.Context, client.Object) []ctrl.Request {
+				return []ctrl.Request{{NamespacedName: types.NamespacedName{
+					Name: "resync", Namespace: drainHomeNamespace,
+				}}}
+			}),
+		).
+		// Credential Secrets, because editing only a password reconciles nothing otherwise.
+		// The API rewrites the drain on every edit, but a credential lives in the Secret and
+		// the spec holds just a name and a key -- so the object it writes back is identical,
+		// the resourceVersion does not move, and no watch event is produced. Without this the
+		// collector keeps presenting the old credential until something unrelated happens to
+		// touch the drain.
+		Watches(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []ctrl.Request {
+				if obj.GetNamespace() != drainHomeNamespace {
+					return nil
+				}
+				if obj.GetLabels()["kubernetes.getvesta.sh/log-drain"] == "" {
+					return nil
+				}
 				return []ctrl.Request{{NamespacedName: types.NamespacedName{
 					Name: "resync", Namespace: drainHomeNamespace,
 				}}}
