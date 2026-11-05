@@ -181,11 +181,8 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			}
 		} else {
 			// Clean up orphaned Ingress if ingress config was removed
-			orphanIng := &networkingv1.Ingress{}
-			if err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: app.Name}, orphanIng); err == nil {
-				if err := r.Client.Delete(ctx, orphanIng); err != nil {
-					logger.Error(err, "failed to delete orphaned ingress", "namespace", target.Namespace)
-				}
+			if err := r.deleteAppIngress(ctx, &app, target); err != nil {
+				logger.Error(err, "failed to delete orphaned ingress", "namespace", target.Namespace)
 			}
 		}
 
@@ -1288,6 +1285,43 @@ func resolveCertConfig(app *vestav1alpha1.VestaApp, envIngress *vestav1alpha1.In
 	return cfg
 }
 
+// firstEnvironmentURL is the app's URL when it has no app-level domain: the first domain any
+// environment serves, which is where it is actually reachable now that domains are set per
+// environment.
+func firstEnvironmentURL(app *vestav1alpha1.VestaApp) string {
+	for _, env := range app.Spec.Environments {
+		if env.Ingress == nil {
+			continue
+		}
+		domain := env.Ingress.Domain
+		if len(env.Ingress.Domains) > 0 {
+			domain = env.Ingress.Domains[0]
+		}
+		if strings.TrimSpace(domain) == "" {
+			continue
+		}
+		tls := app.Spec.Ingress != nil && app.Spec.Ingress.TLS
+		if env.Ingress.TLS != nil {
+			tls = *env.Ingress.TLS
+		}
+		scheme := "http"
+		if tls {
+			scheme = "https"
+		}
+		return fmt.Sprintf("%s://%s", scheme, domain)
+	}
+	return ""
+}
+
+// deleteAppIngress removes the app's Ingress in one environment, if there is one.
+func (r *VestaAppReconciler) deleteAppIngress(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
+	ing := &networkingv1.Ingress{}
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: app.Name}, ing); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	return client.IgnoreNotFound(r.Client.Delete(ctx, ing))
+}
+
 func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
 	labels := r.labelsForApp(app)
 	pathType := networkingv1.PathTypePrefix
@@ -1319,8 +1353,10 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 	} else if app.Spec.Ingress != nil && app.Spec.Ingress.Domain != "" {
 		domains = []string{app.Spec.Ingress.Domain}
 	} else {
-		// No domains resolvable — skip ingress creation
-		return nil
+		// No domains resolvable, so there must be no Ingress. Returning without deleting
+		// one left it serving after its domain was removed: the app still had an ingress
+		// block (a certificate issuer, say), so the orphan cleanup in Reconcile never ran.
+		return r.deleteAppIngress(ctx, app, target)
 	}
 
 	// Filter out empty-string domains
@@ -1331,7 +1367,7 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 		}
 	}
 	if len(filtered) == 0 {
-		return nil
+		return r.deleteAppIngress(ctx, app, target)
 	}
 	domains = filtered
 
@@ -2321,12 +2357,17 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 				app.Status.CurrentImage = app.Status.DeploymentHistory[len(app.Status.DeploymentHistory)-1].Image
 			}
 		}
-		if app.Spec.Ingress != nil {
+		// Only from a domain that is actually set: an ingress block holding just a
+		// certificate issuer used to produce "http://" here, and a removed domain stayed
+		// on as the app's URL.
+		if app.Spec.Ingress != nil && app.Spec.Ingress.Domain != "" {
 			scheme := "http"
 			if app.Spec.Ingress.TLS {
 				scheme = "https"
 			}
 			app.Status.URL = fmt.Sprintf("%s://%s", scheme, app.Spec.Ingress.Domain)
+		} else {
+			app.Status.URL = firstEnvironmentURL(&app)
 		}
 		app.Status.LastDeployedAt = now
 		return r.Status().Update(ctx, &app)
