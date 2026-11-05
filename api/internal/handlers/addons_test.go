@@ -1,10 +1,13 @@
 package handlers
 
 import (
+	"net/http"
 	"os"
 	"sort"
 	"strings"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // The API validates add-on types against its own list, and the operator renders from its
@@ -87,5 +90,51 @@ func TestUnsupportedTypesAreRejected(t *testing.T) {
 		if isSupportedAddonType(bad) {
 			t.Errorf("isSupportedAddonType(%q) = true", bad)
 		}
+	}
+}
+
+func TestAddonPodTarget(t *testing.T) {
+	addon := func(project, env string) *unstructured.Unstructured {
+		spec := map[string]interface{}{"type": "postgres", "project": project}
+		if env != "" {
+			spec["environment"] = env
+		}
+		u := &unstructured.Unstructured{Object: map[string]interface{}{"spec": spec}}
+		u.SetName("db")
+		u.SetLabels(map[string]string{"kubernetes.getvesta.sh/project": project})
+		return u
+	}
+
+	cases := []struct {
+		name          string
+		addon         *unstructured.Unstructured
+		project, env  string
+		wantStatus    int
+		wantNamespace string
+	}{
+		{"all environments", addon("shop", ""), "shop", "staging", http.StatusOK, "shop-staging"},
+		{"pinned, matching", addon("shop", "prod"), "shop", "prod", http.StatusOK, "shop-prod"},
+		{"pinned, other environment", addon("shop", "prod"), "shop", "staging", http.StatusBadRequest, ""},
+		{"another project's add-on", addon("other", ""), "shop", "staging", http.StatusNotFound, ""},
+		{"missing add-on", nil, "shop", "staging", http.StatusNotFound, ""},
+		{"no environment", addon("shop", ""), "shop", "", http.StatusBadRequest, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ns, sel, status, _ := addonPodTarget(tc.addon, tc.project, tc.env)
+			if status != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", status, tc.wantStatus)
+			}
+			if status != http.StatusOK {
+				return
+			}
+			if ns != tc.wantNamespace {
+				t.Errorf("namespace = %q, want %q", ns, tc.wantNamespace)
+			}
+			// Must match the label the operator puts on add-on pods (addon_render.go).
+			if sel != "kubernetes.getvesta.sh/addon=db" {
+				t.Errorf("selector = %q", sel)
+			}
+		})
 	}
 }

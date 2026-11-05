@@ -162,6 +162,10 @@ func (s *CostSampler) sampleNamespace(ctx context.Context, project, environment,
 				MemoryBytes:   memory,
 				StorageBytes:  storage[st.Name],
 				Interval:      s.interval,
+				// Recorded for add-ons too: cost is the greater of reserved and used, so a
+				// database bursting above its request has to have its usage counted.
+				CPUUsedMillicores: usage[st.Name].cpu,
+				MemoryUsedBytes:   usage[st.Name].memory,
 			})
 		}
 	}
@@ -181,16 +185,23 @@ func (s *CostSampler) podUsage(ctx context.Context, namespace string) map[string
 		return nil
 	}
 
+	// Attributed by the pod's owner label, not by trimming its name. Trimming assumed the
+	// <deployment>-<replicaset>-<random> shape, which a StatefulSet pod (<name>-<ordinal>)
+	// does not have -- so add-on usage landed on a truncated name, or on some other app.
+	owners := map[string]string{}
+	if pods, err := s.K8s.ListPods(ctx, namespace, ""); err == nil {
+		for i := range pods {
+			if o := workloadOwner(pods[i].Labels); o != "" {
+				owners[pods[i].Name] = o
+			}
+		}
+	}
+
 	out := map[string]podUsage{}
 	for pod, usage := range metrics {
-		// Pod names are <deployment>-<replicaset>-<random>; the app is the prefix before
-		// the generated suffixes.
-		app := pod
-		if i := strings.LastIndex(app, "-"); i > 0 {
-			app = app[:i]
-		}
-		if i := strings.LastIndex(app, "-"); i > 0 {
-			app = app[:i]
+		app, ok := owners[pod]
+		if !ok {
+			continue
 		}
 
 		agg := out[app]
@@ -229,6 +240,14 @@ func (s *CostSampler) claimedStorage(ctx context.Context, namespace string) map[
 		}
 	}
 	return out
+}
+
+// workloadOwner is the app or add-on a pod belongs to, from the labels the operator sets.
+func workloadOwner(labels map[string]string) string {
+	if app := labels["kubernetes.getvesta.sh/app"]; app != "" {
+		return app
+	}
+	return labels["kubernetes.getvesta.sh/addon"]
 }
 
 func containerRequests(d *appsv1.Deployment) (cpuMillicores, memoryBytes int64) {

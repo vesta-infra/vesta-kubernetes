@@ -149,6 +149,20 @@ config:
       credentialsSecret: ""
     globalImagePullSecrets: []
 
+  # -- What cost pages price against. Usually set from Settings -> Cost instead; left empty
+  # here so `helm upgrade` does not overwrite what an admin saved there. Set it only to seed
+  # a value at install time. Give a node's price (preferred -- Vesta splits it evenly between
+  # CPU and memory), or per-unit rates:
+  # cost:
+  #   nodeMonthlyCost: 200
+  #   nodeVCPUs: 8
+  #   nodeMemoryGiB: 32
+  #   currency: USD
+  #   # cpuCoreHour: 0.01712
+  #   # memoryGiBHour: 0.00428
+  #   # storageGiBMonth: 0.10
+  cost: {}
+
   # Resource presets apps choose from. Must match defaultPodSizes in
   # api/internal/handlers/apps.go, which is what Vesta falls back to when no VestaConfig
   # exists -- otherwise the sizes on offer depend on whether one happens to be installed.

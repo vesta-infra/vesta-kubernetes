@@ -12,35 +12,29 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
-	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
 )
 
 // ExecWS opens a web terminal to a pod via WebSocket.
 func (h *Handler) ExecWS(c *gin.Context) {
-	appId := c.Param("appId")
-	env := c.Query("environment")
+	targetNS, _, ok := h.appPodTarget(c)
+	if !ok {
+		return
+	}
+	h.serveExec(c, targetNS, appPodSelector(c.Param("appId")))
+}
+
+// serveExec opens a terminal to one of the pods matching selector -- the one named by
+// ?pod=, which must match, or the first.
+func (h *Handler) serveExec(c *gin.Context, targetNS, labelSelector string) {
 	podName := c.Query("pod")
 	container := c.Query("container")
 
-	if env == "" {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "environment query param is required"})
-		return
-	}
-
-	// Resolve the app
-	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId)
-	if err != nil {
-		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
-		return
-	}
-	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
-	project := getNestedString(spec, "project")
-	targetNS := fmt.Sprintf("%s-%s", project, env)
-
-	// If no pod specified, pick the first running pod
-	if podName == "" {
-		labelSelector := fmt.Sprintf("kubernetes.getvesta.sh/app=%s", appId)
+	if podName != "" {
+		if !h.podInSelection(c, targetNS, podName, labelSelector) {
+			return
+		}
+	} else {
 		pods, err := h.K8s.ListPods(c.Request.Context(), targetNS, labelSelector)
 		if err != nil || len(pods) == 0 {
 			c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "no pods found"})

@@ -106,6 +106,10 @@ export default function Layout() {
   const [roleOverride, setRoleOverride] = useState<string | null>(null)
   const storedRole = useUserRole()
   const role = roleOverride ?? storedRole
+  // Below md the sidebar is an off-canvas drawer; it closes on every navigation so a
+  // tap on a nav item lands on the page rather than leaving the menu over it.
+  const [navOpen, setNavOpen] = useState(false)
+  useEffect(() => { setNavOpen(false) }, [location.pathname])
 
   useEffect(() => {
     const token = localStorage.getItem('vesta-token')
@@ -139,9 +143,17 @@ export default function Layout() {
   )?.label || 'Vesta'
 
   return (
-    <div className="h-screen flex bg-surface-0 overflow-hidden">
+    <div className="h-[100dvh] flex bg-surface-0 overflow-hidden">
+      {/* Drawer backdrop (mobile only) */}
+      {navOpen && (
+        <div className="fixed inset-0 z-30 bg-black/60 md:hidden" onClick={() => setNavOpen(false)} aria-hidden="true" />
+      )}
       {/* Sidebar */}
-      <aside className="w-[228px] h-full bg-surface-1/60 backdrop-blur-xl border-r border-border/70 flex flex-col shrink-0 relative overflow-y-auto">
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-[240px] bg-surface-1 md:bg-surface-1/60 backdrop-blur-xl border-r border-border/70 flex flex-col shrink-0 overflow-y-auto transition-transform duration-200 md:relative md:z-auto md:w-[228px] md:h-full md:translate-x-0 ${
+          navOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
         {/* Ambient sidebar glow */}
         <div className="absolute top-0 left-0 w-full h-32 bg-gradient-to-b from-accent/[0.025] to-transparent pointer-events-none" />
 
@@ -248,21 +260,33 @@ export default function Layout() {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 h-full overflow-y-auto relative">
+      <main className="flex-1 min-w-0 h-full overflow-y-auto overflow-x-hidden relative">
         {/* Ambient background effects */}
-        <div className="fixed top-0 right-0 w-[620px] h-[620px] bg-gradient-radial from-accent/[0.025] via-transparent to-transparent pointer-events-none" aria-hidden="true" />
-        <div className="fixed bottom-0 left-1/3 w-[520px] h-[420px] bg-gradient-radial from-status-running/[0.015] via-transparent to-transparent pointer-events-none" aria-hidden="true" />
+        <div className="fixed top-0 right-0 w-[620px] max-w-full h-[620px] bg-gradient-radial from-accent/[0.025] via-transparent to-transparent pointer-events-none" aria-hidden="true" />
+        <div className="fixed bottom-0 left-1/3 w-[520px] max-w-[66%] h-[420px] bg-gradient-radial from-status-running/[0.015] via-transparent to-transparent pointer-events-none" aria-hidden="true" />
 
-        <header className="sticky top-0 z-10 bg-surface-0/90 backdrop-blur-2xl border-b border-border/60 px-8 py-5">
-          <div className="flex items-center justify-between max-w-6xl mx-auto">
-            <h2 className="page-title">{pageTitle}</h2>
+        <header className="sticky top-0 z-10 bg-surface-0/90 backdrop-blur-2xl border-b border-border/60 px-4 py-3 md:px-8 md:py-5">
+          <div className="flex items-center justify-between gap-3 max-w-6xl mx-auto">
+            <div className="flex items-center gap-3 min-w-0">
+              <button
+                type="button"
+                onClick={() => setNavOpen(true)}
+                className="md:hidden -ml-1 p-1.5 rounded-lg text-text-secondary hover:text-text-primary hover:bg-surface-3/60"
+                aria-label="Open navigation"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+                </svg>
+              </button>
+              <h2 className="page-title truncate">{pageTitle}</h2>
+            </div>
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-mono text-text-tertiary/60 tracking-wider">{appVersion}</span>
               <div className="w-1.5 h-1.5 rounded-full bg-status-running shadow-[0_0_6px_rgba(34,197,94,0.4)] animate-glow-pulse" />
             </div>
           </div>
         </header>
-        <div className="max-w-6xl mx-auto px-8 py-8 animate-fade-in">
+        <div className="max-w-6xl mx-auto px-4 py-5 md:px-8 md:py-8 animate-fade-in">
           <UpdateBanner />
           <Outlet />
         </div>

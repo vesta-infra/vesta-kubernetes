@@ -9,13 +9,16 @@ import UIDomainSettings from '../components/UIDomainSettings'
 import { BackupCodes } from '../components/MFAChallenge'
 import SSLProvidersSection from '../components/SSLProviders'
 import SecuritySection from '../components/SecuritySection'
+import CostSettings from '../components/CostSettings'
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'general' | 'teams' | 'users' | 'roles' | 'audit' | 'webhooks' | 'integrations' | 'ssl' | 'security' | 'system'>(() => {
+  const [activeTab, setActiveTab] = useState<'general' | 'teams' | 'users' | 'roles' | 'audit' | 'webhooks' | 'integrations' | 'ssl' | 'security' | 'cost' | 'system'>(() => {
     const params = new URLSearchParams(window.location.search)
     const tab = params.get('tab')
     if (tab === 'integrations') return 'integrations'
     if (tab === 'ssl') return 'ssl'
+    // The cost pages link here when pricing is still the built-in estimate.
+    if (tab === 'cost') return 'cost'
     // The update banner links straight here.
     if (tab === 'system') return 'system'
     return 'general'
@@ -31,6 +34,7 @@ export default function SettingsPage() {
     ...(isAdmin ? [
       { key: 'ssl' as const, label: 'SSL Certificates' },
       { key: 'security' as const, label: 'Security' },
+      { key: 'cost' as const, label: 'Cost' },
       { key: 'system' as const, label: 'System' },
       { key: 'integrations' as const, label: 'Integrations' },
       { key: 'audit' as const, label: 'Audit Log' },
@@ -42,12 +46,12 @@ export default function SettingsPage() {
     <div className="space-y-6">
       <p className="text-sm text-text-secondary">Manage your profile, teams, access, and integrations.</p>
 
-      <div className="flex border-b border-border">
+      <div className="flex border-b border-border overflow-x-auto scrollbar-none">
         {tabs.map((tab) => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
-            className={`px-5 py-3 text-xs font-mono tracking-wider uppercase transition-colors ${
+            className={`shrink-0 whitespace-nowrap px-3 md:px-5 py-3 text-xs font-mono tracking-wider uppercase transition-colors ${
               activeTab === tab.key
                 ? 'text-accent border-b-2 border-accent'
                 : 'text-text-tertiary hover:text-text-secondary'
@@ -114,6 +118,12 @@ export default function SettingsPage() {
       {activeTab === 'security' && isAdmin && (
         <div className="space-y-8">
           <SecuritySection />
+        </div>
+      )}
+
+      {activeTab === 'cost' && isAdmin && (
+        <div className="space-y-8">
+          <CostSettings />
         </div>
       )}
 
@@ -276,7 +286,7 @@ function ChangePasswordSection() {
             required
           />
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="label">New Password</label>
             <input
@@ -415,7 +425,7 @@ function CreateTeamForm({ onClose }: { onClose: () => void }) {
       onSubmit={(e) => { e.preventDefault(); mutation.mutate() }}
       className="bg-surface-1 border border-border rounded-lg p-4 space-y-4 animate-slide-up mb-4"
     >
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Name</label>
           <input value={name} onChange={(e) => setName(e.target.value)} className="input-field" required placeholder="engineering" />
@@ -714,7 +724,7 @@ function SystemVersionSection() {
       </div>
 
       <div className="pt-4 border-t border-border space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-sm text-text-primary">
               {running ? `Upgrading to ${progress?.current?.toVersion}...`
@@ -726,7 +736,7 @@ function SystemVersionSection() {
               {!status?.isRelease && ' · development build, updates are not offered'}
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <button onClick={() => check.mutate()} disabled={check.isPending || !status?.checkEnabled}
                     className="text-xs text-accent hover:text-accent-glow font-mono disabled:opacity-40">
               {check.isPending ? 'Checking...' : 'Check now'}
@@ -1275,7 +1285,7 @@ function RegisterUserForm({ onClose }: { onClose: () => void }) {
       onSubmit={(e) => { e.preventDefault(); mutation.mutate() }}
       className="bg-surface-1 border border-border rounded-lg p-4 space-y-4 animate-slide-up mb-4"
     >
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Username</label>
           <input value={username} onChange={(e) => setUsername(e.target.value)} className="input-field" required placeholder="jdoe" />
@@ -1285,7 +1295,7 @@ function RegisterUserForm({ onClose }: { onClose: () => void }) {
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="input-field" required placeholder="jdoe@example.com" />
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Password</label>
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="input-field" required minLength={8} />
@@ -1554,7 +1564,7 @@ function AuditLogSection() {
       {entries.length === 0 ? (
         <p className="text-sm text-text-tertiary">No audit log entries found</p>
       ) : (
-        <div className="border border-border rounded-lg overflow-hidden">
+        <div className="border border-border rounded-lg overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
               <tr className="bg-surface-1 border-b border-border">
@@ -1894,7 +1904,7 @@ function AddTokenConnectionForm({ onDone }: { onDone: () => void }) {
       onSubmit={e => { e.preventDefault(); create.mutate() }}
       className="rounded-lg border border-border bg-surface-1 p-4 mb-4 space-y-3"
     >
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label className="text-xs text-text-tertiary mb-1 block">Provider</label>
           <select
@@ -1917,7 +1927,7 @@ function AddTokenConnectionForm({ onDone }: { onDone: () => void }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label className="text-xs text-text-tertiary mb-1 block">Server URL</label>
           <input
@@ -1949,7 +1959,7 @@ function AddTokenConnectionForm({ onDone }: { onDone: () => void }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label className="text-xs text-text-tertiary mb-1 block">Access token</label>
           <RevealableInput
@@ -2049,7 +2059,7 @@ function GitHubAppSection() {
 
   return (
     <section className="bg-surface border border-border rounded-lg p-6 space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium text-text-primary">GitHub App</h3>
           <p className="text-xs text-text-tertiary mt-1">Connect a GitHub App for automatic webhook delivery, private repo access, and commit status reporting.</p>
@@ -2067,7 +2077,7 @@ function GitHubAppSection() {
 
       {status?.configured ? (
         <div className="space-y-4">
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <span className="text-[11px] text-text-tertiary uppercase tracking-wider">App Name</span>
               <p className="text-sm text-text-primary mt-1 font-mono">{status.appName || '—'}</p>

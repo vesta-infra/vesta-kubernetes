@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/util/retry"
 
 	"kubernetes.getvesta.sh/api/internal/k8s"
@@ -315,4 +317,115 @@ func (h *Handler) UnbindAddon(c *gin.Context) {
 		map[string]interface{}{"addon": c.Param("name")})
 
 	c.JSON(http.StatusOK, gin.H{"status": "unbound", "app": appID})
+}
+
+// Logs and terminal for an add-on.
+//
+// An add-on runs as a StatefulSet in each environment it targets, labelled with
+// kubernetes.getvesta.sh/addon=<name>. The log and exec machinery is the same one apps use;
+// only how the pods are found differs.
+
+// addonPodTarget decides where an add-on's pods are, from the VestaAddon itself. Pure, so
+// the two refusals that matter -- another project's add-on, and an environment it does not
+// run in -- can be tested without a cluster.
+func addonPodTarget(addon *unstructured.Unstructured, projectID, environment string) (namespace, selector string, status int, message string) {
+	// The route's project is what RequireAccess authorised. An add-on is addressed by name
+	// alone, so without this a member of one project could read another's database logs.
+	if addon == nil || addon.GetLabels()["kubernetes.getvesta.sh/project"] != projectID {
+		return "", "", http.StatusNotFound, "add-on not found"
+	}
+	if environment == "" {
+		return "", "", http.StatusBadRequest, "environment is required: an add-on runs separately in each environment"
+	}
+	spec, _, _ := unstructuredNestedMap(addon.Object, "spec")
+	if pinned := getNestedString(spec, "environment"); pinned != "" && pinned != environment {
+		return "", "", http.StatusBadRequest, fmt.Sprintf("add-on %s runs only in %s", addon.GetName(), pinned)
+	}
+	return fmt.Sprintf("%s-%s", projectID, environment),
+		fmt.Sprintf("kubernetes.getvesta.sh/addon=%s", addon.GetName()),
+		http.StatusOK, ""
+}
+
+// addonTarget resolves the request's add-on, writing the error response itself.
+func (h *Handler) addonTarget(c *gin.Context) (namespace, selector string, ok bool) {
+	addon, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAddonGVR, vestaSystemNS, c.Param("name"))
+	if err != nil {
+		addon = nil
+	}
+	namespace, selector, status, message := addonPodTarget(addon, c.Param("projectId"), c.Query("environment"))
+	if status != http.StatusOK {
+		c.JSON(status, models.ErrorResponse{Code: status, Message: message})
+		return "", "", false
+	}
+	return namespace, selector, true
+}
+
+// ListAddonPods lists an add-on's pods in one environment, for choosing one to open a
+// terminal on. Apps get theirs from the metrics endpoint, which add-ons have no use for.
+func (h *Handler) ListAddonPods(c *gin.Context) {
+	namespace, selector, ok := h.addonTarget(c)
+	if !ok {
+		return
+	}
+	pods, err := h.K8s.ListPods(c.Request.Context(), namespace, selector)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	type container struct {
+		Name string `json:"name"`
+	}
+	items := make([]gin.H, 0, len(pods))
+	now := time.Now()
+	for _, pod := range pods {
+		containers := make([]container, 0, len(pod.Spec.Containers))
+		for _, ct := range pod.Spec.Containers {
+			containers = append(containers, container{Name: ct.Name})
+		}
+		var restarts int32
+		for _, cs := range pod.Status.ContainerStatuses {
+			restarts += cs.RestartCount
+		}
+		age := ""
+		if pod.Status.StartTime != nil {
+			age = formatDuration(now.Sub(pod.Status.StartTime.Time))
+		}
+		items = append(items, gin.H{
+			"name":       pod.Name,
+			"phase":      string(pod.Status.Phase),
+			"restarts":   restarts,
+			"age":        age,
+			"containers": containers,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"pods": items, "namespace": namespace})
+}
+
+// StreamAddonLogs returns an add-on's recent logs in one environment.
+func (h *Handler) StreamAddonLogs(c *gin.Context) {
+	namespace, selector, ok := h.addonTarget(c)
+	if !ok {
+		return
+	}
+	h.serveLogs(c, c.Query("environment"), namespace, selector)
+}
+
+// StreamAddonLogsWS streams an add-on's logs live.
+func (h *Handler) StreamAddonLogsWS(c *gin.Context) {
+	namespace, selector, ok := h.addonTarget(c)
+	if !ok {
+		return
+	}
+	h.serveLogsWS(c, namespace, selector)
+}
+
+// AddonExecWS opens a terminal in an add-on's pod. Gated like its credentials, because a
+// shell in a database container is a way to read every row in it.
+func (h *Handler) AddonExecWS(c *gin.Context) {
+	namespace, selector, ok := h.addonTarget(c)
+	if !ok {
+		return
+	}
+	h.serveExec(c, namespace, selector)
 }

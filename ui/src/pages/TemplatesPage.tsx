@@ -24,9 +24,9 @@ export default function TemplatesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-text-secondary">One-click deploys for databases, caches, and tooling.</p>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -163,8 +163,8 @@ function DeployTemplateModal({ templateId, template, onClose }: {
   })
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="card p-6 w-full max-w-md animate-slide-up" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div className="card p-5 sm:p-6 w-full max-w-md max-h-[90dvh] overflow-y-auto animate-slide-up" onClick={(e) => e.stopPropagation()}>
         <h3 className="section-title mb-4">Deploy {templateName}</h3>
         <form onSubmit={(e) => { e.preventDefault(); deployMutation.mutate() }} className="space-y-4">
           <div>

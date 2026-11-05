@@ -24,12 +24,12 @@ export default function SecretsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex border-b border-border mb-2">
+      <div className="flex border-b border-border overflow-x-auto scrollbar-none mb-2">
         {(['registry', 'shared', 'app'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-5 py-3 text-xs font-mono tracking-wider uppercase transition-colors ${
+            className={`shrink-0 whitespace-nowrap px-3 md:px-5 py-3 text-xs font-mono tracking-wider uppercase transition-colors ${
               activeTab === tab
                 ? 'text-accent border-b-2 border-accent'
                 : 'text-text-tertiary hover:text-text-secondary'
@@ -46,7 +46,7 @@ export default function SecretsPage() {
 
       {activeTab === 'app' && (
         <>
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-sm text-text-secondary">
             {data?.total ?? 0} secret{(data?.total ?? 0) !== 1 ? 's' : ''}
@@ -137,7 +137,7 @@ function SecretItem({ secret: s, isAdmin, onDelete }: { secret: any; isAdmin: bo
 
   return (
     <div className="card-hover px-5 py-4 group">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-4">
           <div className="w-9 h-9 rounded-lg bg-surface-3 flex items-center justify-center">
             <svg className="w-4 h-4 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -210,7 +210,7 @@ function SecretItem({ secret: s, isAdmin, onDelete }: { secret: any; isAdmin: bo
       )}
 
       {confirmOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setConfirmOpen(false)}>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={() => setConfirmOpen(false)}>
           <div className="card p-6 w-full max-w-sm animate-slide-up" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 rounded-xl bg-yellow-500/10 flex items-center justify-center">
@@ -307,7 +307,7 @@ function SharedSecretsSection() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-sm text-text-secondary">
             Project-scoped secrets shared across multiple apps.
@@ -316,7 +316,7 @@ function SharedSecretsSection() {
             Bind shared secrets to any app in the same project — all keys injected as env vars.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {(projects?.items?.length ?? 0) > 0 && (
             <select
               value={selectedProject}
@@ -343,7 +343,7 @@ function SharedSecretsSection() {
       {showCreate && (
         <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate() }} className="card p-5 space-y-4 animate-slide-up">
           <h3 className="section-title">Create Shared Secret</h3>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="label">Project</label>
               <select value={effectiveCreateProject} onChange={(e) => setCreateProject(e.target.value)} className="input-field" required>
@@ -482,7 +482,7 @@ function SharedSecretItem({ secret: s, projectId, isAdmin, onDelete, showProject
 
   return (
     <div className="card-hover px-5 py-4 group">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-4">
           <div className="w-9 h-9 rounded-lg bg-accent/10 flex items-center justify-center">
             <svg className="w-4 h-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -688,7 +688,7 @@ function RegistrySecretsSection() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-sm text-text-secondary">
             Docker registry credentials for pulling private images.
@@ -710,7 +710,7 @@ function RegistrySecretsSection() {
       {showCreate && (
         <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate() }} className="card p-5 space-y-4 animate-slide-up">
           <h3 className="section-title">Add Registry Credential</h3>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="label">Name</label>
               <input value={name} onChange={(e) => setName(e.target.value)} className="input-field" placeholder="ghcr-creds" required />
@@ -724,7 +724,7 @@ function RegistrySecretsSection() {
               </p>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="label">Type</label>
               <select value={flavor} onChange={(e) => setFlavor(e.target.value)} className="input-field text-xs">
@@ -739,7 +739,7 @@ function RegistrySecretsSection() {
               </p>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="label">Scope</label>
               <select value={effectiveScope} onChange={(e) => setScope(e.target.value)} className="input-field text-xs">
@@ -779,7 +779,7 @@ function RegistrySecretsSection() {
               </div>
             )}
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="label">Username</label>
               <input value={username} onChange={(e) => setUsername(e.target.value)} className="input-field" placeholder="username" required />
@@ -980,7 +980,7 @@ function CreateSecretForm({ apps, onClose }: { apps: any[]; onClose: () => void 
     <form onSubmit={handleSubmit} className="card p-5 space-y-4 animate-slide-up">
       <h3 className="section-title">Create Secret</h3>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">App</label>
           <select
@@ -1015,7 +1015,7 @@ function CreateSecretForm({ apps, onClose }: { apps: any[]; onClose: () => void 
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Name</label>
           <input value={name} onChange={(e) => setName(e.target.value)} className="input-field" required placeholder="my-secret" />
@@ -1100,7 +1100,7 @@ function CreateSecretForm({ apps, onClose }: { apps: any[]; onClose: () => void 
 
         {inputMode === 'env' && (
           <div className="space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-[11px] text-text-tertiary">Paste .env content or upload a file. Format: KEY=value (one per line, # comments ignored).</p>
               <button
                 type="button"

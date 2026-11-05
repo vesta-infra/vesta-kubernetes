@@ -11,6 +11,7 @@ import RevealableInput from '../components/RevealableInput'
 import AppDiagnostics from '../components/AppDiagnostics'
 import { ImageRepositoryInput, ImageTagInput } from '../components/RegistryPicker'
 import { BranchPicker } from '../components/BranchPicker'
+import { PodLogs, PodTerminal, type PodSource } from '../components/PodViewers'
 
 // The cert-manager annotation that used to be the only way to pick an issuer. It is now
 // owned by the provider selector: the operator stamps it last, so a copy left in the raw
@@ -197,7 +198,7 @@ export default function AppDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-4">
           <Link to={appsPath} className="text-text-tertiary hover:text-text-secondary transition-colors">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -221,7 +222,7 @@ export default function AppDetailPage() {
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {role !== 'viewer' && (
           <button
             onClick={() => setEditing(!editing)}
@@ -318,12 +319,12 @@ export default function AppDetailPage() {
         <EditAppForm appId={appId!} app={app} onClose={() => setEditing(false)} />
       )}
 
-      <div className="flex border-b border-border">
+      <div className="flex border-b border-border overflow-x-auto scrollbar-none">
         {(['overview', 'builds', ...(role !== 'viewer' ? ['secrets' as const, 'cronjobs' as const, 'logs' as const, 'terminal' as const] : ['logs' as const]), 'metrics', 'files', 'schedule'] as const).map((tab) => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-5 py-3 text-xs font-mono tracking-wider uppercase transition-colors ${
+            className={`shrink-0 whitespace-nowrap px-3 md:px-5 py-3 text-xs font-mono tracking-wider uppercase transition-colors ${
               activeTab === tab
                 ? 'text-accent border-b-2 border-accent'
                 : 'text-text-tertiary hover:text-text-secondary'
@@ -341,13 +342,13 @@ export default function AppDetailPage() {
 
             <section className="card p-5">
               <h3 className="section-title mb-4">Status</h3>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
                 <InfoItem label="Phase">
                   <StatusBadge phase={phase} />
                 </InfoItem>
                 <InfoItem label="URL">
                   {app.status?.url ? (
-                    <a href={app.status.url} target="_blank" rel="noopener noreferrer" className="text-accent text-sm hover:underline">
+                    <a href={app.status.url} target="_blank" rel="noopener noreferrer" className="text-accent text-sm hover:underline break-all">
                       {app.status.url}
                     </a>
                   ) : (
@@ -483,16 +484,16 @@ export default function AppDetailPage() {
                       <div className="space-y-1.5">
                         <div className="flex items-center gap-2">
                           <span className="text-[11px] text-text-tertiary w-28 flex-shrink-0">Service</span>
-                          <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all">{svcName}</code>
+                          <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all break-all">{svcName}</code>
                         </div>
                         <div className="flex items-center gap-2">
                           <span className="text-[11px] text-text-tertiary w-28 flex-shrink-0">Namespace DNS</span>
-                          <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all">{svcName}.{namespace}</code>
+                          <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all break-all">{svcName}.{namespace}</code>
                         </div>
                         {dnsRows.map((row, i) => (
                           <div key={row.key} className="flex items-center gap-2">
                             <span className="text-[11px] text-text-tertiary w-28 flex-shrink-0">{i === 0 ? 'Cluster DNS' : ''}</span>
-                            <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all">{row.value}</code>
+                            <code className="text-xs text-accent bg-surface-3 px-2 py-0.5 rounded font-mono select-all break-all">{row.value}</code>
                             {row.name && <span className="text-[11px] text-text-tertiary font-mono">{row.name}</span>}
                           </div>
                         ))}
@@ -772,7 +773,7 @@ export default function AppDetailPage() {
                   <div className="space-y-2">
                     {app.spec.cronjobs.map((cj: any) => (
                       <div key={cj.name} className={`px-3 py-2 bg-surface-1 border border-border rounded-lg ${cj.enabled === false ? 'opacity-60' : ''}`}>
-                        <div className="flex items-center justify-between">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
                           <div className="flex items-center gap-3">
                             <span className="text-xs font-mono text-accent">{cj.name}</span>
                             <span className="text-[11px] font-mono text-text-tertiary bg-surface-3 px-2 py-0.5 rounded">{cj.schedule}</span>
@@ -1083,7 +1084,6 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   const queryClient = useQueryClient()
   const [imageRepo, setImageRepo] = useState(app.spec?.image?.repository || '')
   const [pullPolicy, setPullPolicy] = useState(app.spec?.image?.pullPolicy || 'IfNotPresent')
-  const [port, setPort] = useState(String(app.spec?.runtime?.port || 3000))
   const [startCommand, setStartCommand] = useState(app.spec?.runtime?.command || '')
   const [startArgs, setStartArgs] = useState<string>((app.spec?.runtime?.args || []).join('\n'))
   // The app-level domain is no longer editable here: domains belong to environments, which
@@ -1133,7 +1133,10 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         nodePort: String(p.nodePort || ''),
       }))
     }
-    return []
+    // An app with no service.ports is published by the operator on 80 -> runtime.port.
+    // Show that mapping as a row instead of hiding it behind a single "Port" field, so
+    // the 80 is visible and saving unchanged keeps the Service exactly as it was.
+    return [{ name: 'http', port: '80', targetPort: String(app.spec?.runtime?.port || 3000), protocol: 'TCP', nodePort: '' }]
   })
 
   // Kubernetes rejects a Deployment whose container ports repeat a name, and it
@@ -1162,7 +1165,16 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
   }, [servicePorts])
   const hasServicePortErrors = servicePortErrors.some(Boolean)
 
-  const useServiceConfig = servicePorts.length > 0
+  // The port the ingress routes to (named "http", else the first -- same rule as the
+  // operator). Its container port doubles as runtime.port, which the operator uses as
+  // the health-check port when none is set; writing 0 there silently dropped probes.
+  // Column template for the ports grid from sm up. Spelled out in full so Tailwind's
+  // scanner sees each class.
+  const portGridCols = serviceType === 'NodePort'
+    ? 'sm:grid-cols-[1.2fr_1fr_1fr_88px_1fr_40px]'
+    : 'sm:grid-cols-[1.2fr_1fr_1fr_88px_40px]'
+  const primaryPort = servicePorts.find(p => p.name.trim() === 'http') || servicePorts[0]
+  const primaryTargetPort = primaryPort ? (primaryPort.targetPort || primaryPort.port) : ''
 
   // Health check config
   const [hcEnabled, setHcEnabled] = useState(!!app.spec?.healthCheck)
@@ -1326,21 +1338,16 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       args: argsList.length > 0 ? argsList : null,
     }
 
-    if (useServiceConfig) {
-      patch.runtime = { ...preservedRuntime, ...commandFields, port: 0, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
-      patch.service = {
-        type: serviceType,
-        ports: servicePorts.filter(p => p.name && p.port).map(p => ({
-          name: p.name,
-          port: parseInt(p.port),
-          ...(p.targetPort && { targetPort: parseInt(p.targetPort) }),
-          protocol: p.protocol || 'TCP',
-          ...(serviceType === 'NodePort' && p.nodePort && { nodePort: parseInt(p.nodePort) }),
-        })),
-      }
-    } else {
-      patch.runtime = { ...preservedRuntime, ...commandFields, port: Number.parseInt(port) || 3000, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
-      patch.service = null
+    patch.runtime = { ...preservedRuntime, ...commandFields, port: Number.parseInt(primaryTargetPort) || 3000, ...(validVolumes.length > 0 && { volumes: validVolumes }) }
+    patch.service = {
+      type: serviceType,
+      ports: servicePorts.filter(p => p.name && p.port).map(p => ({
+        name: p.name,
+        port: parseInt(p.port),
+        ...(p.targetPort && { targetPort: parseInt(p.targetPort) }),
+        protocol: p.protocol || 'TCP',
+        ...(serviceType === 'NodePort' && p.nodePort && { nodePort: parseInt(p.nodePort) }),
+      })),
     }
 
     // Ingress
@@ -1526,8 +1533,8 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
     <form onSubmit={handleSubmit} className="card p-5 space-y-5 animate-slide-up">
       <h3 className="section-title">Edit App</h3>
 
-      <div className="grid grid-cols-3 gap-4">
-        <div className="col-span-2">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="sm:col-span-2">
           <label className="label">Image Repository</label>
           <ImageRepositoryInput
             secretName={pullSecrets[0]}
@@ -1557,7 +1564,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             {startCommand || startArgs ? (startCommand || 'image default') : 'image default'}
           </span>
         </summary>
-        <div className="grid grid-cols-2 gap-4 mt-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-3">
           <div>
             <label className="label">Start command</label>
             <input value={startCommand} onChange={e => setStartCommand(e.target.value)} className="input-field font-mono" placeholder="e.g. blnk  or  npm start" />
@@ -1572,23 +1579,13 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       </details>
 
       <div className="space-y-3">
-        <div className="flex items-center justify-between">
+        <div>
           <label className="label mb-0">Networking</label>
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={useServiceConfig}
-              onChange={(e) => {
-                if (e.target.checked) {
-                  setServicePorts([{ name: 'http', port: port || '80', targetPort: port || '3000', protocol: 'TCP', nodePort: '' }])
-                } else {
-                  setServicePorts([])
-                }
-              }}
-              className="w-4 h-4 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
-            />
-            <span className="text-xs text-text-secondary">Multi-port / Service config</span>
-          </label>
+          <p className="text-[11px] text-text-tertiary mt-1">
+            <span className="text-text-secondary">Port</span> is what other services and the ingress connect to;{' '}
+            <span className="text-text-secondary">Target Port</span> is what your container listens on.
+            The ingress uses the port named <code>http</code>, or the first port. Domains and TLS are set per environment below.
+          </p>
         </div>
 
         {/* The app-level domain is no longer editable — domains belong to environments —
@@ -1621,22 +1618,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           </div>
         )}
 
-        {!useServiceConfig ? (
-          // One field on its own, so it takes the width of a port number rather than a
-          // third of the form. It shared a row with the app-level domain until that moved
-          // to the environments.
-          <div className="flex items-end gap-3">
-            <div>
-              <label className="label">Port</label>
-              <input type="number" value={port} onChange={e => setPort(e.target.value)} className="input-field w-32" />
-            </div>
-            <p className="text-[11px] text-text-tertiary pb-2">
-              The port your app listens on. Domains and TLS are set per environment below.
-            </p>
-          </div>
-        ) : (
-          <>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
                 <label className="label">Service Type</label>
                 <select value={serviceType} onChange={e => setServiceType(e.target.value)} className="input-field">
@@ -1645,61 +1627,74 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                   <option value="LoadBalancer">LoadBalancer</option>
                 </select>
               </div>
-
             </div>
 
-            <div className="border border-border rounded-lg overflow-hidden">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="bg-surface-1 text-text-tertiary">
-                    <th className="text-left px-3 py-2 font-medium">Name</th>
-                    <th className="text-left px-3 py-2 font-medium">Port</th>
-                    <th className="text-left px-3 py-2 font-medium">Target Port</th>
-                    <th className="text-left px-3 py-2 font-medium">Protocol</th>
-                    {serviceType === 'NodePort' && <th className="text-left px-3 py-2 font-medium">Node Port</th>}
-                    <th className="w-10"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {servicePorts.map((sp, i) => (
-                    <tr key={i} className="border-t border-border align-top">
-                      <td className="px-2 py-1">
+            {/* A grid rather than a table: on a phone each port becomes a labelled 2-column
+                card, so Port and Target Port -- the mapping this section exists to show --
+                stay side by side instead of scrolling out of view. From sm up it is one row
+                per port under a shared header. */}
+            <div className="border border-border rounded-lg text-xs divide-y divide-border">
+              <div className={`hidden sm:grid ${portGridCols} gap-2 px-3 py-2 bg-surface-1 text-text-tertiary font-medium rounded-t-lg`}>
+                <span>Name</span>
+                <span>Port</span>
+                <span>Target Port</span>
+                <span>Protocol</span>
+                {serviceType === 'NodePort' && <span>Node Port</span>}
+                <span />
+              </div>
+              {servicePorts.map((sp, i) => {
+                const set = (field: keyof typeof sp) => (e: { target: { value: string } }) => {
+                  const u = [...servicePorts]; u[i] = { ...sp, [field]: e.target.value }; setServicePorts(u)
+                }
+                return (
+                  <div key={i} className="px-2 py-2 sm:py-1">
+                    <div className={`grid grid-cols-2 ${portGridCols} gap-2 items-start`}>
+                      <div className="col-span-2 sm:col-span-1">
+                        <span className="sm:hidden block text-[10px] text-text-tertiary mb-1">Name</span>
                         <input
                           value={sp.name}
-                          onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, name: e.target.value }; setServicePorts(u) }}
+                          onChange={set('name')}
                           className={`input-field text-xs ${servicePortErrors[i] ? '!border-status-failed/60 focus:!border-status-failed/60 focus:!ring-status-failed/10' : ''}`}
                           placeholder="http"
+                          aria-label="Name"
                           aria-invalid={!!servicePortErrors[i]}
                         />
-                      </td>
-                      <td className="px-2 py-1"><input type="number" value={sp.port} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, port: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="80" /></td>
-                      <td className="px-2 py-1"><input type="number" value={sp.targetPort} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, targetPort: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="3000" /></td>
-                      <td className="px-2 py-1">
-                        <select value={sp.protocol} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, protocol: e.target.value }; setServicePorts(u) }} className="input-field text-xs">
+                      </div>
+                      <div>
+                        <span className="sm:hidden block text-[10px] text-text-tertiary mb-1">Port</span>
+                        <input type="number" value={sp.port} onChange={set('port')} className="input-field text-xs" placeholder="80" aria-label="Port" />
+                      </div>
+                      <div>
+                        <span className="sm:hidden block text-[10px] text-text-tertiary mb-1">Target Port</span>
+                        <input type="number" value={sp.targetPort} onChange={set('targetPort')} className="input-field text-xs" placeholder="3000" aria-label="Target Port" />
+                      </div>
+                      <div>
+                        <span className="sm:hidden block text-[10px] text-text-tertiary mb-1">Protocol</span>
+                        <select value={sp.protocol} onChange={set('protocol')} className="input-field text-xs" aria-label="Protocol">
                           <option value="TCP">TCP</option>
                           <option value="UDP">UDP</option>
                         </select>
-                      </td>
+                      </div>
                       {serviceType === 'NodePort' && (
-                        <td className="px-2 py-1"><input type="number" value={sp.nodePort} onChange={e => { const u = [...servicePorts]; u[i] = { ...sp, nodePort: e.target.value }; setServicePorts(u) }} className="input-field text-xs" placeholder="30000-32767" /></td>
+                        <div>
+                          <span className="sm:hidden block text-[10px] text-text-tertiary mb-1">Node Port</span>
+                          <input type="number" value={sp.nodePort} onChange={set('nodePort')} className="input-field text-xs" placeholder="30000-32767" aria-label="Node Port" />
+                        </div>
                       )}
-                      <td className="px-2 py-1">
+                      <div className={`flex justify-end sm:justify-center sm:pt-2 ${serviceType === 'NodePort' ? 'col-span-2' : ''} sm:col-span-1`}>
                         {servicePorts.length > 1 && (
-                          <button type="button" onClick={() => setServicePorts(servicePorts.filter((_, j) => j !== i))} className="text-text-tertiary hover:text-status-failed transition-colors">×</button>
+                          <button type="button" onClick={() => setServicePorts(servicePorts.filter((_, j) => j !== i))} className="text-text-tertiary hover:text-status-failed transition-colors" aria-label={`Remove port ${i + 1}`}>
+                            <span className="sm:hidden">Remove</span><span className="hidden sm:inline">×</span>
+                          </button>
                         )}
-                      </td>
-                    </tr>
-                  )).flatMap((row, i) => servicePortErrors[i]
-                    ? [row, (
-                        <tr key={`err-${i}`}>
-                          <td colSpan={serviceType === 'NodePort' ? 6 : 5} className="px-3 pb-2 pt-0">
-                            <span className="text-[11px] text-status-failed">{servicePortErrors[i]}</span>
-                          </td>
-                        </tr>
-                      )]
-                    : [row])}
-                </tbody>
-              </table>
+                      </div>
+                    </div>
+                    {servicePortErrors[i] && (
+                      <p className="text-[11px] text-status-failed px-1 pt-1">{servicePortErrors[i]}</p>
+                    )}
+                  </div>
+                )
+              })}
             </div>
             <button
               type="button"
@@ -1714,8 +1709,6 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
             >
               + Add Port
             </button>
-          </>
-        )}
       </div>
 
       <div>
@@ -1748,7 +1741,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
               {hcType !== 'exec' && (
                 <div>
                   <label className="text-xs text-text-tertiary">Port</label>
-                  <input type="number" value={hcPort} onChange={(e) => setHcPort(e.target.value)} className="input-field w-20 mt-1" placeholder={port} />
+                  <input type="number" value={hcPort} onChange={(e) => setHcPort(e.target.value)} className="input-field w-20 mt-1" placeholder={primaryTargetPort} />
                 </div>
               )}
               {hcType === 'exec' && (
@@ -1807,8 +1800,8 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                 <span className="text-sm font-mono text-accent">{envName}</span>
                 <div className="mt-3 mb-2 p-2.5 rounded-md border border-accent/20 bg-accent/5">
                   <label className="text-xs font-medium text-accent">Image Tag</label>
-                  <div className="flex gap-2 mt-1.5">
-                    <div className="flex-1">
+                  <div className="flex flex-col sm:flex-row gap-2 mt-1.5">
+                    <div className="flex-1 min-w-0">
                       <ImageRepositoryInput
                         secretName={pullSecrets[0]}
                         value={cfg.imageRepo}
@@ -1817,7 +1810,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                         placeholder={imageRepo || 'repository (inherits from app)'}
                       />
                     </div>
-                    <div className="w-44">
+                    <div className="w-full sm:w-44">
                       {/* Tags come from this environment's own repository when it overrides
                           one, and from the app's otherwise -- which is what the field
                           inherits when left blank. */}
@@ -1958,7 +1951,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                     </select>
                   </div>
                   {!cfg.podSize && (
-                  <div className="w-full mt-2 grid grid-cols-4 gap-2">
+                  <div className="w-full mt-2 grid grid-cols-2 sm:grid-cols-4 gap-2">
                     <div>
                       <label className="text-[10px] text-text-tertiary">CPU Request</label>
                       <input
@@ -1995,7 +1988,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                         placeholder="256Mi"
                       />
                     </div>
-                    <div className="col-span-4 flex gap-1.5">
+                    <div className="col-span-2 sm:col-span-4 flex flex-wrap gap-1.5">
                       {[
                         { label: 'Small', cpu: '100m', cpuL: '250m', mem: '128Mi', memL: '256Mi' },
                         { label: 'Medium', cpu: '250m', cpuL: '500m', mem: '256Mi', memL: '512Mi' },
@@ -2200,7 +2193,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
       {/* Git Source */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <label className="label mb-0">Git Source</label>
           {!gitRepo && (
             <button type="button" onClick={() => setGitRepo('org/repo')} className="text-xs text-accent hover:text-accent-glow">+ Link Repository</button>
@@ -2208,7 +2201,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
         </div>
         {gitRepo && (
           <div className="rounded-lg border border-border bg-surface-1 p-4 space-y-3">
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="text-xs text-text-tertiary mb-1 block">Provider</label>
                 <select value={gitProvider} onChange={e => setGitProvider(e.target.value)} className="input-field text-xs w-full">
@@ -2217,7 +2210,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                   <option value="bitbucket">Bitbucket</option>
                 </select>
               </div>
-              <div className="col-span-2">
+              <div className="sm:col-span-2">
                 <label className="text-xs text-text-tertiary mb-1 block">Repository</label>
                 {repos.length > 0 ? (
                   <div className="space-y-1.5">
@@ -2258,7 +2251,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                 )}
               </div>
             </div>
-            <div className={`grid ${ghStatus?.configured ? 'grid-cols-2' : 'grid-cols-3'} gap-3`}>
+            <div className={`grid ${ghStatus?.configured ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-1 sm:grid-cols-3'} gap-3`}>
               <div>
                 <label className="text-xs text-text-tertiary mb-1 block">Branch</label>
                 <BranchPicker
@@ -2300,7 +2293,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       {/* Build Strategy */}
       <div className="space-y-3">
         <label className="label">Build Strategy</label>
-        <div className="grid grid-cols-5 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
           {[
             { value: '', label: 'None', desc: 'Pre-built image' },
             { value: 'dockerfile', label: 'Dockerfile', desc: 'Kaniko build' },
@@ -2392,11 +2385,11 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       </div>
 
       <div className="flex items-center gap-3 pt-1">
-        <button type="submit" disabled={mutation.isPending || (useServiceConfig && hasServicePortErrors)} className="btn-primary">
+        <button type="submit" disabled={mutation.isPending || hasServicePortErrors} className="btn-primary">
           {mutation.isPending ? 'Saving...' : 'Save Changes'}
         </button>
         <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
-        {useServiceConfig && hasServicePortErrors && (
+        {hasServicePortErrors && (
           <span className="text-xs text-status-failed">Fix the service port errors above to save.</span>
         )}
       </div>
@@ -2557,7 +2550,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-sm text-text-secondary">
             {cronjobs.length} cron job{cronjobs.length !== 1 ? 's' : ''}
@@ -2582,7 +2575,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
       {showAdd && (
         <form onSubmit={handleSubmit} className="card p-5 space-y-4 animate-slide-up">
           <h3 className="section-title">{editingIndex !== null ? 'Edit Cron Job' : 'Add Cron Job'}</h3>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="label">Name</label>
               <input value={name} onChange={e => setName(e.target.value)} placeholder="cleanup" className="input-field font-mono text-xs" required disabled={editingIndex !== null} />
@@ -2625,7 +2618,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
               </select>
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="label">Restart Policy</label>
               <select value={restartPolicy} onChange={e => setRestartPolicy(e.target.value)} className="input-field text-xs">
@@ -2745,7 +2738,7 @@ function AppCronjobs({ appId, app, environments }: { appId: string; app: any; en
         <div className="space-y-2">
           {cronjobs.map((cj: any, i: number) => (
             <div key={cj.name} className={`card-hover px-5 py-4 group ${cj.enabled === false ? 'opacity-60' : ''}`}>
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-4 min-w-0">
                   <div className="w-9 h-9 rounded-lg bg-surface-3 flex items-center justify-center flex-shrink-0">
                     <svg className="w-4 h-4 text-text-tertiary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -2932,7 +2925,7 @@ function RateLimitSection({ appId, environments, role }: { appId: string; enviro
       )}
       {editing && (
         <div className="space-y-3">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="label">Requests/sec</label>
               <input type="number" min="0" value={rps} onChange={e => setRps(e.target.value)} placeholder="Unlimited" className="input-field font-mono text-xs" />
@@ -3026,7 +3019,7 @@ function PodFileBrowser({ appId, environments, selectedEnv, onEnvChange }: { app
       )}
 
       {pod && (
-        <div className="grid grid-cols-3 gap-4" style={{ minHeight: 400 }}>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4" style={{ minHeight: 400 }}>
           {/* File tree panel */}
           <div className="card overflow-hidden">
             {/* Breadcrumbs */}
@@ -3074,7 +3067,7 @@ function PodFileBrowser({ appId, environments, selectedEnv, onEnvChange }: { app
           </div>
 
           {/* File content panel */}
-          <div className="col-span-2 card overflow-hidden">
+          <div className="md:col-span-2 card overflow-hidden">
             {!selectedFile && (
               <div className="flex items-center justify-center h-full text-sm text-text-tertiary">
                 Select a file to view
@@ -3188,455 +3181,25 @@ function CloneAppModal({ appName, isPending, error, onClone, onClose }: {
   )
 }
 
-const POD_LOG_COLORS = ['#56d4dd', '#e5c07b', '#98c379', '#c678dd', '#d19a66', '#61afef']
-
-function PodAge({ age, startedAt }: { age?: string; startedAt?: string }) {
-  if (!age) return null
-  return (
-    <span
-      className="flex items-center gap-1 text-[11px] text-text-tertiary"
-      title={startedAt ? `Started ${new Date(startedAt).toLocaleString()}` : undefined}
-    >
-      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 2m6-2a9 9 0 11-18 0 9 9 0 0118 0z" />
-      </svg>
-      <span className="font-mono">{age}</span>
-    </span>
-  )
-}
-
-function AppLogs({ appId, environments, selectedEnv, onEnvChange }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
-  const env = selectedEnv || environments[0] || ''
-  const setEnv = onEnvChange
-  const [tail, setTail] = useState(100)
-  const [previous, setPrevious] = useState(false)
-  const [autoRefresh, setAutoRefresh] = useState(false)
-  const [unified, setUnified] = useState(false)
-  const [liveMode, setLiveMode] = useState(false)
-  const [liveLines, setLiveLines] = useState<{ pod: string; line: string }[]>([])
-  const [wsConnected, setWsConnected] = useState(false)
-  const wsRef = useRef<WebSocket | null>(null)
-  const logEndRef = useRef<HTMLDivElement>(null)
-
-  const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ['appLogs', appId, env, tail, previous],
-    queryFn: () => api.getAppLogs(appId, env, { tail, previous }),
-    enabled: !!env && !liveMode,
-    refetchInterval: autoRefresh ? 5000 : false,
-  })
-
-  // WebSocket streaming
-  useEffect(() => {
-    if (!liveMode || !env) {
-      if (wsRef.current) {
-        wsRef.current.close()
-        wsRef.current = null
-        setWsConnected(false)
-      }
-      return
-    }
-
-    const token = localStorage.getItem('vesta-token')
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${proto}//${window.location.host}/api/v1/apps/${appId}/logs/ws?environment=${encodeURIComponent(env)}&tail=${tail}&token=${encodeURIComponent(token || '')}`
-    const ws = new WebSocket(wsUrl)
-    wsRef.current = ws
-    setLiveLines([])
-
-    ws.onopen = () => setWsConnected(true)
-    ws.onclose = () => setWsConnected(false)
-    ws.onerror = () => setWsConnected(false)
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data)
-        if (msg.type === 'log') {
-          setLiveLines(prev => {
-            const next = [...prev, { pod: msg.pod, line: msg.line }]
-            return next.length > 2000 ? next.slice(-1500) : next
-          })
-        }
-      } catch { /* ignore */ }
-    }
-
-    return () => {
-      ws.close()
-      wsRef.current = null
-      setWsConnected(false)
-    }
-  }, [liveMode, env, appId, tail])
-
-  useEffect(() => {
-    if ((data || liveLines.length > 0) && logEndRef.current) {
-      logEndRef.current.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [data, liveLines])
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="section-title">Logs</h3>
-        <div className="flex items-center gap-2">
-          {env && (
-            <>
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoRefresh}
-                  onChange={(e) => setAutoRefresh(e.target.checked)}
-                  className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
-                  disabled={liveMode}
-                />
-                <span className="text-[11px] text-text-tertiary">Auto-refresh</span>
-              </label>
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={liveMode}
-                  onChange={(e) => { setLiveMode(e.target.checked); if (e.target.checked) setAutoRefresh(false) }}
-                  className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
-                />
-                <span className="text-[11px] text-text-tertiary flex items-center gap-1">
-                  Live
-                  {liveMode && wsConnected && <span className="inline-block w-1.5 h-1.5 rounded-full bg-status-running animate-glow-pulse" />}
-                  {liveMode && !wsConnected && <span className="inline-block w-1.5 h-1.5 rounded-full bg-status-failed" />}
-                </span>
-              </label>
-              <button
-                onClick={() => refetch()}
-                disabled={isFetching}
-                className="btn-ghost text-xs"
-              >
-                {isFetching ? 'Loading...' : 'Refresh'}
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-
-      <div className="flex items-center gap-3 mb-4">
-        <div>
-          <select
-            value={env}
-            onChange={(e) => setEnv(e.target.value)}
-            className="input-field text-xs"
-          >
-            <option value="">Select environment...</option>
-            {environments.map((e) => (
-              <option key={e} value={e}>{e}</option>
-            ))}
-          </select>
-        </div>
-        <div>
-          <select
-            value={tail}
-            onChange={(e) => setTail(Number(e.target.value))}
-            className="input-field text-xs w-24"
-          >
-            <option value={50}>50 lines</option>
-            <option value={100}>100 lines</option>
-            <option value={500}>500 lines</option>
-            <option value={1000}>1000 lines</option>
-          </select>
-        </div>
-        <label className="flex items-center gap-1.5 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={previous}
-            onChange={(e) => setPrevious(e.target.checked)}
-            className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
-          />
-          <span className="text-[11px] text-text-tertiary">Previous</span>
-        </label>
-        <label className="flex items-center gap-1.5 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={unified}
-            onChange={(e) => setUnified(e.target.checked)}
-            className="w-3.5 h-3.5 rounded border-border bg-surface-1 text-accent focus:ring-accent/20"
-          />
-          <span className="text-[11px] text-text-tertiary">Unified</span>
-        </label>
-      </div>
-
-      {!env && (
-        <p className="text-sm text-text-tertiary">Select an environment to view logs</p>
-      )}
-
-      {env && isLoading && (
-        <div className="flex items-center justify-center py-8">
-          <svg className="w-5 h-5 animate-spin text-accent" fill="none" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-          </svg>
-        </div>
-      )}
-
-      {env && data && (
-        <div className="space-y-3">
-          {data.total === 0 && (
-            <p className="text-sm text-text-tertiary">No pods found in this environment</p>
-          )}
-          {unified && data.pods?.length > 0 ? (
-            <div className="border border-border rounded-lg overflow-hidden">
-              <div className="bg-surface-1 px-4 py-2.5 flex items-center gap-4 border-b border-border flex-wrap">
-                {data.pods.map((pod: any, i: number) => (
-                  <div key={pod.pod} className="flex items-center gap-1.5">
-                    <span className="inline-block w-2 h-2 rounded-full" style={{ backgroundColor: POD_LOG_COLORS[i % POD_LOG_COLORS.length] }} />
-                    <span className="text-[11px] font-mono text-text-secondary">{pod.pod.split('-').slice(-2).join('-')}</span>
-                    <span className="text-[10px] text-text-tertiary" title={pod.startedAt ? `Started ${new Date(pod.startedAt).toLocaleString()}` : undefined}>
-                      ({pod.status}{pod.age ? ` · ${pod.age}` : ''})
-                    </span>
-                  </div>
-                ))}
-              </div>
-              <pre className="bg-[#0d1117] text-[#c9d1d9] text-[11px] leading-relaxed p-4 overflow-x-auto max-h-[600px] overflow-y-auto font-mono whitespace-pre-wrap break-all">
-                {data.pods.flatMap((pod: any, i: number) => {
-                  const color = POD_LOG_COLORS[i % POD_LOG_COLORS.length]
-                  const short = pod.pod.split('-').slice(-2).join('-')
-                  const lines = (pod.logs || '').split('\n')
-                  return lines.map((line: string, li: number) => (
-                    <span key={`${pod.pod}-${li}`}>
-                      <span style={{ color }}>[{short}]</span> {line}{'\n'}
-                    </span>
-                  ))
-                })}
-                <div ref={logEndRef} />
-              </pre>
-            </div>
-          ) : (
-            data.pods?.map((pod: any) => (
-            <div key={pod.pod} className="border border-border rounded-lg overflow-hidden">
-              <div className="bg-surface-1 px-4 py-2.5 flex items-center justify-between border-b border-border">
-                <div className="flex items-center gap-3">
-                  <span className={`inline-block w-2 h-2 rounded-full ${
-                    pod.status === 'Running' ? 'bg-status-running' :
-                    pod.status === 'Failed' || pod.status === 'Error' ? 'bg-status-failed' :
-                    'bg-status-pending'
-                  }`} />
-                  <span className="text-xs font-mono text-text-primary">{pod.pod}</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-[11px] text-text-tertiary">{pod.status}</span>
-                  <PodAge age={pod.age} startedAt={pod.startedAt} />
-                  {pod.restarts > 0 && (
-                    <span className="text-[11px] text-status-failed">{pod.restarts} restart{pod.restarts !== 1 ? 's' : ''}</span>
-                  )}
-                </div>
-              </div>
-              <pre className="bg-[#0d1117] text-[#c9d1d9] text-[11px] leading-relaxed p-4 overflow-x-auto max-h-80 overflow-y-auto font-mono whitespace-pre-wrap break-all">
-                {pod.logs || '(no output)'}
-                <div ref={logEndRef} />
-              </pre>
-            </div>
-          ))
-          )}
-        </div>
-      )}
-
-      {env && liveMode && (
-        <div className="border border-border rounded-lg overflow-hidden">
-          <div className="bg-surface-1 px-4 py-2.5 flex items-center justify-between border-b border-border">
-            <div className="flex items-center gap-2">
-              <span className={`inline-block w-2 h-2 rounded-full ${wsConnected ? 'bg-status-running animate-glow-pulse' : 'bg-status-failed'}`} />
-              <span className="text-xs font-mono text-text-primary">Live Stream</span>
-            </div>
-            <span className="text-[11px] text-text-tertiary">{liveLines.length} lines</span>
-          </div>
-          <pre className="bg-[#0d1117] text-[#c9d1d9] text-[11px] leading-relaxed p-4 overflow-x-auto max-h-[600px] overflow-y-auto font-mono whitespace-pre-wrap break-all">
-            {liveLines.length === 0 && <span className="text-text-tertiary">Waiting for logs...</span>}
-            {liveLines.map((entry, i) => {
-              const pods = [...new Set(liveLines.map(l => l.pod))]
-              const podIdx = pods.indexOf(entry.pod)
-              const color = POD_LOG_COLORS[podIdx % POD_LOG_COLORS.length]
-              const short = entry.pod.split('-').slice(-2).join('-')
-              return (
-                <span key={i}>
-                  <span style={{ color }}>[{short}]</span> {entry.line}{'\n'}
-                </span>
-              )
-            })}
-            <div ref={logEndRef} />
-          </pre>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function AppTerminal({ appId, environments, selectedEnv, onEnvChange }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
-  const env = selectedEnv || environments[0] || ''
-  const setEnv = onEnvChange
-  const [pod, setPod] = useState('')
-  const [container, setContainer] = useState('')
-  const [connected, setConnected] = useState(false)
-  const termRef = useRef<HTMLDivElement>(null)
-  const wsRef = useRef<WebSocket | null>(null)
-  const xtermRef = useRef<any>(null)
-
-  const { data: metricsData } = useQuery({
-    queryKey: ['appMetrics', appId, env],
-    queryFn: () => api.getAppMetrics(appId, env),
-    enabled: !!env,
-  })
-
-  const pods: any[] = metricsData?.pods || []
-  const podNames = pods.map((p: any) => p.name)
-  const selectedPod = pods.find((p: any) => p.name === pod)
-  const containers: string[] = (selectedPod?.containers || []).map((c: any) => c.name)
-
-  useEffect(() => {
-    if (podNames.length > 0 && !pod) setPod(podNames[0])
-  }, [podNames.length])
-
-  useEffect(() => {
-    if (containers.length > 0 && !containers.includes(container)) setContainer(containers[0])
-  }, [pod, containers.length])
-
-  const connect = () => {
-    if (!env || !pod || !termRef.current) return
-
-    // Dynamically import xterm
-    Promise.all([
-      import('@xterm/xterm'),
-      import('@xterm/addon-fit'),
-    ]).then(([{ Terminal }, { FitAddon }]) => {
-      // Clean up previous
-      if (xtermRef.current) {
-        xtermRef.current.dispose()
-      }
-      if (wsRef.current) {
-        wsRef.current.close()
-      }
-
-      const term = new Terminal({
-        cursorBlink: true,
-        fontSize: 13,
-        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-        theme: {
-          background: '#0d1117',
-          foreground: '#c9d1d9',
-          cursor: '#58a6ff',
-          selectionBackground: '#264f78',
-        },
-      })
-      const fitAddon = new FitAddon()
-      term.loadAddon(fitAddon)
-      term.open(termRef.current!)
-      fitAddon.fit()
-      xtermRef.current = term
-
-      const token = localStorage.getItem('vesta-token')
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const params = new URLSearchParams({ environment: env, pod, token: token || '' })
-      if (container) params.set('container', container)
-      const wsUrl = `${proto}//${window.location.host}/api/v1/apps/${appId}/exec?${params}`
-      const ws = new WebSocket(wsUrl)
-      wsRef.current = ws
-
-      ws.onopen = () => {
-        setConnected(true)
-        term.focus()
-      }
-      ws.onclose = () => {
-        setConnected(false)
-        term.write('\r\n\x1b[31m--- Connection closed ---\x1b[0m\r\n')
-      }
-      ws.onerror = () => {
-        setConnected(false)
-      }
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'output') {
-            term.write(msg.data)
-          } else if (msg.type === 'error') {
-            term.write(`\r\n\x1b[31m${msg.message}\x1b[0m\r\n`)
-          }
-        } catch {
-          term.write(event.data)
-        }
-      }
-
-      term.onData((data: string) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'input', data }))
-        }
-      })
-
-      // Handle resize
-      const resizeObserver = new ResizeObserver(() => fitAddon.fit())
-      resizeObserver.observe(termRef.current!)
-
-      return () => {
-        resizeObserver.disconnect()
-      }
-    })
+function appPodSource(appId: string): PodSource {
+  return {
+    key: `app:${appId}`,
+    wsBase: `/api/v1/apps/${appId}`,
+    getLogs: (env, opts) => api.getAppLogs(appId, env, opts),
+    // The app's pods come from its metrics endpoint, which already lists them with their
+    // containers.
+    listPods: async env => (await api.getAppMetrics(appId, env))?.pods || [],
   }
+}
 
-  useEffect(() => {
-    return () => {
-      if (wsRef.current) wsRef.current.close()
-      if (xtermRef.current) xtermRef.current.dispose()
-    }
-  }, [])
+function AppLogs({ appId, ...rest }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
+  const source = useMemo(() => appPodSource(appId), [appId])
+  return <PodLogs source={source} {...rest} />
+}
 
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="section-title">Web Terminal</h3>
-        <div className="flex items-center gap-2">
-          {connected && <span className="inline-block w-2 h-2 rounded-full bg-status-running animate-glow-pulse" />}
-          <span className="text-[11px] text-text-tertiary">{connected ? 'Connected' : 'Disconnected'}</span>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-3 mb-4">
-        <select value={env} onChange={(e) => { setEnv(e.target.value); setPod(''); setContainer('') }} className="input-field text-xs">
-          <option value="">Select environment...</option>
-          {environments.map((e) => (
-            <option key={e} value={e}>{e}</option>
-          ))}
-        </select>
-        <select value={pod} onChange={(e) => { setPod(e.target.value); setContainer('') }} className="input-field text-xs w-auto font-mono">
-          <option value="">Select pod...</option>
-          {podNames.map((p: string) => (
-            <option key={p} value={p}>{p}</option>
-          ))}
-        </select>
-        {containers.length > 1 && (
-          <select value={container} onChange={(e) => setContainer(e.target.value)} className="input-field text-xs w-auto font-mono">
-            {containers.map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
-        )}
-        <button
-          onClick={connect}
-          disabled={!env || !pod}
-          className="btn-primary text-xs"
-        >
-          {connected ? 'Reconnect' : 'Connect'}
-        </button>
-        {connected && (
-          <button
-            onClick={() => {
-              if (wsRef.current) wsRef.current.close()
-              setConnected(false)
-            }}
-            className="btn-ghost text-xs text-status-failed"
-          >
-            Disconnect
-          </button>
-        )}
-      </div>
-
-      <div
-        ref={termRef}
-        className="border border-border rounded-lg overflow-hidden bg-[#0d1117]"
-        style={{ minHeight: '400px' }}
-      />
-    </div>
-  )
+function AppTerminal({ appId, ...rest }: { appId: string; environments: string[]; selectedEnv: string; onEnvChange: (env: string) => void }) {
+  const source = useMemo(() => appPodSource(appId), [appId])
+  return <PodTerminal source={source} {...rest} />
 }
 
 function AppBuilds({ appId, environments, gitRepo, deployments, role, onRollback }: { appId: string; environments: string[]; gitRepo: string; deployments: any; role: string; onRollback: (version: number, env: string) => void }) {
@@ -3697,7 +3260,7 @@ function AppBuilds({ appId, environments, gitRepo, deployments, role, onRollback
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-sm font-mono tracking-wider uppercase text-text-secondary">Builds</h3>
         {role !== 'viewer' && (
           <button
@@ -3785,7 +3348,7 @@ function AppBuilds({ appId, environments, gitRepo, deployments, role, onRollback
                 selectedBuild === b.id ? 'ring-1 ring-accent' : ''
               }`}
             >
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <span title={b.status}>{statusIcon(b.status)}</span>
                   <div>
@@ -4019,6 +3582,7 @@ function BuildLogViewer({ appId, buildId, onClose }: { appId: string; buildId: s
  * that suggests an action. A cost figure on its own invites nothing but resignation.
  */
 function AppCostCard({ appId }: { appId: string }) {
+  const isAdmin = useUserRole() === 'admin'
   const { data, error } = useQuery({
     queryKey: ['appCosts', appId],
     queryFn: () => api.getAppCosts(appId, '30d'),
@@ -4068,8 +3632,10 @@ function AppCostCard({ appId }: { appId: string }) {
 
       {data.estimated && (
         <p className="text-[10px] text-text-tertiary mt-3">
-          Estimated at default rates. Set your node's monthly cost in the platform config to
-          price this cluster.
+          Estimated at default rates.{' '}
+          {isAdmin
+            ? <><Link to="/settings?tab=cost" className="text-accent hover:text-accent-glow">Set your node's monthly cost</Link> to price this cluster.</>
+            : <>Ask an admin to set this cluster's node cost in Settings.</>}
         </p>
       )}
     </div>
@@ -4137,7 +3703,7 @@ function AppMetrics({ appId, environments, selectedEnv, onEnvChange }: { appId: 
         <div className="space-y-4">
           {/* Deployment overview */}
           {data.deployment && (
-            <div className="grid grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <MetricCard label="Desired" value={data.deployment.desiredReplicas ?? '—'} />
               <MetricCard label="Ready" value={data.readyPods ?? 0} total={data.totalPods ?? 0} ok={data.readyPods === data.totalPods} />
               <MetricCard label="Available" value={data.deployment.availableReplicas ?? 0} />
@@ -4151,7 +3717,7 @@ function AppMetrics({ appId, environments, selectedEnv, onEnvChange }: { appId: 
           {data.summary && (
             <div className="bg-surface-1 border border-border rounded-lg p-4">
               <h4 className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider mb-3">Resource Usage</h4>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
                     <span className="text-[11px] text-text-secondary">CPU</span>
@@ -4227,14 +3793,14 @@ function AppMetrics({ appId, environments, selectedEnv, onEnvChange }: { appId: 
                   </button>
                 </div>
               </div>
-              <div className={`grid ${metricsExpanded ? 'grid-cols-2 gap-6' : 'grid-cols-2 gap-4'}`}>
+              <div className={`grid ${metricsExpanded ? 'grid-cols-1 md:grid-cols-2 gap-6' : 'grid-cols-1 md:grid-cols-2 gap-4'}`}>
                 <PrometheusChart appId={appId} env={env} metric="cpu" range={promRange} label="CPU Usage" unit="cores" color="#6366f1" expanded={metricsExpanded} />
                 <PrometheusChart appId={appId} env={env} metric="memory" range={promRange} label="Memory Usage" unit="bytes" color="#06b6d4" expanded={metricsExpanded} />
                 <PrometheusChart appId={appId} env={env} metric="network_rx" range={promRange} label="Network Receive" unit="bytes/s" color="#10b981" expanded={metricsExpanded} />
                 <PrometheusChart appId={appId} env={env} metric="network_tx" range={promRange} label="Network Transmit" unit="bytes/s" color="#f59e0b" expanded={metricsExpanded} />
               </div>
               {promStatus?.httpAvailable ? (
-                <div className={`grid ${metricsExpanded ? 'grid-cols-3 gap-6' : 'grid-cols-3 gap-4'} mt-4`}>
+                <div className={`grid ${metricsExpanded ? 'grid-cols-1 md:grid-cols-3 gap-6' : 'grid-cols-1 md:grid-cols-3 gap-4'} mt-4`}>
                   <PrometheusChart appId={appId} env={env} metric="http_rate" range={promRange} label="Request Rate" unit="req/s" color="#8b5cf6" expanded={metricsExpanded} />
                   <PrometheusChart appId={appId} env={env} metric="http_errors" range={promRange} label="Error Rate" unit="%" color="#ef4444" expanded={metricsExpanded} />
                   <PrometheusChart appId={appId} env={env} metric="http_latency_p95" range={promRange} label="Latency (p95)" unit="s" color="#f97316" expanded={metricsExpanded} />
@@ -4255,7 +3821,7 @@ function AppMetrics({ appId, environments, selectedEnv, onEnvChange }: { appId: 
           {data.autoscaling && data.autoscaling.maxReplicas && (
             <div className="bg-surface-1 border border-border rounded-lg p-4">
               <h4 className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider mb-3">Autoscaling (HPA)</h4>
-              <div className="grid grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div>
                   <p className="text-[10px] text-text-tertiary mb-0.5">Min Replicas</p>
                   <p className="text-sm font-mono font-medium text-text-primary">{data.autoscaling.minReplicas ?? 1}</p>
@@ -4293,7 +3859,7 @@ function AppMetrics({ appId, environments, selectedEnv, onEnvChange }: { appId: 
           {data.pods?.length > 0 && (
             <div>
               <h4 className="text-[10px] font-mono text-text-tertiary uppercase tracking-wider mb-2">Pods</h4>
-              <div className="border border-border rounded-lg overflow-hidden">
+              <div className="border border-border rounded-lg overflow-x-auto">
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="bg-surface-1 border-b border-border">
@@ -4792,9 +4358,9 @@ function EnvVarsSection({ appId, env }: { appId: string; env: string }) {
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-text-tertiary">{existingKeys.length} variable{existingKeys.length !== 1 ? 's' : ''} in {env}</p>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {existingKeys.length > 0 && <CopyEnvButton values={values} />}
           {existingKeys.length > 0 && (
             <button
@@ -5104,9 +4670,9 @@ function EnvSecrets({ appId, env, projectId }: { appId: string; env: string; pro
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-text-tertiary">{existingKeys.length} key{existingKeys.length !== 1 ? 's' : ''} in {env}</p>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {existingKeys.length > 0 && (
             <button
               onClick={() => {
@@ -5467,7 +5033,7 @@ function ScheduledDeploymentsTab({ appId, projectId, environments, pullSecret, a
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="section-title">Scheduled Deployments</h3>
         <button onClick={() => setShowForm(!showForm)} className="text-xs text-accent hover:text-accent-glow transition-colors">
           {showForm ? 'Cancel' : '+ Schedule Deploy'}
@@ -5476,7 +5042,7 @@ function ScheduledDeploymentsTab({ appId, projectId, environments, pullSecret, a
 
       {showForm && (
         <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate() }} className="card p-4 space-y-3 animate-slide-up">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="label">Environment</label>
               <select value={env} onChange={e => setEnv(e.target.value)} className="input-field text-xs">
@@ -5497,7 +5063,7 @@ function ScheduledDeploymentsTab({ appId, projectId, environments, pullSecret, a
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="label">Image (optional override)</label>
               <ImageRepositoryInput

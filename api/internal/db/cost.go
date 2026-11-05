@@ -33,13 +33,20 @@ type CostRollup struct {
 	Kind        string `json:"kind,omitempty"`
 
 	// Weighted by how long each sample stood for, so a workload that was resized partway
-	// through a window is charged for what it actually held at each point.
+	// through a window is charged for what it actually held at each point. Each sample
+	// counts the greater of what was reserved and what was used.
 	CPUCoreHours    float64 `json:"cpuCoreHours"`
 	MemoryGiBHours  float64 `json:"memoryGiBHours"`
 	StorageGiBHours float64 `json:"storageGiBHours"`
 
 	CPUUsedCoreHours   float64 `json:"cpuUsedCoreHours"`
 	MemoryUsedGiBHours float64 `json:"memoryUsedGiBHours"`
+
+	// What was reserved alone, without the burst above it. Efficiency is used over this:
+	// dividing by the charged figure, which already includes usage, would cap it at 100%
+	// and hide exactly the over-request bursting it should reveal.
+	CPUReservedCoreHours   float64 `json:"cpuReservedCoreHours"`
+	MemoryReservedGiBHours float64 `json:"memoryReservedGiBHours"`
 }
 
 // InsertCostSamples records a batch of observations.
@@ -94,11 +101,19 @@ func (d *DB) CostRollups(ctx context.Context, projectID, appID, groupBy string, 
 		       max(environment), max(app_id), max(kind),
 		       -- Each sample weighted by the interval it stands for, so a gap in sampling
 		       -- is not charged as continuous running at the last observed size.
-		       sum(replicas * cpu_millicores  * interval_seconds) / 1000.0 / 3600.0,
-		       sum(replicas * memory_bytes    * interval_seconds) / 1073741824.0 / 3600.0,
+		       --
+		       -- Charged at the greater of reserved and used. The request is the floor --
+		       -- Kubernetes holds it on a node whether or not it is consumed -- but a pod
+		       -- bursting above its request (up to its limit) is occupying more than that,
+		       -- and pricing only the request would make it look cheaper than it is. With no
+		       -- metrics-server, used is 0 and this is the request alone.
+		       sum(GREATEST(replicas::bigint * cpu_millicores, cpu_used_millicores) * interval_seconds) / 1000.0 / 3600.0,
+		       sum(GREATEST(replicas::bigint * memory_bytes,   memory_used_bytes)   * interval_seconds) / 1073741824.0 / 3600.0,
 		       sum(storage_bytes              * interval_seconds) / 1073741824.0 / 3600.0,
 		       sum(cpu_used_millicores        * interval_seconds) / 1000.0 / 3600.0,
-		       sum(memory_used_bytes          * interval_seconds) / 1073741824.0 / 3600.0
+		       sum(memory_used_bytes          * interval_seconds) / 1073741824.0 / 3600.0,
+		       sum(replicas::bigint * cpu_millicores * interval_seconds) / 1000.0 / 3600.0,
+		       sum(replicas::bigint * memory_bytes   * interval_seconds) / 1073741824.0 / 3600.0
 		FROM cost_samples
 		WHERE sampled_at >= $1`
 
@@ -124,7 +139,8 @@ func (d *DB) CostRollups(ctx context.Context, projectID, appID, groupBy string, 
 		var r CostRollup
 		if err := rows.Scan(&r.Key, &r.ProjectID, &r.Environment, &r.AppID, &r.Kind,
 			&r.CPUCoreHours, &r.MemoryGiBHours, &r.StorageGiBHours,
-			&r.CPUUsedCoreHours, &r.MemoryUsedGiBHours); err != nil {
+			&r.CPUUsedCoreHours, &r.MemoryUsedGiBHours,
+			&r.CPUReservedCoreHours, &r.MemoryReservedGiBHours); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

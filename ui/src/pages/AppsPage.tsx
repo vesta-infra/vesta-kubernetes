@@ -62,7 +62,7 @@ export default function AppsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-text-secondary">
           {filteredApps.length}{filteredApps.length !== (data?.total ?? 0) ? ` / ${data?.total ?? 0}` : ''} application{(data?.total ?? 0) !== 1 ? 's' : ''}
         </p>
