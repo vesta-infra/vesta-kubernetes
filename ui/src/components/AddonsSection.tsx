@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, type Addon, type AddonType } from '../lib/api'
+import { useUserRole } from '../lib/useRole'
 import CopyEnvButton from './CopyEnvButton'
+import { PodLogs, PodTerminal, type PodSource } from './PodViewers'
 
 /**
  * Managed datastores for a project.
@@ -132,6 +134,17 @@ function AddonRow({
   deleting: boolean
 }) {
   const [showFor, setShowFor] = useState<string | null>(null)
+  // One inline panel at a time: logs and a terminal side by side would not fit a row.
+  const [panel, setPanel] = useState<'logs' | 'terminal' | null>(null)
+  const [panelEnv, setPanelEnv] = useState('')
+  const role = useUserRole()
+
+  const podSource = useMemo<PodSource>(() => ({
+    key: `addon:${projectId}:${addon.name}`,
+    wsBase: `/api/v1/projects/${projectId}/addons/${addon.name}`,
+    getLogs: (env, opts) => api.getAddonLogs(projectId, addon.name, env, opts),
+    listPods: async env => (await api.listAddonPods(projectId, addon.name, env)).pods,
+  }), [projectId, addon.name])
 
   const { data: creds } = useQuery({
     queryKey: ['addon-credentials', projectId, addon.name, showFor],
@@ -198,7 +211,37 @@ function AddonRow({
             {showFor === env ? `Hide ${env} credentials` : `Show ${env} credentials`}
           </button>
         ))}
+        <span className="text-border">|</span>
+        <button
+          onClick={() => setPanel(panel === 'logs' ? null : 'logs')}
+          className={`text-[11px] ${panel === 'logs' ? 'text-text-primary' : 'text-accent hover:text-accent-glow'}`}
+        >
+          {panel === 'logs' ? 'Hide logs' : 'Logs'}
+        </button>
+        {/* A shell in a datastore reads every row in it, so viewers get none -- the same
+            rule as an app's terminal tab, and the API refuses them regardless. */}
+        {role !== 'viewer' && (
+          <button
+            onClick={() => setPanel(panel === 'terminal' ? null : 'terminal')}
+            className={`text-[11px] ${panel === 'terminal' ? 'text-text-primary' : 'text-accent hover:text-accent-glow'}`}
+          >
+            {panel === 'terminal' ? 'Hide terminal' : 'Terminal'}
+          </button>
+        )}
       </div>
+
+      {panel && targets.length > 0 && (
+        <div className="mt-4 pt-4 border-t border-border">
+          {panel === 'logs' ? (
+            <PodLogs source={podSource} environments={targets} selectedEnv={panelEnv} onEnvChange={setPanelEnv} title={`${addon.name} logs`} />
+          ) : (
+            <PodTerminal source={podSource} environments={targets} selectedEnv={panelEnv} onEnvChange={setPanelEnv} title={`${addon.name} terminal`} />
+          )}
+        </div>
+      )}
+      {panel && targets.length === 0 && (
+        <p className="mt-3 text-[11px] text-text-tertiary">This project has no environments, so the add-on is not running anywhere yet.</p>
+      )}
 
       {showFor && creds && (
         <div className="mt-3 rounded-md border border-border bg-surface-2 p-3">
@@ -250,7 +293,7 @@ function CreateAddonForm({
       onSubmit={e => { e.preventDefault(); create.mutate() }}
       className="rounded-lg border border-border bg-surface-1 p-4 mb-4 space-y-3"
     >
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <div>
           <label className="text-xs text-text-tertiary mb-1 block">Name</label>
           <input
@@ -276,7 +319,7 @@ function CreateAddonForm({
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div>
           <label className="text-xs text-text-tertiary mb-1 block">Version</label>
           <select value={version} onChange={e => setVersion(e.target.value)} className="input-field text-xs w-full">

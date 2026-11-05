@@ -19,12 +19,12 @@ export default function ProjectsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-text-secondary">
           {data?.total ?? 0} project{(data?.total ?? 0) !== 1 ? 's' : ''}
         </p>
         {role !== 'viewer' && (
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
           {/* Import lives here rather than inside a project: it creates one, so there is
               nothing to be inside yet. */}
           {role === 'admin' && (
@@ -191,7 +191,7 @@ function CreateProjectForm({ onClose }: { onClose: () => void }) {
   return (
     <form onSubmit={handleSubmit} className="card p-5 space-y-4 animate-slide-up">
       <h3 className="section-title">Create Project</h3>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Name</label>
           <input

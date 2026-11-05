@@ -49,7 +49,7 @@ export default function ProjectDetailPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-4">
           <Link to="/projects" className="text-text-tertiary hover:text-text-secondary transition-colors">
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
@@ -348,7 +348,7 @@ function ProjectOwnersSection({ projectId }: { projectId: string }) {
 
       <div className="space-y-2">
         {(members?.items || []).map((m: any) => (
-          <div key={m.userId} className="flex items-center justify-between">
+          <div key={m.userId} className="flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <p className="text-xs text-text-primary truncate">{m.displayName || m.username || m.userId}</p>
@@ -593,7 +593,7 @@ function CreateEnvironmentForm({ projectId, onClose }: { projectId: string; onCl
   return (
     <form onSubmit={handleSubmit} className="card p-5 space-y-4 animate-slide-up mb-4">
       <h4 className="text-sm font-semibold text-text-secondary">New Environment</h4>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Name</label>
           <input
@@ -929,7 +929,7 @@ function NotificationsSection({ projectId }: { projectId: string }) {
         <div className="space-y-2">
           {channels.items.map((ch: any) => (
             <div key={ch.id} className="py-2 border-b border-border-subtle last:border-0">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">
                   <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${ch.enabled ? 'bg-status-running' : 'bg-text-tertiary'}`} />
                   <div className="min-w-0">
@@ -1231,7 +1231,7 @@ function AlertRulesSection({ projectId }: { projectId: string }) {
 
       {showAdd && (
         <form onSubmit={(e) => { e.preventDefault(); createMutation.mutate() }} className="bg-surface-1 border border-border rounded-lg p-4 mb-3 space-y-3 animate-slide-up">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="label">Name</label>
               <input value={name} onChange={e => setName(e.target.value)} placeholder="High CPU alert" className="input-field text-xs" required />
@@ -1246,7 +1246,7 @@ function AlertRulesSection({ projectId }: { projectId: string }) {
               </select>
             </div>
           </div>
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <div>
               <label className="label">Metric</label>
               <select value={metric} onChange={e => setMetric(e.target.value)} className="input-field text-xs">

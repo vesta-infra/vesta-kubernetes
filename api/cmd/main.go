@@ -433,6 +433,9 @@ func main() {
 		// who is already authenticated and can read the app's pods.
 		auth.GET("/settings/security", h.GetSecurityPosture)
 		auth.PUT("/settings/security", middleware.RequireRole("admin"), h.SetSecurityPosture)
+		// The rate card cost pages price against.
+		auth.GET("/settings/cost", middleware.RequireRole("admin"), h.GetCostSettings)
+		auth.PUT("/settings/cost", middleware.RequireRole("admin"), h.SetCostSettings)
 
 		auth.GET("/projects/:projectId/environments/:env/quota", canRead, h.GetEnvironmentQuota)
 		auth.PUT("/projects/:projectId/environments/:env/quota", canAdmin, h.SetEnvironmentQuota)
@@ -445,6 +448,12 @@ func main() {
 		auth.DELETE("/projects/:projectId/addons/:name", canWrite, h.DeleteAddon)
 		// Revealing connection details hands over a password, so it is gated like a secret.
 		auth.GET("/projects/:projectId/addons/:name/credentials", canSecrets, h.RevealAddonCredentials)
+		// Logs and a terminal for an add-on, with the same gates as an app's: reading logs is
+		// a read, and a shell in a datastore is as sensitive as its credentials.
+		auth.GET("/projects/:projectId/addons/:name/pods", canRead, h.ListAddonPods)
+		auth.GET("/projects/:projectId/addons/:name/logs", canRead, h.StreamAddonLogs)
+		auth.GET("/projects/:projectId/addons/:name/logs/ws", canRead, h.StreamAddonLogsWS)
+		auth.GET("/projects/:projectId/addons/:name/exec", canSecrets, dv, h.AddonExecWS)
 
 		auth.POST("/apps/:appId/addons", canWrite, h.BindAddon)
 		auth.DELETE("/apps/:appId/addons/:name", canWrite, h.UnbindAddon)

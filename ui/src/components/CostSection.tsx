@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
+import { useUserRole } from '../lib/useRole'
 import { api, type Cost, type CostEntry, type CostReport } from '../lib/api'
 
 /**
@@ -102,6 +104,7 @@ function Bar({ entry, max, currency }: { entry: CostEntry; max: number; currency
 }
 
 export default function CostSection({ projectId }: { projectId: string }) {
+  const isAdmin = useUserRole() === 'admin'
   const [window, setWindow] = useState('30d')
   const [groupBy, setGroupBy] = useState<'app' | 'environment'>('app')
 
@@ -144,8 +147,9 @@ export default function CostSection({ projectId }: { projectId: string }) {
       </div>
 
       <p className="text-xs text-text-tertiary mb-4">
-        What these workloads reserve, priced against the rate card. Reserved rather than used,
-        because a request occupies a node whether or not it is consumed.
+        What these workloads hold, priced against the rate card: what they reserve, or what they
+        use when they burst above it. A request occupies a node whether or not it is consumed,
+        so it is the minimum charge.
       </p>
 
       {isLoading && <p className="text-xs text-text-tertiary">Loading&hellip;</p>}
@@ -203,8 +207,15 @@ export default function CostSection({ projectId }: { projectId: string }) {
             <>
               <span className="text-status-pending">Estimated.</span> Priced at the built-in default of{' '}
               {data.rates.currency} {data.rates.cpuCoreHour.toFixed(5)}/vCPU-hour and{' '}
-              {data.rates.memoryGiBHour.toFixed(5)}/GiB-hour. Set your node's actual monthly cost
-              in the platform config to price this cluster rather than a generic one.
+              {data.rates.memoryGiBHour.toFixed(5)}/GiB-hour.{' '}
+              {isAdmin ? (
+                <>
+                  <Link to="/settings?tab=cost" className="text-accent hover:text-accent-glow">Set your node's monthly cost</Link>{' '}
+                  to price this cluster rather than a generic one.
+                </>
+              ) : (
+                <>Ask an admin to set this cluster's node cost in Settings.</>
+              )}
             </>
           ) : (
             <>

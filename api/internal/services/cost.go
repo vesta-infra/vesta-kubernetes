@@ -11,10 +11,13 @@ import (
 // this multiplies what workloads reserve by a rate card, and the honest framing is that it
 // is an estimate whose accuracy is entirely the accuracy of the rates given to it.
 //
-// The basis is requests, not usage. A 500m request occupies 500m of a node whether or not it
-// is used, and that is what the cluster owner is paying for. Usage is reported alongside, as
-// efficiency, because the gap between the two is the actionable number -- an app on a large
-// size using five per cent of it is the finding worth surfacing.
+// The basis is the greater of request and usage, per sample. A 500m request occupies 500m of
+// a node whether or not it is used, so the request is the floor -- that is what the cluster
+// owner is paying for. But a pod bursting above its request (up to its limit) is occupying
+// more than it reserved, and charging only the request would make it look cheaper than it
+// is. Usage is also reported as efficiency (used over reserved), because the gap between
+// the two is the actionable number -- an app on a large size using five per cent of it is
+// the finding worth surfacing. The max is taken in the rollup query (db.CostRollups).
 
 // RateCard prices the units a workload reserves.
 type RateCard struct {

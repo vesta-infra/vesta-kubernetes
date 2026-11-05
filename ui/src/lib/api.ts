@@ -378,6 +378,30 @@ export interface CostEntry {
   memoryEfficiency?: number
 }
 
+export interface RateCard {
+  cpuCoreHour: number
+  memoryGiBHour: number
+  storageGiBMonth: number
+  currency: string
+}
+
+export interface CostSettingsInput {
+  nodeMonthlyCost?: number
+  nodeVCPUs?: number
+  nodeMemoryGiB?: number
+  cpuCoreHour?: number
+  memoryGiBHour?: number
+  storageGiBMonth?: number
+  currency?: string
+}
+
+export interface CostSettings {
+  config: CostSettingsInput
+  effective: RateCard
+  default: RateCard
+  estimated: boolean
+}
+
 export interface CostReport {
   window: string
   entries: CostEntry[]
@@ -693,6 +717,19 @@ export const api = {
     request<{ name: string; environment: string; credentials: Record<string, string> }>(
       `/projects/${projectId}/addons/${name}/credentials?environment=${encodeURIComponent(environment)}`),
 
+  getAddonLogs: (projectId: string, name: string, environment: string, opts?: { tail?: number; pod?: string; container?: string; previous?: boolean }) => {
+    const params = new URLSearchParams({ environment })
+    if (opts?.tail) params.set('tail', String(opts.tail))
+    if (opts?.pod) params.set('pod', opts.pod)
+    if (opts?.container) params.set('container', opts.container)
+    if (opts?.previous) params.set('previous', 'true')
+    return request<any>(`/projects/${projectId}/addons/${name}/logs?${params}`)
+  },
+
+  listAddonPods: (projectId: string, name: string, environment: string) =>
+    request<{ pods: { name: string; phase: string; restarts: number; age: string; containers: { name: string }[] }[]; namespace: string }>(
+      `/projects/${projectId}/addons/${name}/pods?environment=${encodeURIComponent(environment)}`),
+
   bindAddon: (appId: string, addon: string, environments?: string[]) =>
     request<any>(`/apps/${appId}/addons`,
       { method: 'POST', body: JSON.stringify({ addon, environments }) }),
@@ -922,6 +959,14 @@ export const api = {
     request<CostReport>(`/apps/${appId}/costs?window=${encodeURIComponent(window)}&groupBy=${encodeURIComponent(groupBy)}`),
 
   // Security posture
+  getCostSettings: () => request<CostSettings>('/settings/cost'),
+
+  setCostSettings: (body: CostSettingsInput) =>
+    request<{ status: string; effective: RateCard; estimated: boolean }>('/settings/cost', {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
   getSecurityPosture: () =>
     request<SecurityPosture>('/settings/security'),
 

@@ -363,8 +363,8 @@ export function CreateAppForm({ projectId, environments, onClose }: { projectId:
       </div>
 
       {sourceMode !== 'template' && (
-      <div className="grid grid-cols-3 gap-4">
-        <div className="col-span-2">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="sm:col-span-2">
           <label className="label">
             {sourceMode === 'build' ? 'Push built image to' : 'Image Repository'}
           </label>
@@ -531,7 +531,7 @@ export function CreateAppForm({ projectId, environments, onClose }: { projectId:
             "build from source", being asked to opt into naming a repository is a step that
             asks a question already answered. */}
         <div className="rounded-lg border border-border bg-surface-1 p-4 space-y-3">
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="text-xs text-text-tertiary mb-1 block">Provider</label>
                 <select value={gitProvider} onChange={e => setGitProvider(e.target.value)} className="input-field text-xs w-full">
@@ -540,7 +540,7 @@ export function CreateAppForm({ projectId, environments, onClose }: { projectId:
                   <option value="bitbucket">Bitbucket</option>
                 </select>
               </div>
-              <div className="col-span-2">
+              <div className="sm:col-span-2">
                 <label className="text-xs text-text-tertiary mb-1 block">Repository</label>
                 {manualRepo ? (
                   <input
@@ -568,7 +568,7 @@ export function CreateAppForm({ projectId, environments, onClose }: { projectId:
                 )}
               </div>
             </div>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
                 <label className="text-xs text-text-tertiary mb-1 block">Branch</label>
                 <BranchPicker
@@ -611,7 +611,7 @@ export function CreateAppForm({ projectId, environments, onClose }: { projectId:
       {sourceMode === 'build' && (
         <div className="space-y-3">
           <label className="label">Build Strategy <span className="text-status-failed">*</span></label>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             {[
               { value: 'dockerfile', label: 'Dockerfile', desc: 'Kaniko build' },
               { value: 'nixpacks', label: 'Nixpacks', desc: 'Auto-detect' },

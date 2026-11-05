@@ -76,12 +76,14 @@ func (h *Handler) reportCosts(c *gin.Context, projectID, appID string) {
 			Cost:        cost,
 			Projected:   cost.Projected(window),
 		}
-		if r.CPUCoreHours > 0 && r.CPUUsedCoreHours > 0 {
-			eff := r.CPUUsedCoreHours / r.CPUCoreHours
+		// Used over reserved, not over charged: the charged figure already includes any
+		// burst above the request, so dividing by it could never exceed 100%.
+		if r.CPUReservedCoreHours > 0 && r.CPUUsedCoreHours > 0 {
+			eff := r.CPUUsedCoreHours / r.CPUReservedCoreHours
 			entry.CPUEfficiency = &eff
 		}
-		if r.MemoryGiBHours > 0 && r.MemoryUsedGiBHours > 0 {
-			eff := r.MemoryUsedGiBHours / r.MemoryGiBHours
+		if r.MemoryReservedGiBHours > 0 && r.MemoryUsedGiBHours > 0 {
+			eff := r.MemoryUsedGiBHours / r.MemoryReservedGiBHours
 			entry.MemoryEfficiency = &eff
 		}
 

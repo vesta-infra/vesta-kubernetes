@@ -12,6 +12,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
@@ -24,24 +26,54 @@ var wsUpgrader = websocket.Upgrader{
 }
 
 func (h *Handler) StreamLogs(c *gin.Context) {
-	appId := c.Param("appId")
-	env := c.Query("environment")
+	targetNS, env, ok := h.appPodTarget(c)
+	if !ok {
+		return
+	}
+	h.serveLogs(c, env, targetNS, appPodSelector(c.Param("appId")))
+}
 
+// appPodTarget resolves an app request to the namespace its pods run in. It writes the
+// error response itself and reports false when the request cannot proceed.
+func (h *Handler) appPodTarget(c *gin.Context) (namespace, env string, ok bool) {
+	env = c.Query("environment")
 	if env == "" {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "environment query param is required"})
-		return
+		return "", "", false
 	}
 
-	// Resolve the app to get project
-	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId)
+	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, c.Param("appId"))
 	if err != nil {
 		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
-		return
+		return "", "", false
 	}
 	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
-	project := getNestedString(spec, "project")
-	targetNS := fmt.Sprintf("%s-%s", project, env)
+	return fmt.Sprintf("%s-%s", getNestedString(spec, "project"), env), env, true
+}
 
+func appPodSelector(appID string) string {
+	return fmt.Sprintf("kubernetes.getvesta.sh/app=%s", appID)
+}
+
+// podInSelection reports whether a pod named by the caller belongs to the workload being
+// asked about. Without it a ?pod= parameter reaches any pod in the namespace -- an app's
+// log or terminal endpoint could be pointed at a database add-on running beside it.
+func (h *Handler) podInSelection(c *gin.Context, namespace, podName, selector string) bool {
+	sel, err := labels.Parse(selector)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return false
+	}
+	pod, err := h.K8s.Clientset.CoreV1().Pods(namespace).Get(c.Request.Context(), podName, metav1.GetOptions{})
+	if err != nil || !sel.Matches(labels.Set(pod.Labels)) {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "pod not found"})
+		return false
+	}
+	return true
+}
+
+// serveLogs returns recent logs for the pods matching selector in namespace.
+func (h *Handler) serveLogs(c *gin.Context, env, targetNS, labelSelector string) {
 	tailLines := int64(200)
 	if tl := c.Query("tail"); tl != "" {
 		if n, err := strconv.ParseInt(tl, 10, 64); err == nil && n > 0 {
@@ -58,6 +90,9 @@ func (h *Handler) StreamLogs(c *gin.Context) {
 
 	// If a specific pod was requested, get its logs directly
 	if podName != "" {
+		if !h.podInSelection(c, targetNS, podName, labelSelector) {
+			return
+		}
 		logs, err := h.K8s.GetPodLogs(c.Request.Context(), targetNS, podName, container, tailLines, previous)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to get logs: %v", err)})
@@ -70,8 +105,7 @@ func (h *Handler) StreamLogs(c *gin.Context) {
 		return
 	}
 
-	// Otherwise list all pods for the app and return logs for each
-	labelSelector := fmt.Sprintf("kubernetes.getvesta.sh/app=%s", appId)
+	// Otherwise list all matching pods and return logs for each
 	pods, err := h.K8s.ListPods(c.Request.Context(), targetNS, labelSelector)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: fmt.Sprintf("failed to list pods: %v", err)})
@@ -577,22 +611,15 @@ func (h *Handler) GetPrometheusStatus(c *gin.Context) {
 
 // StreamLogsWS upgrades to WebSocket and streams live pod logs.
 func (h *Handler) StreamLogsWS(c *gin.Context) {
-	appId := c.Param("appId")
-	env := c.Query("environment")
-	if env == "" {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "environment query param is required"})
+	targetNS, _, ok := h.appPodTarget(c)
+	if !ok {
 		return
 	}
+	h.serveLogsWS(c, targetNS, appPodSelector(c.Param("appId")))
+}
 
-	existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appId)
-	if err != nil {
-		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "app not found"})
-		return
-	}
-	spec, _, _ := unstructuredNestedMap(existing.Object, "spec")
-	project := getNestedString(spec, "project")
-	targetNS := fmt.Sprintf("%s-%s", project, env)
-
+// serveLogsWS upgrades to WebSocket and streams live logs from the pods matching selector.
+func (h *Handler) serveLogsWS(c *gin.Context, targetNS, labelSelector string) {
 	tailLines := int64(100)
 	if tl := c.Query("tail"); tl != "" {
 		if n, err := strconv.ParseInt(tl, 10, 64); err == nil && n > 0 {
@@ -607,8 +634,6 @@ func (h *Handler) StreamLogsWS(c *gin.Context) {
 	}
 	defer conn.Close()
 
-	// List pods for the app
-	labelSelector := fmt.Sprintf("kubernetes.getvesta.sh/app=%s", appId)
 	pods, err := h.K8s.ListPods(c.Request.Context(), targetNS, labelSelector)
 	if err != nil {
 		msg, _ := json.Marshal(map[string]string{"type": "error", "message": fmt.Sprintf("failed to list pods: %v", err)})

@@ -332,8 +332,8 @@ function LogDrainForm({ existing, onClose, onSaved }: {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-start justify-center overflow-y-auto py-10 z-50">
-      <div className="card p-6 w-full max-w-2xl mx-4">
+    <div className="fixed inset-0 bg-black/50 flex items-start justify-center overflow-y-auto py-4 sm:py-10 z-50">
+      <div className="card p-4 sm:p-6 w-full max-w-2xl mx-4">
         <h2 className="text-base font-semibold mb-4">
           {existing ? `Edit ${existing.name}` : 'New log drain'}
         </h2>
