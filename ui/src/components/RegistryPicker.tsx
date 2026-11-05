@@ -47,6 +47,7 @@ export function ImageRepositoryInput({
   })
 
   const repositories = data?.repositories ?? []
+  const unlistable = data?.listable === false
 
   return (
     <>
@@ -66,13 +67,21 @@ export function ImageRepositoryInput({
           ))}
         </datalist>
       )}
-      <RegistryHint
-        secretName={secretName}
-        isLoading={isLoading}
-        error={error as Error | null}
-        count={repositories.length}
-        noun="repositories"
-      />
+      {unlistable ? (
+        // Not an error: some registries (Huawei SWR) cannot enumerate repositories to a
+        // registry login. Tags still list once the name is typed.
+        <p className="text-[11px] text-text-quaternary mt-1">
+          This registry can't list repositories to a registry login — type the full name. Tags will be suggested once it's in.
+        </p>
+      ) : (
+        <RegistryHint
+          secretName={secretName}
+          isLoading={isLoading}
+          error={error as Error | null}
+          count={repositories.length}
+          noun="repositories"
+        />
+      )}
     </>
   )
 }

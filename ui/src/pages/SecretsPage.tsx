@@ -733,6 +733,7 @@ function RegistrySecretsSection() {
                 <option value="harbor">Harbor</option>
                 <option value="dockerhub">Docker Hub</option>
                 <option value="ghcr">GitHub Container Registry</option>
+                <option value="swr">Huawei Cloud SWR</option>
               </select>
               <p className="text-[11px] text-text-tertiary mt-1">
                 Only affects listing repositories. Set it if the guess from the hostname is wrong.

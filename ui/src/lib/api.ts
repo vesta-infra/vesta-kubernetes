@@ -884,7 +884,7 @@ export const api = {
   // than typed. These report errors instead of returning an empty list: a picker that
   // cannot tell "nothing here" from "the call failed" leaves the user retyping.
   listRegistryRepositories: (name: string) =>
-    request<{ repositories: string[]; flavor: string }>(
+    request<{ repositories: string[]; flavor: string; listable?: boolean; note?: string }>(
       `/secrets/registry/${encodeURIComponent(name)}/repositories`),
 
   listRegistryTags: (name: string, repository: string) =>

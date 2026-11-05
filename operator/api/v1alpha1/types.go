@@ -1060,7 +1060,7 @@ type DockerSecretConfig struct {
 	//
 	// Empty is detected from the host, which is a guess -- Harbor answers on any hostname
 	// -- so this overrides it.
-	// +kubebuilder:validation:Enum=generic-v2;harbor;dockerhub;ghcr
+	// +kubebuilder:validation:Enum=generic-v2;harbor;dockerhub;ghcr;swr
 	Flavor string `json:"flavor,omitempty"`
 }
 
