@@ -1361,7 +1361,10 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       ingressAnns[CLUSTER_ISSUER_ANNOTATION] = legacyIssuerAnnotation
     }
 
-    if (appDomain || Object.keys(ingressAnns).length > 0 || existingTls) {
+    // removeAppDomain is its own reason to send the block. Without it, an app whose ingress
+    // held only a domain plus a certificate issuer fell through both branches below, sent no
+    // ingress at all, and the API kept the old domain -- so "Remove" saved and did nothing.
+    if (appDomain || Object.keys(ingressAnns).length > 0 || existingTls || removeAppDomain) {
       const existingIngress = app.spec?.ingress || {}
       patch.ingress = {
         // The spread carries the stored domain and TLS settings through untouched. Neither
