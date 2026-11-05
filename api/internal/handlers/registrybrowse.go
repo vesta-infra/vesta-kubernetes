@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -63,6 +64,17 @@ func (h *Handler) ListRegistryRepositories(c *gin.Context) {
 	}
 
 	repos, err := h.Registry.ListRepositories(c.Request.Context(), creds)
+	if errors.Is(err, registry.ErrListingUnsupported) {
+		// Not a failure: the registry works, it just cannot enumerate. Answered as such so
+		// the picker asks for the name instead of showing an error, and tags still list.
+		c.JSON(http.StatusOK, gin.H{
+			"repositories": []string{},
+			"flavor":       registryFlavor(creds),
+			"listable":     false,
+			"note":         err.Error(),
+		})
+		return
+	}
 	if err != nil {
 		// Reported rather than swallowed into an empty list. A picker that cannot tell
 		// "no repositories" from "the call failed" leaves the user retyping a value that
@@ -71,7 +83,7 @@ func (h *Handler) ListRegistryRepositories(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"repositories": repos, "flavor": registryFlavor(creds)})
+	c.JSON(http.StatusOK, gin.H{"repositories": repos, "flavor": registryFlavor(creds), "listable": true})
 }
 
 // ListRegistryTags returns the tags of one repository.

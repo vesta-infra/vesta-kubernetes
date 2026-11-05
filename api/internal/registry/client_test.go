@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -294,12 +295,14 @@ func TestResultsAreCached(t *testing.T) {
 
 func TestDetectFlavor(t *testing.T) {
 	for registry, want := range map[string]string{
-		"docker.io":                   FlavorDockerHub,
-		"https://index.docker.io/v1/": FlavorDockerHub,
-		"ghcr.io":                     FlavorGHCR,
-		"harbor.example.com":          FlavorHarbor,
-		"registry.internal:5000":      FlavorGenericV2,
-		"quay.io":                     FlavorGenericV2,
+		"docker.io":                        FlavorDockerHub,
+		"https://index.docker.io/v1/":      FlavorDockerHub,
+		"ghcr.io":                          FlavorGHCR,
+		"harbor.example.com":               FlavorHarbor,
+		"registry.internal:5000":           FlavorGenericV2,
+		"quay.io":                          FlavorGenericV2,
+		"swr.af-south-1.myhuaweicloud.com": FlavorSWR,
+		"https://swr.cn-north-4.myhuaweicloud.com": FlavorSWR,
 	} {
 		if got := DetectFlavor(registry); got != want {
 			t.Errorf("DetectFlavor(%q) = %q, want %q", registry, got, want)
@@ -309,4 +312,14 @@ func TestDetectFlavor(t *testing.T) {
 
 func serverURL(r *http.Request) string {
 	return "http://" + r.Host
+}
+
+// SWR has no catalog, so listing must not touch the network and must say so -- not come
+// back as a 404 that reads like a broken credential.
+func TestSWRListingIsUnsupportedNotFailed(t *testing.T) {
+	c := NewClient()
+	_, err := c.ListRepositories(context.Background(), Credentials{Registry: "swr.af-south-1.myhuaweicloud.com"})
+	if !errors.Is(err, ErrListingUnsupported) {
+		t.Fatalf("err = %v, want ErrListingUnsupported", err)
+	}
 }

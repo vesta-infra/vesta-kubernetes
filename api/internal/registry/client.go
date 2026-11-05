@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,7 +20,17 @@ const (
 	FlavorHarbor    = "harbor"
 	FlavorDockerHub = "dockerhub"
 	FlavorGHCR      = "ghcr"
+	// FlavorSWR is Huawei Cloud's SoftWare Repository for Container. It serves image pulls
+	// and tag listings over the standard v2 API, but not /v2/_catalog: repositories are
+	// enumerated only by its management API, which takes IAM (AK/SK) authentication rather
+	// than the region@AK login a registry credential holds.
+	FlavorSWR = "swr"
 )
+
+// ErrListingUnsupported means the registry cannot list its repositories to this kind of
+// credential at all. Distinct from a failed call, so the picker can say "type it" rather
+// than report an error for something that is working as designed.
+var ErrListingUnsupported = errors.New("this registry does not list repositories to a registry login")
 
 // Credentials identify and authenticate to one registry.
 type Credentials struct {
@@ -51,6 +62,10 @@ func DetectFlavor(registry string) string {
 	// from the registry partway through a build.
 	case strings.Contains(key, "container-registry.ovh.net"):
 		return FlavorHarbor
+	// swr.<region>.myhuaweicloud.com. Read as generic v2, listing asks /v2/_catalog and
+	// gets a 404 that looks like a broken credential when the credential is fine.
+	case strings.HasPrefix(key, "swr.") && strings.Contains(key, ".myhuaweicloud."):
+		return FlavorSWR
 	default:
 		return FlavorGenericV2
 	}
@@ -161,6 +176,8 @@ func (c *Client) ListRepositories(ctx context.Context, creds Credentials) ([]str
 		err   error
 	)
 	switch creds.flavor() {
+	case FlavorSWR:
+		return nil, ErrListingUnsupported
 	case FlavorDockerHub:
 		repos, err = c.dockerHubRepositories(ctx, creds)
 	case FlavorHarbor:
