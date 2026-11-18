@@ -104,6 +104,9 @@ type IngressOverride struct {
 	Domains []string `json:"domains,omitempty"`
 	TLS     *bool    `json:"tls,omitempty"`
 
+	// DomainPorts replaces the app-level map for this environment. Nil inherits it.
+	DomainPorts map[string]string `json:"domainPorts,omitempty"`
+
 	// ClusterIssuer selects the certificate provider for this environment only, so
 	// staging can issue from a staging ACME endpoint while production does not.
 	// Empty inherits the app-level issuer.
@@ -264,6 +267,12 @@ type ResourceConfig struct {
 type IngressConfig struct {
 	Domain string `json:"domain"`
 	TLS    bool   `json:"tls,omitempty"`
+
+	// DomainPorts routes specific domains to a named Service port, so one app can serve
+	// different domains from different ports. The key is a domain, the value the name of
+	// a port in spec.service.ports. A domain absent from the map uses the default port:
+	// the one named "http", otherwise the first.
+	DomainPorts map[string]string `json:"domainPorts,omitempty"`
 
 	// ClusterIssuer names the cert-manager ClusterIssuer to issue this app's certificate.
 	// Empty falls back to VestaConfig.spec.clusterIssuer.

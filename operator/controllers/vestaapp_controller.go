@@ -1326,19 +1326,6 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 	labels := r.labelsForApp(app)
 	pathType := networkingv1.PathTypePrefix
 
-	// Determine the service port for the ingress backend
-	ingressPort := int32(80)
-	if app.Spec.Service != nil && len(app.Spec.Service.Ports) > 0 {
-		// Prefer port named "http", otherwise use the first port
-		ingressPort = app.Spec.Service.Ports[0].Port
-		for _, p := range app.Spec.Service.Ports {
-			if p.Name == "http" {
-				ingressPort = p.Port
-				break
-			}
-		}
-	}
-
 	// Resolve per-environment domains: env override → domain template → app-level domain
 	var domains []string
 	if target.Config.Ingress != nil && len(target.Config.Ingress.Domains) > 0 {
@@ -1370,6 +1357,13 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 		return r.deleteAppIngress(ctx, app, target)
 	}
 	domains = filtered
+
+	// Each domain gets its own backend port: spec.ingress.domainPorts can send one domain
+	// to a different Service port than the rest, which otherwise use the default port.
+	domainPorts, err := resolveDomainPorts(app, target, domains)
+	if err != nil {
+		return err
+	}
 
 	// Resolve per-environment TLS: env override → app-level TLS → default false
 	tlsEnabled := false
@@ -1435,10 +1429,7 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				atRest(app.Spec.DesiredState),
 				r.readyReplicasFor(ctx, app, target.Namespace),
 				app.Spec.Sleep.WakeOnTrafficEnabled())
-			backendPort := ingressPort
-			if backendName == activatorName {
-				backendPort = activatorPort
-			}
+			viaActivator := backendName == activatorName
 
 			// The activator reads these off the Ingress, so it needs no access to VestaApp
 			// beyond the patch that wakes one, and learns about a change from the same
@@ -1448,9 +1439,16 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 			} else {
 				delete(ing.Annotations, activator.NoWakePathsAnnotation)
 			}
+			// While the backend is the activator, the rules no longer say which port each
+			// host really uses, so the activator reads it from here.
+			ing.Annotations[activator.HostPortsAnnotation] = hostPortsAnnotationValue(domainPorts)
 
 			rules := make([]networkingv1.IngressRule, 0, len(domains))
 			for _, d := range domains {
+				backendPort := domainPorts[d]
+				if viaActivator {
+					backendPort = activatorPort
+				}
 				rules = append(rules, networkingv1.IngressRule{
 					Host: d,
 					IngressRuleValue: networkingv1.IngressRuleValue{

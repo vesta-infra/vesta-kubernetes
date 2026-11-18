@@ -60,3 +60,13 @@ func TestTheMatcherRecognisesEveryDefaultPath(t *testing.T) {
 		t.Errorf("splitPaths round-trip produced %d entries from %d", len(got), len(list))
 	}
 }
+
+func TestParseHostPorts(t *testing.T) {
+	got := parseHostPorts("App.example.com=80, admin.example.com=9000,bad,x=,y=abc,z=-1")
+	if len(got) != 2 || got["app.example.com"] != 80 || got["admin.example.com"] != 9000 {
+		t.Errorf("got %v", got)
+	}
+	if len(parseHostPorts("")) != 0 {
+		t.Error("empty annotation should parse to nothing")
+	}
+}

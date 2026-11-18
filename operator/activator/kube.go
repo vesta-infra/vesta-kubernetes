@@ -3,6 +3,7 @@ package activator
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,11 @@ type KubeWaker struct {
 // Vesta's own custom resources beyond the patch it uses to wake one -- and so it learns
 // about a change from the same object it already watches for routing.
 const NoWakePathsAnnotation = "kubernetes.getvesta.sh/no-wake-paths"
+
+// HostPortsAnnotation records each host's real Service port as "host=port,host=port".
+// The operator writes it because an app's domains can route to different ports, and
+// while the app sleeps every rule's backend is the activator, not the app's port.
+const HostPortsAnnotation = "kubernetes.getvesta.sh/host-ports"
 
 func NewKubeWaker(namespace string) (*KubeWaker, error) {
 	cfg, err := rest.InClusterConfig()
@@ -126,6 +132,7 @@ func (k *KubeWaker) refresh(ctx context.Context) error {
 			app = ing.Name
 		}
 
+		hostPorts := parseHostPorts(ing.Annotations[HostPortsAnnotation])
 		for _, rule := range ing.Spec.Rules {
 			if rule.Host == "" || rule.HTTP == nil {
 				continue
@@ -138,9 +145,13 @@ func (k *KubeWaker) refresh(ctx context.Context) error {
 				// The port recorded is the app's, not the one currently in the ingress:
 				// while the app is asleep that backend is this activator, and proxying to
 				// our own port would loop.
+				port, ok := hostPorts[strings.ToLower(rule.Host)]
+				if !ok {
+					port = k.appPort(ctx, app)
+				}
 				hosts[strings.ToLower(rule.Host)] = Target{
 					App:         app,
-					Port:        k.appPort(ctx, app),
+					Port:        port,
 					NoWakePaths: splitPaths(ing.Annotations[NoWakePathsAnnotation]),
 				}
 			}
@@ -160,7 +171,31 @@ func (k *KubeWaker) appPort(ctx context.Context, app string) int32 {
 	if err != nil || len(svc.Spec.Ports) == 0 {
 		return 80
 	}
+	// The same choice the operator makes for a domain with no domainPorts entry.
+	for _, p := range svc.Spec.Ports {
+		if p.Name == "http" {
+			return p.Port
+		}
+	}
 	return svc.Spec.Ports[0].Port
+}
+
+// parseHostPorts reads HostPortsAnnotation. Malformed entries are skipped, so the host
+// falls back to the Service's default port rather than becoming unreachable.
+func parseHostPorts(v string) map[string]int32 {
+	out := map[string]int32{}
+	for _, entry := range strings.Split(v, ",") {
+		host, port, ok := strings.Cut(strings.TrimSpace(entry), "=")
+		if !ok || host == "" {
+			continue
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(port), 10, 32)
+		if err != nil || n <= 0 {
+			continue
+		}
+		out[strings.ToLower(strings.TrimSpace(host))] = int32(n)
+	}
+	return out
 }
 
 // vestaSystemNamespace is where VestaApp objects live, regardless of which namespace the app

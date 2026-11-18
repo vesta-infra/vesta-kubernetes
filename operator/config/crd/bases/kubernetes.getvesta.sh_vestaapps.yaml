@@ -450,6 +450,12 @@ spec:
                           type: string
                         domain:
                           type: string
+                        domainPorts:
+                          additionalProperties:
+                            type: string
+                          description: DomainPorts replaces the app-level map for
+                            this environment. Nil inherits it.
+                          type: object
                         domains:
                           items:
                             type: string
@@ -682,6 +688,15 @@ spec:
                     type: string
                   domain:
                     type: string
+                  domainPorts:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      DomainPorts routes specific domains to a named Service port, so one app can serve
+                      different domains from different ports. The key is a domain, the value the name of
+                      a port in spec.service.ports. A domain absent from the map uses the default port:
+                      the one named "http", otherwise the first.
+                    type: object
                   httpsRedirect:
                     description: HTTPSRedirect overrides VestaConfig.spec.httpsRedirect
                       for this app. Empty inherits.
