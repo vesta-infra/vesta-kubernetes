@@ -1,0 +1,30 @@
+# The nixpacks CLI, for generating a Dockerfile from a repository.
+#
+# There is no official image carrying it. ghcr.io/railwayapp/nixpacks is the nix base image
+# that built applications run ON -- its PATH is nix profiles and its command is bash, with no
+# nixpacks binary anywhere. Pointing a build at it produced "nixpacks: not found", which is
+# how the nixpacks strategy failed for as long as it existed.
+#
+# Pinned rather than installed from a script at build time: a build that reaches out to the
+# internet for its own tooling fails for reasons that have nothing to do with the code being
+# built, and does it intermittently.
+FROM alpine:3.20
+
+ARG NIXPACKS_VERSION=1.41.0
+ARG TARGETARCH
+
+RUN apk add --no-cache ca-certificates git curl tar \
+    && case "${TARGETARCH}" in \
+         amd64) arch=x86_64 ;; \
+         arm64) arch=aarch64 ;; \
+         *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL -o /tmp/nixpacks.tar.gz \
+        "https://github.com/railwayapp/nixpacks/releases/download/v${NIXPACKS_VERSION}/nixpacks-v${NIXPACKS_VERSION}-${arch}-unknown-linux-musl.tar.gz" \
+    && tar -xzf /tmp/nixpacks.tar.gz -C /usr/local/bin nixpacks \
+    && rm /tmp/nixpacks.tar.gz \
+    && chmod +x /usr/local/bin/nixpacks \
+    && nixpacks --version
+
+ENTRYPOINT []
+CMD ["/bin/sh"]

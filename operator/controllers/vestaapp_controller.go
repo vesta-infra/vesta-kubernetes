@@ -15,7 +15,9 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -30,10 +32,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"kubernetes.getvesta.sh/operator/activator"
 	vestav1alpha1 "kubernetes.getvesta.sh/operator/api/v1alpha1"
 )
 
 type VestaAppReconciler struct {
+	// ActivatorImage is the image the per-namespace wake-on-traffic proxy runs. Empty
+	// disables the feature: nothing is created, and a sleeping app simply stays down.
+	ActivatorImage         string
+	ActivatorNamespaceRole string
+	ActivatorWakeRole      string
+
 	client.Client
 	Scheme         *runtime.Scheme
 	ConfigResolver *ConfigResolver
@@ -160,23 +169,32 @@ func (r *VestaAppReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		}
 
 		if app.Spec.Ingress != nil || target.Config.Ingress != nil {
+			// Before the Ingress, not after: the Ingress annotation names this middleware,
+			// and Traefik drops an entire router whose middleware is missing. Creating it
+			// second leaves a window -- and, when creation fails, a permanent dangling
+			// reference that takes the route down rather than degrading it.
+			if err := r.reconcileHTTPSRedirectMiddleware(ctx, &app, target); err != nil {
+				return r.updateStatusFailed(ctx, &app, err)
+			}
 			if err := r.reconcileIngress(ctx, &app, target); err != nil {
 				return r.updateStatusFailed(ctx, &app, err)
 			}
-			// Reconcile HTTPS redirect middleware for Traefik when TLS is enabled
-			r.reconcileHTTPSRedirectMiddleware(ctx, &app, target)
 		} else {
 			// Clean up orphaned Ingress if ingress config was removed
-			orphanIng := &networkingv1.Ingress{}
-			if err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: app.Name}, orphanIng); err == nil {
-				if err := r.Client.Delete(ctx, orphanIng); err != nil {
-					logger.Error(err, "failed to delete orphaned ingress", "namespace", target.Namespace)
-				}
+			if err := r.deleteAppIngress(ctx, &app, target); err != nil {
+				logger.Error(err, "failed to delete orphaned ingress", "namespace", target.Namespace)
 			}
 		}
 
 		// Reconcile redirect ingress (handles both creation and cleanup)
 		if err := r.reconcileRedirectIngress(ctx, &app, target); err != nil {
+			return r.updateStatusFailed(ctx, &app, err)
+		}
+
+		// The wake-on-traffic proxy, before the ingress that may point at it. Creating it
+		// after would leave a window where the ingress names a Service that does not exist
+		// yet -- which an ingress controller answers with a 503 for the whole router.
+		if err := r.reconcileActivator(ctx, &app, target); err != nil {
 			return r.updateStatusFailed(ctx, &app, err)
 		}
 
@@ -272,6 +290,18 @@ func (r *VestaAppReconciler) cleanupApp(ctx context.Context, app *vestav1alpha1.
 		}
 		if err := r.Delete(ctx, ing); err != nil && !errors.IsNotFound(err) {
 			return fmt.Errorf("delete ingress %s/%s: %w", target.Namespace, app.Name, err)
+		}
+
+		// Delete the HTTPS redirect Middleware. Without this, deleting an app left the
+		// middleware behind in a namespace with nothing referencing it -- and, worse,
+		// recreating an app of the same name adopted a stale object it never wrote.
+		redirectMW := &unstructured.Unstructured{}
+		redirectMW.SetGroupVersionKind(traefikMiddlewareGVK())
+		redirectMW.SetName(fmt.Sprintf("%s-https-redirect", app.Name))
+		redirectMW.SetNamespace(target.Namespace)
+		if err := r.Delete(ctx, redirectMW); err != nil && !errors.IsNotFound(err) && !meta.IsNoMatchError(err) {
+			logger.Error(err, "failed to delete HTTPS redirect middleware",
+				"namespace", target.Namespace, "name", redirectMW.GetName())
 		}
 
 		// Delete HPA
@@ -370,6 +400,13 @@ func (r *VestaAppReconciler) reconcileServiceAccount(ctx context.Context, app *v
 			}
 		}
 	}
+	// Platform-wide first, then narrower. These were configurable in the chart and read by
+	// nothing: GetGlobalImagePullSecrets had no callers, so a value set there was plumbed
+	// end to end and silently ignored — which is worse than not offering it, because the
+	// only symptom is ImagePullBackOff on an app whose registry was supposedly configured.
+	if r.ConfigResolver != nil {
+		addRef(r.ConfigResolver.GetGlobalImagePullSecrets())
+	}
 	addRef(projectPullSecrets)
 	if app.Spec.Image != nil {
 		addRef(app.Spec.Image.ImagePullSecrets)
@@ -407,28 +444,12 @@ func (r *VestaAppReconciler) reconcileServiceAccount(ctx context.Context, app *v
 
 func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv, projectLabels, projectAnnotations map[string]string) error {
 	labels := r.labelsForApp(app)
-	replicas := int32(1)
-	if target.Config.Replicas != nil {
-		replicas = *target.Config.Replicas
-	}
 
-	// When autoscaling is enabled, don't override replicas — let the HPA control them.
+	// When autoscaling is enabled, don't override replicas — let the HPA control them,
+	// except while the app is at rest, where zero has to win over the autoscaler.
 	autoscalingEnabled := target.Config.Autoscale != nil && target.Config.Autoscale.Enabled
 
-	// Scale-to-Zero: if sleep is enabled and the app is marked as sleeping, set replicas to 0
-	sleepActive := false
-	if app.Spec.Sleep != nil && app.Spec.Sleep.Enabled {
-		if app.Status.Phase == "Sleeping" {
-			replicas = 0
-			sleepActive = true
-		}
-	}
-
-	// Stopped: if the app is explicitly stopped, set replicas to 0
-	if app.Status.Phase == "Stopped" {
-		replicas = 0
-		sleepActive = true // reuse the sleepActive flag to force replicas
-	}
+	replicas, writeReplicas := resolveReplicas(app.Spec.DesiredState, target.Config.Replicas, autoscalingEnabled)
 
 	// Fetch project for imagePullSecrets
 	var project vestav1alpha1.VestaProject
@@ -558,12 +579,10 @@ func (r *VestaAppReconciler) reconcileDeployment(ctx context.Context, app *vesta
 				Spec: podSpec,
 			}
 
-			// Only set replicas when autoscaling is NOT enabled;
-			// otherwise let the HPA manage the replica count.
-			// When sleep is active, always force replicas to 0.
-			if sleepActive {
-				deploy.Spec.Replicas = &replicas
-			} else if !autoscalingEnabled {
+			// resolveReplicas has already decided this: it says no when an HPA owns the
+			// field, and yes regardless while the app is at rest, where zero must win
+			// over the autoscaler.
+			if writeReplicas {
 				deploy.Spec.Replicas = &replicas
 			}
 
@@ -971,6 +990,10 @@ func (r *VestaAppReconciler) buildPodSpec(app *vestav1alpha1.VestaApp, container
 			}
 		}
 	}
+	// Same order as the ServiceAccount above: platform, project, app, environment.
+	if r.ConfigResolver != nil {
+		addPullSecret(r.ConfigResolver.GetGlobalImagePullSecrets())
+	}
 	addPullSecret(projectPullSecrets)
 	if app.Spec.Image != nil {
 		addPullSecret(app.Spec.Image.ImagePullSecrets)
@@ -1003,7 +1026,20 @@ func (r *VestaAppReconciler) buildPodSpec(app *vestav1alpha1.VestaApp, container
 		}
 	}
 
+	// Hardening last, so it can see the app's own ports and mounts. Does nothing at all
+	// under the default profile, which is what every existing app resolves to.
+	ApplySecurityProfile(&podSpec, r.securityProfileFor(app))
+
 	return podSpec
+}
+
+// securityProfileFor resolves the hardening profile for one app.
+func (r *VestaAppReconciler) securityProfileFor(app *vestav1alpha1.VestaApp) string {
+	var platform string
+	if cfg := r.ConfigResolver.GetConfig(); cfg != nil && cfg.Security != nil {
+		platform = cfg.Security.Profile
+	}
+	return ResolveSecurityProfile(platform, app.Spec.SecurityProfile)
 }
 
 func (r *VestaAppReconciler) reconcilePVCs(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) error {
@@ -1249,22 +1285,46 @@ func resolveCertConfig(app *vestav1alpha1.VestaApp, envIngress *vestav1alpha1.In
 	return cfg
 }
 
+// firstEnvironmentURL is the app's URL when it has no app-level domain: the first domain any
+// environment serves, which is where it is actually reachable now that domains are set per
+// environment.
+func firstEnvironmentURL(app *vestav1alpha1.VestaApp) string {
+	for _, env := range app.Spec.Environments {
+		if env.Ingress == nil {
+			continue
+		}
+		domain := env.Ingress.Domain
+		if len(env.Ingress.Domains) > 0 {
+			domain = env.Ingress.Domains[0]
+		}
+		if strings.TrimSpace(domain) == "" {
+			continue
+		}
+		tls := app.Spec.Ingress != nil && app.Spec.Ingress.TLS
+		if env.Ingress.TLS != nil {
+			tls = *env.Ingress.TLS
+		}
+		scheme := "http"
+		if tls {
+			scheme = "https"
+		}
+		return fmt.Sprintf("%s://%s", scheme, domain)
+	}
+	return ""
+}
+
+// deleteAppIngress removes the app's Ingress in one environment, if there is one.
+func (r *VestaAppReconciler) deleteAppIngress(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
+	ing := &networkingv1.Ingress{}
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: app.Name}, ing); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	return client.IgnoreNotFound(r.Client.Delete(ctx, ing))
+}
+
 func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
 	labels := r.labelsForApp(app)
 	pathType := networkingv1.PathTypePrefix
-
-	// Determine the service port for the ingress backend
-	ingressPort := int32(80)
-	if app.Spec.Service != nil && len(app.Spec.Service.Ports) > 0 {
-		// Prefer port named "http", otherwise use the first port
-		ingressPort = app.Spec.Service.Ports[0].Port
-		for _, p := range app.Spec.Service.Ports {
-			if p.Name == "http" {
-				ingressPort = p.Port
-				break
-			}
-		}
-	}
 
 	// Resolve per-environment domains: env override → domain template → app-level domain
 	var domains []string
@@ -1280,8 +1340,10 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 	} else if app.Spec.Ingress != nil && app.Spec.Ingress.Domain != "" {
 		domains = []string{app.Spec.Ingress.Domain}
 	} else {
-		// No domains resolvable — skip ingress creation
-		return nil
+		// No domains resolvable, so there must be no Ingress. Returning without deleting
+		// one left it serving after its domain was removed: the app still had an ingress
+		// block (a certificate issuer, say), so the orphan cleanup in Reconcile never ran.
+		return r.deleteAppIngress(ctx, app, target)
 	}
 
 	// Filter out empty-string domains
@@ -1292,9 +1354,16 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 		}
 	}
 	if len(filtered) == 0 {
-		return nil
+		return r.deleteAppIngress(ctx, app, target)
 	}
 	domains = filtered
+
+	// Each domain gets its own backend port: spec.ingress.domainPorts can send one domain
+	// to a different Service port than the rest, which otherwise use the default port.
+	domainPorts, err := resolveDomainPorts(app, target, domains)
+	if err != nil {
+		return err
+	}
 
 	// Resolve per-environment TLS: env override → app-level TLS → default false
 	tlsEnabled := false
@@ -1352,8 +1421,34 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Annotations[clusterIssuerAnnotation] = cert.ClusterIssuer
 			}
 
+			// While the app is at rest, or up but with nothing ready yet, the ingress
+			// points at the activator instead. It has to be decided here rather than
+			// patched afterwards: ing.Spec is assigned wholesale below on every reconcile,
+			// so anything written from outside is reverted within thirty seconds.
+			backendName := ingressBackend(app.Name,
+				atRest(app.Spec.DesiredState),
+				r.readyReplicasFor(ctx, app, target.Namespace),
+				app.Spec.Sleep.WakeOnTrafficEnabled())
+			viaActivator := backendName == activatorName
+
+			// The activator reads these off the Ingress, so it needs no access to VestaApp
+			// beyond the patch that wakes one, and learns about a change from the same
+			// object it already watches for routing.
+			if paths := app.Spec.Sleep.NoWakePathList(); paths != "" {
+				ing.Annotations[activator.NoWakePathsAnnotation] = paths
+			} else {
+				delete(ing.Annotations, activator.NoWakePathsAnnotation)
+			}
+			// While the backend is the activator, the rules no longer say which port each
+			// host really uses, so the activator reads it from here.
+			ing.Annotations[activator.HostPortsAnnotation] = hostPortsAnnotationValue(domainPorts)
+
 			rules := make([]networkingv1.IngressRule, 0, len(domains))
 			for _, d := range domains {
+				backendPort := domainPorts[d]
+				if viaActivator {
+					backendPort = activatorPort
+				}
 				rules = append(rules, networkingv1.IngressRule{
 					Host: d,
 					IngressRuleValue: networkingv1.IngressRuleValue{
@@ -1364,9 +1459,9 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 									PathType: &pathType,
 									Backend: networkingv1.IngressBackend{
 										Service: &networkingv1.IngressServiceBackend{
-											Name: app.Name,
+											Name: backendName,
 											Port: networkingv1.ServiceBackendPort{
-												Number: ingressPort,
+												Number: backendPort,
 											},
 										},
 									},
@@ -1392,18 +1487,58 @@ func (r *VestaAppReconciler) reconcileIngress(ctx context.Context, app *vestav1a
 				ing.Spec.IngressClassName = existingClass
 			}
 
+			// This runs for every ingress class, not only Traefik. Skipping it elsewhere
+			// is what let a dangling reference survive: when the class stopped resolving
+			// to Traefik, the redirect middleware was deleted while the annotation naming
+			// it was left untouched, and Traefik drops the entire router for a middleware
+			// that does not exist. So a non-Traefik class still has to withdraw the
+			// references Vesta put there.
+			isTraefik := strings.Contains(strings.ToLower(ingressClassName), "traefik")
+
+			var platform, appRefs []string
+			if isTraefik {
+				if tlsEnabled && r.httpsRedirectViaMiddleware(app) {
+					// redirectScheme is a no-op on requests that already arrived over
+					// HTTPS, so it is safe to list unconditionally once TLS is on.
+					//
+					// Skipped entirely under httpsRedirect: none, where the ingress
+					// controller redirects at the entrypoint and this middleware would add
+					// nothing but a second way for the router to fail.
+					platform = append(platform, traefikMiddlewareRef(
+						target.Namespace, fmt.Sprintf("%s-https-redirect", app.Name)))
+				}
+				for _, name := range resolveAppMiddlewares(app, target.Config) {
+					if name = strings.TrimSpace(name); name != "" {
+						appRefs = append(appRefs, traefikMiddlewareRef(
+							target.Namespace, projectedMiddlewareName(name)))
+					}
+				}
+			}
+
+			// Everything already on the object that Vesta does not manage is the user's
+			// own, and is merged rather than overwritten. Vesta-managed references are
+			// dropped from this group and re-added above only when they should exist, so
+			// one that should not is removed rather than carried forward forever.
+			var existing []string
+			if current := ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"]; current != "" {
+				for _, ref := range strings.Split(current, ",") {
+					if !isVestaManagedMiddlewareRef(ref, target.Namespace, app.Name) {
+						existing = append(existing, ref)
+					}
+				}
+			}
+
+			if composed := composeMiddlewareAnnotation(platform, appRefs, existing); composed != "" {
+				ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = composed
+			} else {
+				// Removing the last middleware has to clear the annotation; leaving a
+				// stale value would keep routing through a Middleware that no longer exists.
+				delete(ing.Annotations, "traefik.ingress.kubernetes.io/router.middlewares")
+			}
+
 			if tlsEnabled {
 				if strings.Contains(strings.ToLower(ingressClassName), "traefik") {
 					ing.Annotations["traefik.ingress.kubernetes.io/router.tls"] = "true"
-					// Reference the HTTPS redirect middleware (redirectScheme is no-op for HTTPS requests)
-					httpsMiddlewareName := fmt.Sprintf("%s-https-redirect", app.Name)
-					middlewareRef := fmt.Sprintf("%s-%s@kubernetescrd", target.Namespace, httpsMiddlewareName)
-					// Append to existing middlewares if any (e.g., from per-env annotations)
-					if existing, ok := ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"]; ok && existing != "" {
-						ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = existing + "," + middlewareRef
-					} else {
-						ing.Annotations["traefik.ingress.kubernetes.io/router.middlewares"] = middlewareRef
-					}
 				}
 				// Unmanaged leaves spec.tls alone too — the user's annotations decide
 				// whether and how this ingress terminates TLS.
@@ -1674,7 +1809,23 @@ func traefikMiddlewareGVK() schema.GroupVersionKind {
 // reconcileHTTPSRedirectMiddleware creates or deletes the HTTPS redirect middleware per app/env.
 // When TLS is enabled and ingress class is Traefik, it creates a redirectScheme middleware.
 // When TLS is not enabled, it cleans up any existing middleware.
-func (r *VestaAppReconciler) reconcileHTTPSRedirectMiddleware(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) {
+// reconcileHTTPSRedirectMiddleware creates or removes the per-app HTTPS redirect.
+//
+// It returns an error rather than logging one. The Ingress written immediately after names
+// this middleware, and Traefik drops the whole router when a referenced middleware does not
+// exist -- so a swallowed failure here is not a missing redirect, it is a 404 on every
+// request to the app.
+// httpsRedirectViaMiddleware reports whether this app should get a per-app redirectScheme
+// Middleware. An app-level setting wins over the platform default, so one app can opt out
+// without changing the cluster.
+func (r *VestaAppReconciler) httpsRedirectViaMiddleware(app *vestav1alpha1.VestaApp) bool {
+	if app.Spec.Ingress != nil && app.Spec.Ingress.HTTPSRedirect != "" {
+		return app.Spec.Ingress.HTTPSRedirect == "middleware"
+	}
+	return r.ConfigResolver.GetHTTPSRedirect() == "middleware"
+}
+
+func (r *VestaAppReconciler) reconcileHTTPSRedirectMiddleware(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
 	logger := log.FromContext(ctx)
 	middlewareName := fmt.Sprintf("%s-https-redirect", app.Name)
 
@@ -1691,7 +1842,7 @@ func (r *VestaAppReconciler) reconcileHTTPSRedirectMiddleware(ctx context.Contex
 	ingressClassName := r.resolveIngressClassName(ctx, app)
 	isTraefik := strings.Contains(strings.ToLower(ingressClassName), "traefik")
 
-	if tlsEnabled && isTraefik {
+	if tlsEnabled && isTraefik && r.httpsRedirectViaMiddleware(app) {
 		// Create/update the redirect middleware
 		middleware := &unstructured.Unstructured{}
 		middleware.SetGroupVersionKind(traefikMiddlewareGVK())
@@ -1711,25 +1862,33 @@ func (r *VestaAppReconciler) reconcileHTTPSRedirectMiddleware(ctx context.Contex
 		err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: middlewareName}, existing)
 		if errors.IsNotFound(err) {
 			if err := r.Client.Create(ctx, middleware); err != nil {
-				logger.Error(err, "failed to create HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
+				return fmt.Errorf("create HTTPS redirect middleware %s/%s: %w", target.Namespace, middlewareName, err)
 			}
-		} else if err == nil {
-			existing.Object["spec"] = middleware.Object["spec"]
-			existing.SetLabels(middleware.GetLabels())
-			if err := r.Client.Update(ctx, existing); err != nil {
-				logger.Error(err, "failed to update HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
-			}
+			return nil
 		}
-	} else {
-		// Cleanup: delete the middleware if it exists (TLS was disabled or not Traefik)
-		mw := &unstructured.Unstructured{}
-		mw.SetGroupVersionKind(traefikMiddlewareGVK())
-		if err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: middlewareName}, mw); err == nil {
-			if err := r.Client.Delete(ctx, mw); err != nil {
-				logger.Error(err, "failed to delete HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
-			}
+		if err != nil {
+			return fmt.Errorf("read HTTPS redirect middleware %s/%s: %w", target.Namespace, middlewareName, err)
+		}
+		existing.Object["spec"] = middleware.Object["spec"]
+		existing.SetLabels(middleware.GetLabels())
+		if err := r.Client.Update(ctx, existing); err != nil {
+			return fmt.Errorf("update HTTPS redirect middleware %s/%s: %w", target.Namespace, middlewareName, err)
+		}
+		return nil
+	}
+
+	// TLS is off, or this is not Traefik. Remove the middleware -- and note that the
+	// Ingress reconcile below is what removes the annotation naming it. The two must agree
+	// on the ingress class, which is why both ask resolveIngressClassName rather than
+	// deciding separately.
+	mw := &unstructured.Unstructured{}
+	mw.SetGroupVersionKind(traefikMiddlewareGVK())
+	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: target.Namespace, Name: middlewareName}, mw); err == nil {
+		if err := r.Client.Delete(ctx, mw); err != nil && !errors.IsNotFound(err) {
+			logger.Error(err, "failed to delete HTTPS redirect middleware", "namespace", target.Namespace, "name", middlewareName)
 		}
 	}
+	return nil
 }
 
 func (r *VestaAppReconciler) reconcileHPA(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
@@ -2046,6 +2205,7 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 		}
 
 		var totalDesired, totalAvailable, totalReady int32
+		deploymentsObserved := 0
 		hasCrashLoop := false
 		hasImagePullErr := false
 		autoscaleActive := false
@@ -2063,6 +2223,7 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 			if err := r.Get(ctx, deployKey, &deploy); err != nil {
 				continue // Deployment may not exist yet
 			}
+			deploymentsObserved++
 			issues = append(issues, diagnoseDeployment(target.Config.Name, &deploy)...)
 
 			if deploy.Spec.Replicas != nil {
@@ -2111,11 +2272,19 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 			}
 		}
 
-		// Determine phase
-		sleepEnabled := app.Spec.Sleep != nil && app.Spec.Sleep.Enabled
+		// Determine phase. A resting state is read from the spec rather than inferred
+		// from the absence of pods: "no replicas because we were told to sleep" and "no
+		// replicas because something went wrong" look identical from the cluster, and
+		// only the spec distinguishes them.
+		resting, isResting := restingPhase(app.Spec.DesiredState)
+		zeroed, isZeroed := zeroReplicaPhase(deploymentsObserved, totalDesired)
 		switch {
-		case sleepEnabled && totalDesired == 0:
-			app.Status.Phase = "Sleeping"
+		case isResting:
+			app.Status.Phase = resting
+		case isZeroed:
+			// Scaled to zero on purpose. Checked before the failure cases below so an app
+			// with no pods is not diagnosed from the absence of them.
+			app.Status.Phase = zeroed
 		case hasImagePullErr:
 			app.Status.Phase = "Failed"
 		case hasCrashLoop:
@@ -2134,14 +2303,14 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 		// names the specific pod, container, and underlying error.
 		reason, message := summarizeIssues(issues)
 		switch app.Status.Phase {
-		case "Running", "Sleeping":
+		case "Running", "Sleeping", "Stopped":
 			app.Status.Reason = ""
 			app.Status.Message = ""
 		default:
 			app.Status.Reason = reason
 			app.Status.Message = message
 		}
-		r.setReadyCondition(&app, reason, message)
+		r.setReadyCondition(&app, app.Status.Phase, reason, message)
 
 		// Populate scaling status
 		app.Status.Scaling = &vestav1alpha1.ScalingStatus{
@@ -2186,12 +2355,17 @@ func (r *VestaAppReconciler) updateStatus(ctx context.Context, key client.Object
 				app.Status.CurrentImage = app.Status.DeploymentHistory[len(app.Status.DeploymentHistory)-1].Image
 			}
 		}
-		if app.Spec.Ingress != nil {
+		// Only from a domain that is actually set: an ingress block holding just a
+		// certificate issuer used to produce "http://" here, and a removed domain stayed
+		// on as the app's URL.
+		if app.Spec.Ingress != nil && app.Spec.Ingress.Domain != "" {
 			scheme := "http"
 			if app.Spec.Ingress.TLS {
 				scheme = "https"
 			}
 			app.Status.URL = fmt.Sprintf("%s://%s", scheme, app.Spec.Ingress.Domain)
+		} else {
+			app.Status.URL = firstEnvironmentURL(&app)
 		}
 		app.Status.LastDeployedAt = now
 		return r.Status().Update(ctx, &app)
@@ -2211,7 +2385,7 @@ func (r *VestaAppReconciler) updateStatusFailed(ctx context.Context, app *vestav
 		// "Failed" with the cause only in the operator's logs.
 		latest.Status.Reason = reason
 		latest.Status.Message = truncateMessage(message)
-		r.setReadyCondition(&latest, reason, message)
+		r.setReadyCondition(&latest, "Failed", reason, message)
 		return r.Status().Update(ctx, &latest)
 	})
 	return ctrl.Result{}, reconcileErr
@@ -2219,12 +2393,25 @@ func (r *VestaAppReconciler) updateStatusFailed(ctx context.Context, app *vestav
 
 // setReadyCondition mirrors the reason onto a standard Ready condition so
 // kubectl wait, kubectl describe, and controller-runtime tooling can read it.
-func (r *VestaAppReconciler) setReadyCondition(app *vestav1alpha1.VestaApp, reason, message string) {
+func (r *VestaAppReconciler) setReadyCondition(app *vestav1alpha1.VestaApp, phase, reason, message string) {
 	ready := metav1.ConditionTrue
 	condReason := "AppReady"
 	condMessage := "All environments are running"
 
-	if reason != "" {
+	switch {
+	// An app at rest is not serving, so Ready has to be false -- but the reason names the
+	// instruction rather than a fault, so a deliberate sleep does not read as an outage.
+	// Without this branch a stopped app reported Ready with "All environments are
+	// running", since the resting phases carry no reason.
+	case phase == "Sleeping":
+		ready = metav1.ConditionFalse
+		condReason = "Sleeping"
+		condMessage = "Asleep; scaled to zero"
+	case phase == "Stopped":
+		ready = metav1.ConditionFalse
+		condReason = "Stopped"
+		condMessage = "Stopped by request"
+	case reason != "":
 		ready = metav1.ConditionFalse
 		condReason = reason
 		condMessage = truncateMessage(message)
@@ -2425,3 +2612,119 @@ func shellSplit(s string) []string {
 	}
 	return tokens
 }
+
+// readyReplicasFor reports how many pods of an app are serving in a namespace.
+//
+// Used to decide whether the ingress may point back at the app. Any error reads as zero,
+// which keeps traffic on the activator: standing in for an app that is actually up costs a
+// proxy hop, while pointing at an app that is not up costs the request.
+func (r *VestaAppReconciler) readyReplicasFor(ctx context.Context, app *vestav1alpha1.VestaApp, namespace string) int32 {
+	var deploy appsv1.Deployment
+	if err := r.Get(ctx, client.ObjectKey{Namespace: namespace, Name: app.Name}, &deploy); err != nil {
+		return 0
+	}
+	return deploy.Status.ReadyReplicas
+}
+
+// reconcileActivator brings the wake-on-traffic proxy up or down in one namespace.
+//
+// Created only when some app in the namespace has opted in, and removed when the last one
+// opts out -- an activator in a namespace where nothing uses it is a pod doing nothing,
+// which is a poor look for a feature whose purpose is not running pods.
+func (r *VestaAppReconciler) reconcileActivator(ctx context.Context, app *vestav1alpha1.VestaApp, target targetEnv) error {
+	if r.ActivatorImage == "" {
+		// No image configured, so there is nothing to run. An app that asked for
+		// wake-on-traffic keeps its ingress pointed at itself, which fails while asleep --
+		// the honest outcome when the thing that would have answered does not exist.
+		return nil
+	}
+
+	var apps vestav1alpha1.VestaAppList
+	if err := r.List(ctx, &apps, client.InNamespace(app.Namespace)); err != nil {
+		return err
+	}
+
+	if !activatorNeeded(apps.Items, target.Namespace, app.Spec.Project) {
+		return r.removeActivator(ctx, target.Namespace)
+	}
+
+	sa := buildActivatorServiceAccount(target.Namespace)
+	if err := r.applyObject(ctx, sa, func() error { return nil }); err != nil {
+		return fmt.Errorf("activator serviceaccount: %w", err)
+	}
+
+	// Routing permissions, in this namespace only.
+	local := buildActivatorRoleBinding(activatorName, target.Namespace,
+		r.ActivatorNamespaceRole, target.Namespace)
+	if err := r.applyObject(ctx, local, func() error { return nil }); err != nil {
+		return fmt.Errorf("activator rolebinding: %w", err)
+	}
+
+	// Wake permission, in vesta-system, where every VestaApp lives.
+	wake := buildActivatorRoleBinding(activatorWakeBindingName(target.Namespace),
+		app.Namespace, r.ActivatorWakeRole, target.Namespace)
+	if err := r.applyObject(ctx, wake, func() error { return nil }); err != nil {
+		return fmt.Errorf("activator wake binding: %w", err)
+	}
+
+	svc := buildActivatorService(target.Namespace)
+	existingSvc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: svc.Name, Namespace: svc.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, existingSvc, func() error {
+		existingSvc.Labels = svc.Labels
+		// ClusterIP is immutable once assigned.
+		existingSvc.Spec.Selector = svc.Spec.Selector
+		existingSvc.Spec.Ports = svc.Spec.Ports
+		return nil
+	}); err != nil {
+		return fmt.Errorf("activator service: %w", err)
+	}
+
+	desired := buildActivatorDeployment(target.Namespace, r.ActivatorImage, 1)
+	deploy := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: desired.Name, Namespace: desired.Namespace}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, deploy, func() error {
+		deploy.Labels = desired.Labels
+		if deploy.CreationTimestamp.IsZero() {
+			deploy.Spec.Selector = desired.Spec.Selector
+		}
+		deploy.Spec.Replicas = desired.Spec.Replicas
+		deploy.Spec.Template = desired.Spec.Template
+		return nil
+	}); err != nil {
+		return fmt.Errorf("activator deployment: %w", err)
+	}
+	return nil
+}
+
+// removeActivator tears down the proxy once nothing in the namespace wants it.
+//
+// Best effort throughout: a leftover activator costs a small pod, while failing a reconcile
+// over one would stop the app it was standing in for from being updated at all.
+func (r *VestaAppReconciler) removeActivator(ctx context.Context, namespace string) error {
+	objects := []client.Object{
+		&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: activatorName, Namespace: namespace}},
+		&corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: activatorName, Namespace: namespace}},
+		&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: activatorName, Namespace: namespace}},
+		&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: activatorName, Namespace: namespace}},
+		&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{
+			Name: activatorWakeBindingName(namespace), Namespace: vestaSystemNamespace}},
+	}
+	for _, obj := range objects {
+		if err := r.Delete(ctx, obj); err != nil && !errors.IsNotFound(err) {
+			log.FromContext(ctx).Error(err, "removing activator object",
+				"kind", fmt.Sprintf("%T", obj), "namespace", namespace)
+		}
+	}
+	return nil
+}
+
+// applyObject creates an object or leaves the existing one alone.
+//
+// Used for the objects whose content never changes once created -- a ServiceAccount and the
+// role bindings. Rewriting them on every reconcile would churn the API server for nothing.
+func (r *VestaAppReconciler) applyObject(ctx context.Context, obj client.Object, mutate func() error) error {
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, obj, mutate)
+	return err
+}
+
+// vestaSystemNamespace is where VestaApp objects live.
+const vestaSystemNamespace = "vesta-system"

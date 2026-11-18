@@ -7,19 +7,21 @@ import (
 	"log"
 	mathrand "math/rand"
 	"net/http"
-	"sync"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"kubernetes.getvesta.sh/api/internal/db"
+	"kubernetes.getvesta.sh/api/internal/git"
 	"kubernetes.getvesta.sh/api/internal/models"
+	"kubernetes.getvesta.sh/api/internal/services"
 )
 
-// In-memory state store for manifest flow CSRF protection.
-// In production, this could be stored in DB or a short-lived K8s ConfigMap.
-var manifestStates = struct {
-	sync.Mutex
-	m map[string]string // state -> uiBaseUrl
-}{m: make(map[string]string)}
+// manifestStateTTL bounds how long a half-finished App registration stays valid. Long
+// enough to fill in GitHub's form, short enough that an abandoned attempt does not linger.
+const manifestStateTTL = 30 * time.Minute
 
 func generateState() (string, error) {
 	b := make([]byte, 32)
@@ -34,11 +36,6 @@ func generateState() (string, error) {
 func (h *Handler) GetGitHubAppManifest(c *gin.Context) {
 	if h.GitHubApp == nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "github app service not available"})
-		return
-	}
-
-	if h.GitHubApp.IsConfigured() {
-		c.JSON(http.StatusConflict, models.ErrorResponse{Code: 409, Message: "github app already configured"})
 		return
 	}
 
@@ -67,11 +64,43 @@ func (h *Handler) GetGitHubAppManifest(c *gin.Context) {
 		return
 	}
 
-	manifestStates.Lock()
-	manifestStates.m[state] = req.UIBaseURL
-	manifestStates.Unlock()
+	// The connection's id has to exist before the manifest does: GitHub records the webhook
+	// URL when the App is created, and that URL carries the id so deliveries can be matched
+	// to the right App later. Changing it afterwards means editing the App on GitHub, so it
+	// is decided here and honoured by the callback.
+	connectionID := uuid.NewString()
+
+	// The first App keeps the original Secret name and the connection-less webhook URL, so
+	// an install that has never had one behaves exactly as before. Only a second App needs
+	// a scoped URL.
+	first := !h.GitHubApp.IsConfigured()
+	webhookPath := "/api/v1/webhooks/github"
+	if !first {
+		webhookPath = "/api/v1/webhooks/github/" + connectionID
+	}
+
+	// Stored in Postgres, not in this process.
+	//
+	// It used to be a package-level map guarded by a mutex, which had two problems: it
+	// never expired, so every abandoned registration leaked for the life of the process,
+	// and with more than one API replica the callback could land on a pod that had never
+	// seen the state and answered 403 to a perfectly valid return from GitHub.
+	if err := h.DB.PutOAuthState(c.Request.Context(), state, git.ProviderGitHub,
+		map[string]string{
+			"uiBaseUrl":    req.UIBaseURL,
+			"connectionId": connectionID,
+			"first":        fmt.Sprintf("%t", first),
+		}, manifestStateTTL); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to record state"})
+		return
+	}
 
 	manifest := h.GitHubApp.BuildManifest(req.APIBaseURL, req.AppName)
+	// Override the hook URL the manifest defaults to, so a second App's deliveries name
+	// their own connection.
+	if hook, ok := manifest["hook_attributes"].(map[string]interface{}); ok {
+		hook["url"] = strings.TrimSuffix(req.APIBaseURL, "/") + webhookPath
+	}
 
 	// Build the GitHub URL
 	githubURL := "https://github.com/settings/apps/new"
@@ -102,18 +131,13 @@ func (h *Handler) GitHubAppCallback(c *gin.Context) {
 		return
 	}
 
-	// Verify state to prevent CSRF
-	manifestStates.Lock()
-	uiBaseURL, valid := manifestStates.m[state]
-	if valid {
-		delete(manifestStates.m, state)
-	}
-	manifestStates.Unlock()
-
-	if !valid {
+	// Verify state to prevent CSRF. The read consumes it, so a state cannot be replayed.
+	_, draft, err := h.DB.TakeOAuthState(c.Request.Context(), state)
+	if err != nil {
 		c.JSON(http.StatusForbidden, models.ErrorResponse{Code: 403, Message: "invalid or expired state parameter"})
 		return
 	}
+	uiBaseURL := draft["uiBaseUrl"]
 
 	// Exchange the code for credentials
 	creds, err := h.GitHubApp.ExchangeManifestCode(c.Request.Context(), code)
@@ -123,18 +147,40 @@ func (h *Handler) GitHubAppCallback(c *gin.Context) {
 		return
 	}
 
-	// Save credentials to K8s Secret
-	if err := h.GitHubApp.SaveToSecret(c.Request.Context(), creds); err != nil {
+	connectionID := draft["connectionId"]
+	first := draft["first"] != "false"
+	secretName := services.SecretNameForConnection(connectionID, first)
+
+	if err := h.GitHubApp.SaveToSecretNamed(c.Request.Context(), secretName, creds); err != nil {
 		log.Printf("[github-app] failed to save credentials: %v", err)
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to save credentials"})
 		return
 	}
 
-	// Hot-reload the service
-	if err := h.GitHubApp.Configure(creds.ID, []byte(creds.PEM), creds.WebhookSecret); err != nil {
-		log.Printf("[github-app] failed to configure service: %v", err)
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to configure github app"})
-		return
+	// Only the first App becomes the in-memory one. A second must not overwrite it, or the
+	// original connection would start minting tokens with the wrong App's key.
+	if first {
+		if err := h.GitHubApp.Configure(creds.ID, []byte(creds.PEM), creds.WebhookSecret); err != nil {
+			log.Printf("[github-app] failed to configure service: %v", err)
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: "failed to configure github app"})
+			return
+		}
+	}
+
+	if _, err := h.DB.CreateGitConnection(c.Request.Context(), db.GitConnection{
+		ID:          connectionID,
+		Provider:    git.ProviderGitHub,
+		DisplayName: creds.Name,
+		Host:        git.DefaultHost(git.ProviderGitHub),
+		Account:     creds.Owner.Login,
+		SecretName:  secretName,
+		ExternalID:  fmt.Sprintf("%d", creds.ID),
+		Metadata:    map[string]string{"appSlug": creds.Slug, "ownerType": creds.Owner.Type},
+		IsLegacy:    first,
+	}); err != nil {
+		// The App exists on GitHub at this point, so failing the request would strand it.
+		// Record the problem and let the user retry from Settings instead.
+		log.Printf("[github-app] app created but the connection was not recorded: %v", err)
 	}
 
 	log.Printf("[github-app] successfully created GitHub App: %s (ID: %d)", creds.Name, creds.ID)
@@ -226,42 +272,3 @@ func (h *Handler) DeleteGitHubApp(c *gin.Context) {
 
 // ListRepoBranches lists branches for a repository via the GitHub App.
 // GET /api/v1/git/branches?repo=org/repo
-func (h *Handler) ListRepoBranches(c *gin.Context) {
-	repo := c.Query("repo")
-	if repo == "" {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: "repo query parameter is required"})
-		return
-	}
-
-	if h.GitHubApp == nil || !h.GitHubApp.IsConfigured() {
-		c.JSON(http.StatusOK, gin.H{"branches": []string{}})
-		return
-	}
-
-	branches, err := h.GitHubApp.ListRepoBranches(c.Request.Context(), repo)
-	if err != nil {
-		log.Printf("[github-app] list branches for %s: %v", repo, err)
-		c.JSON(http.StatusOK, gin.H{"branches": []string{}})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"branches": branches})
-}
-
-// ListAccessibleRepos lists all repositories accessible via the GitHub App.
-// GET /api/v1/git/repos
-func (h *Handler) ListAccessibleRepos(c *gin.Context) {
-	if h.GitHubApp == nil || !h.GitHubApp.IsConfigured() {
-		c.JSON(http.StatusOK, gin.H{"repos": []interface{}{}})
-		return
-	}
-
-	repos, err := h.GitHubApp.ListAccessibleRepos(c.Request.Context())
-	if err != nil {
-		log.Printf("[github-app] list accessible repos: %v", err)
-		c.JSON(http.StatusOK, gin.H{"repos": []interface{}{}})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"repos": repos})
-}

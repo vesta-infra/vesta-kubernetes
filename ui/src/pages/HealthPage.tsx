@@ -41,7 +41,7 @@ export default function HealthPage() {
 
       {/* App health table */}
       {apps.length > 0 && (
-        <div className="card overflow-hidden">
+        <div className="card overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="border-b border-border bg-surface-1/60">
@@ -115,7 +115,7 @@ function PhaseIndicator({ phase }: { phase: string }) {
       ? 'bg-status-failed-bg text-status-failed border-status-failed/10'
       : phase === 'Degraded'
       ? 'bg-status-degraded-bg text-status-degraded border-status-degraded/10'
-      : phase === 'Sleeping'
+      : phase === 'Sleeping' || phase === 'Stopped'
       ? 'bg-surface-3 text-text-tertiary border-border'
       : 'bg-status-pending-bg text-status-pending border-status-pending/10'
 

@@ -1,0 +1,697 @@
+package controllers
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	vestav1alpha1 "kubernetes.getvesta.sh/operator/api/v1alpha1"
+)
+
+const (
+	collectorName      = "vesta-logs"
+	collectorConfigMap = "vesta-logs-config"
+	drainHomeNamespace = "vesta-system"
+)
+
+// VestaLogDrainReconciler renders the collector's configuration from every VestaLogDrain
+// and reports back what the collector says it actually delivered.
+//
+// It reconciles the whole set on any change rather than one drain at a time: the collector
+// has a single configuration file, so a per-drain reconcile would still have to read every
+// other drain to write it.
+type VestaLogDrainReconciler struct {
+	client.Client
+	Scheme *runtime.Scheme
+
+	// MetricsURL is the collector's metrics endpoint. Overridable so tests can point it at
+	// a local server.
+	MetricsURL string
+}
+
+// +kubebuilder:rbac:groups=kubernetes.getvesta.sh,resources=vestalogdrains,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=kubernetes.getvesta.sh,resources=vestalogdrains/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+
+func (r *VestaLogDrainReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	var drains vestav1alpha1.VestaLogDrainList
+	if err := r.List(ctx, &drains); err != nil {
+		return ctrl.Result{}, fmt.Errorf("list log drains: %w", err)
+	}
+
+	targets, renderErrors, err := r.resolveTargets(ctx, drains.Items)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	config, err := RenderFluentBitConfig(targets)
+	if err != nil {
+		// One unrenderable drain must not take the others down: resolveTargets has already
+		// excluded it and recorded why, so reaching here means a bug rather than bad input.
+		return ctrl.Result{}, fmt.Errorf("render collector config: %w", err)
+	}
+
+	checksum, err := r.writeConfig(ctx, config)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	// Nothing left to ship: take the collector down rather than leaving a pod on every node
+	// tailing logs for no destination. Only one this operator created — a DaemonSet the
+	// chart rendered belongs to Helm, and deleting it here would have it reappear on the
+	// next upgrade and vanish on the next reconcile.
+	if len(targets) == 0 {
+		if err := r.removeOwnCollector(ctx); err != nil {
+			logger.Error(err, "could not remove the log collector")
+		}
+	}
+
+	collectorMissing := false
+	if len(targets) > 0 {
+		if err := r.rollCollector(ctx, checksum); err != nil {
+			// rollCollector creates one when it is absent, so reaching here means the
+			// create itself failed.
+			if !errors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			collectorMissing = true
+			logger.Info("collector is not deployed; configuration written but nothing is shipping",
+				"hint", "set logging.enabled=true in the chart")
+		}
+	}
+
+	stats, statsRead := r.collectorStats(ctx)
+	for i := range drains.Items {
+		if err := r.updateStatus(ctx, &drains.Items[i], targets, renderErrors, stats, collectorMissing, statsRead); err != nil {
+			logger.Error(err, "failed to update drain status", "drain", drains.Items[i].Name)
+		}
+	}
+
+	// Metrics move without anything in the cluster changing, so status would otherwise go
+	// stale until the next edit.
+	return ctrl.Result{RequeueAfter: 2 * time.Minute}, nil
+}
+
+// resolveTargets turns each drain's scope into concrete namespaces, and works out which
+// apps have opted out of a broader drain of the same name.
+func (r *VestaLogDrainReconciler) resolveTargets(ctx context.Context, drains []vestav1alpha1.VestaLogDrain) ([]DrainTarget, map[string]string, error) {
+	var apps vestav1alpha1.VestaAppList
+	if err := r.List(ctx, &apps); err != nil {
+		return nil, nil, fmt.Errorf("list apps: %w", err)
+	}
+
+	// Every "<namespace>/<app>" in the cluster, which an opt-out needs in order to
+	// enumerate what remains.
+	var allApps []string
+	for i := range apps.Items {
+		app := &apps.Items[i]
+		for _, ns := range r.namespacesForApp(ctx, app) {
+			allApps = append(allApps, ns+"/"+app.Name)
+		}
+	}
+	sort.Strings(allApps)
+
+	renderErrors := map[string]string{}
+	var targets []DrainTarget
+
+	for i := range drains {
+		d := drains[i]
+		if !boolOr(d.Spec.Enabled, true) {
+			continue
+		}
+
+		target := DrainTarget{
+			Drain:        d,
+			Namespaces:   r.namespacesForScope(ctx, d.Spec),
+			ExcludedApps: resolveExclusions(d.Spec, allApps),
+		}
+		if len(target.ExcludedApps) > 0 {
+			// Only a drain with an exclusion needs the full list: the Match has to
+			// enumerate what remains, since Fluent Bit cannot express "everything except".
+			for _, pair := range allApps {
+				if scopeCovers(d.Spec, pair) {
+					target.IncludedApps = append(target.IncludedApps, pair)
+				}
+			}
+		}
+
+		// Render each drain on its own first, so one bad spec is reported against itself
+		// rather than breaking the whole file.
+		if _, err := renderOutput(target); err != nil {
+			renderErrors[d.Name] = err.Error()
+			continue
+		}
+		targets = append(targets, target)
+	}
+
+	return targets, renderErrors, nil
+}
+
+// resolveExclusions turns the drain's excludeApps entries into concrete
+// "<namespace>/<app>" pairs. An entry is either a bare app name, excluding it wherever it
+// runs, or "<project>/<app>" for one project's copy.
+func resolveExclusions(spec vestav1alpha1.VestaLogDrainSpec, allApps []string) []string {
+	if len(spec.ExcludeApps) == 0 {
+		return nil
+	}
+
+	wanted := map[string]bool{}
+	for _, entry := range spec.ExcludeApps {
+		wanted[strings.TrimSpace(entry)] = true
+	}
+
+	var out []string
+	for _, pair := range allApps {
+		if !scopeCovers(spec, pair) {
+			continue
+		}
+		ns, app, _ := strings.Cut(pair, "/")
+		// A bare name excludes the app everywhere; qualifying it with the project narrows
+		// that to one namespace, which matters when two projects run an app of the same name.
+		if wanted[app] || wanted[ns+"/"+app] {
+			out = append(out, pair)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// scopeProjects returns the projects a drain covers, empty meaning every project.
+//
+// Project and Projects are unioned rather than one overriding the other: a drain written
+// before the list existed keeps working, and projects can be added to it without having to
+// move the original value into the list first.
+func scopeProjects(spec vestav1alpha1.VestaLogDrainSpec) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range append([]string{spec.Project}, spec.Projects...) {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
+// scopeCovers reports whether a drain's scope includes a given "<namespace>/<app>".
+func scopeCovers(spec vestav1alpha1.VestaLogDrainSpec, pair string) bool {
+	ns, app, found := strings.Cut(pair, "/")
+	if !found {
+		return false
+	}
+	if spec.App != "" && spec.App != app {
+		return false
+	}
+
+	projects := scopeProjects(spec)
+	if len(projects) == 0 {
+		return true
+	}
+
+	for _, project := range projects {
+		if spec.Environment != "" {
+			if ns == project+"-"+spec.Environment {
+				return true
+			}
+			continue
+		}
+		// Prefix alone is ambiguous between "shop" and "shop-extra", so this is only a
+		// cheap pre-filter; namespacesForScope is what decides the real list.
+		if strings.HasPrefix(ns, project+"-") {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *VestaLogDrainReconciler) namespacesForScope(ctx context.Context, spec vestav1alpha1.VestaLogDrainSpec) []string {
+	projects := scopeProjects(spec)
+	if len(projects) == 0 {
+		return nil
+	}
+
+	if spec.Environment != "" {
+		out := make([]string, 0, len(projects))
+		for _, project := range projects {
+			out = append(out, project+"-"+spec.Environment)
+		}
+		sort.Strings(out)
+		return out
+	}
+
+	// Every environment of every project in scope. Listed per project rather than once with
+	// a selector, because the label carries a single project name.
+	var out []string
+	for _, project := range projects {
+		var envs vestav1alpha1.VestaEnvironmentList
+		if err := r.List(ctx, &envs, client.MatchingLabels{
+			"kubernetes.getvesta.sh/project": project,
+		}); err != nil {
+			// One unreadable project must not silently narrow the drain to the others:
+			// shipping a subset of what was asked for looks like the destination dropping
+			// records rather than like a failure here.
+			return nil
+		}
+		for _, env := range envs.Items {
+			out = append(out, project+"-"+env.Name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// namespacesForApp mirrors VestaAppReconciler.resolveTargetNamespaces. The two must agree:
+// a namespace this misses is one whose logs are never routed.
+func (r *VestaLogDrainReconciler) namespacesForApp(ctx context.Context, app *vestav1alpha1.VestaApp) []string {
+	if len(app.Spec.Environments) > 0 {
+		out := make([]string, 0, len(app.Spec.Environments))
+		for _, env := range app.Spec.Environments {
+			out = append(out, app.Spec.Project+"-"+env.Name)
+		}
+		return out
+	}
+
+	var envs vestav1alpha1.VestaEnvironmentList
+	if err := r.List(ctx, &envs, client.MatchingLabels{
+		"kubernetes.getvesta.sh/project": app.Spec.Project,
+	}); err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(envs.Items))
+	for _, env := range envs.Items {
+		out = append(out, app.Spec.Project+"-"+env.Name)
+	}
+	return out
+}
+
+func (r *VestaLogDrainReconciler) writeConfig(ctx context.Context, config string) (string, error) {
+	script := RenderRouteScript()
+	sum := sha256.Sum256([]byte(config + script))
+	checksum := hex.EncodeToString(sum[:])
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: collectorConfigMap, Namespace: drainHomeNamespace},
+	}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
+		cm.Labels = map[string]string{
+			"app.kubernetes.io/managed-by": "vesta-operator",
+			"app.kubernetes.io/component":  "logs",
+		}
+		cm.Data = map[string]string{
+			"fluent-bit.conf": config,
+			"vesta.lua":       script,
+			"parsers.conf":    defaultParsers,
+		}
+		return nil
+	})
+	return checksum, err
+}
+
+// credentialChecksumAnnotation carries the digest of the credential values.
+//
+// Separate from checksum/config so the two reasons to restart stay distinguishable when
+// reading a live DaemonSet: the configuration changed, or a credential behind it did.
+const credentialChecksumAnnotation = "checksum/credentials"
+
+// stampCredentials records the credential digest on the pod template.
+//
+// An empty digest removes the annotation rather than writing an empty value, so a collector
+// with no credentials at all compares equal to a freshly built one instead of rolling
+// forever on a field that is present in one and absent in the other.
+func stampCredentials(ds *appsv1.DaemonSet, digest string) {
+	if digest == "" {
+		delete(ds.Spec.Template.Annotations, credentialChecksumAnnotation)
+		return
+	}
+	if ds.Spec.Template.Annotations == nil {
+		ds.Spec.Template.Annotations = map[string]string{}
+	}
+	ds.Spec.Template.Annotations[credentialChecksumAnnotation] = digest
+}
+
+// rollCollector stamps the config checksum on the DaemonSet's pod template.
+//
+// Fluent Bit's hot reload is deliberately not used: a reload that half-applies leaves nodes
+// disagreeing about where logs go, with nothing saying so. A rolling restart is observable
+// through `kubectl rollout status` and atomic per node.
+func (r *VestaLogDrainReconciler) rollCollector(ctx context.Context, checksum string) error {
+	ds := &appsv1.DaemonSet{}
+	err := r.Get(ctx, client.ObjectKey{Namespace: drainHomeNamespace, Name: collectorName}, ds)
+	if errors.IsNotFound(err) {
+		// Nothing is running one, so start it. The operator is the only thing that knows a
+		// drain exists; the chart cannot, which is why configuring a drain in the UI used
+		// to write a configuration and leave it unshipped until somebody ran helm.
+		env, digest, credErr := r.credentialEnv(ctx)
+		if credErr != nil {
+			return credErr
+		}
+		created := BuildCollectorDaemonSet(drainHomeNamespace, checksum, r.collectorOptions(env))
+		stampCredentials(created, digest)
+		if createErr := r.Create(ctx, created); createErr != nil {
+			return createErr
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	env, digest, err := r.credentialEnv(ctx)
+	if err != nil {
+		return err
+	}
+
+	// A collector this operator created is one it owns, so the whole pod spec is reconciled
+	// rather than just the checksum. Patching only the annotation left an existing
+	// DaemonSet on whatever spec it was first created with, for good: the buffer mounted
+	// inside a read-only /var/log kept the container from starting, and shipping the fix
+	// repaired nothing, because nothing ever looked at the mounts again.
+	//
+	// A chart-rendered one is Helm's. Rewriting its spec here would be overwritten on the
+	// next upgrade and rewritten on the next reconcile, so that one keeps the narrow patch.
+	if ds.Labels["app.kubernetes.io/managed-by"] == "vesta-operator" {
+		desired := BuildCollectorDaemonSet(drainHomeNamespace, checksum, r.collectorOptions(env))
+		stampCredentials(desired, digest)
+		if len(desired.Spec.Template.Spec.Containers) > 0 {
+			desired.Spec.Template.Spec.Containers[0].Env = env
+		}
+		if apiequality.Semantic.DeepEqual(ds.Spec, desired.Spec) {
+			return nil
+		}
+		ds.Spec = desired.Spec
+		ds.Labels = desired.Labels
+		return r.Update(ctx, ds)
+	}
+
+	unchanged := ds.Spec.Template.Annotations["checksum/config"] == checksum &&
+		ds.Spec.Template.Annotations[credentialChecksumAnnotation] == digest &&
+		len(ds.Spec.Template.Spec.Containers) > 0 &&
+		envEqual(ds.Spec.Template.Spec.Containers[0].Env, env)
+	if unchanged {
+		return nil
+	}
+
+	if ds.Spec.Template.Annotations == nil {
+		ds.Spec.Template.Annotations = map[string]string{}
+	}
+	ds.Spec.Template.Annotations["checksum/config"] = checksum
+	stampCredentials(ds, digest)
+	if len(ds.Spec.Template.Spec.Containers) > 0 {
+		ds.Spec.Template.Spec.Containers[0].Env = env
+	}
+	return r.Update(ctx, ds)
+}
+
+// credentialEnv wires every drain's credentials Secret into the collector.
+//
+// The generated configuration references credentials as ${VESTA_DRAIN_<NAME>_<KEY>}, which
+// only resolves if the collector has them in its environment. Nothing else does this: the
+// API writes the Secret and the chart cannot know which drains exist, so without this the
+// references expand to empty strings and every authenticated destination rejects the
+// batch -- with the collector reporting a delivery error rather than a configuration one.
+//
+// It reads whatever keys the Secret holds rather than knowing each drain type's fields, so
+// adding a destination needs no change here.
+//
+// The second return is a digest of the credential values, which the caller stamps on the pod
+// template. It is needed because a SecretKeyRef names a Secret and a key and nothing else:
+// editing a password leaves this env slice byte-identical, leaves the rendered configuration
+// byte-identical -- it holds ${VAR}, not the value -- and so rolls nothing, while the running
+// pods keep serving the value they read at startup. The drain then fails to authenticate with
+// no way to fix it short of deleting something to force a restart.
+func (r *VestaLogDrainReconciler) credentialEnv(ctx context.Context) ([]corev1.EnvVar, string, error) {
+	var secrets corev1.SecretList
+	if err := r.List(ctx, &secrets, client.InNamespace(drainHomeNamespace)); err != nil {
+		return nil, "", fmt.Errorf("list drain credentials: %w", err)
+	}
+
+	var env []corev1.EnvVar
+	// Collected alongside the env, then hashed in name order so the digest is stable across
+	// reconciles. Only the hash is kept; no credential value is stored or logged.
+	values := map[string][]byte{}
+	for i := range secrets.Items {
+		secret := &secrets.Items[i]
+		drainName := secret.Labels["kubernetes.getvesta.sh/log-drain"]
+		if drainName == "" {
+			continue
+		}
+		for _, key := range sortedSecretKeys(secret.Data) {
+			name := DrainEnvVar(drainName, key)
+			values[name] = secret.Data[key]
+			env = append(env, corev1.EnvVar{
+				Name: name,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: secret.Name},
+						Key:                  key,
+					},
+				},
+			})
+		}
+	}
+
+	// Stable order, or the DaemonSet rolls on every reconcile.
+	sort.Slice(env, func(i, j int) bool { return env[i].Name < env[j].Name })
+	return env, credentialDigest(values), nil
+}
+
+// credentialDigest hashes credential values so a change to one is visible to a comparison
+// that can only see references.
+//
+// The env var name is hashed along with the value, so renaming a drain rolls the collector
+// too. Length-prefixed rather than delimited, because a value containing the delimiter would
+// otherwise let two different credential sets hash the same.
+func credentialDigest(values map[string][]byte) string {
+	if len(values) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	h := sha256.New()
+	for _, name := range names {
+		fmt.Fprintf(h, "%d:%s", len(name), name)
+		fmt.Fprintf(h, "%d:", len(values[name]))
+		h.Write(values[name])
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func sortedSecretKeys(data map[string][]byte) []string {
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func envEqual(a, b []corev1.EnvVar) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Name != b[i].Name {
+			return false
+		}
+		if (a[i].ValueFrom == nil) != (b[i].ValueFrom == nil) {
+			return false
+		}
+		if a[i].ValueFrom != nil && b[i].ValueFrom != nil {
+			if a[i].ValueFrom.SecretKeyRef.Name != b[i].ValueFrom.SecretKeyRef.Name ||
+				a[i].ValueFrom.SecretKeyRef.Key != b[i].ValueFrom.SecretKeyRef.Key {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// outputStats is one drain's counters as the collector reports them.
+type outputStats struct {
+	ProcRecords   int64 `json:"proc_records"`
+	Errors        int64 `json:"errors"`
+	RetriesFailed int64 `json:"retries_failed"`
+}
+
+// collectorStats reads the collector's own metrics.
+//
+// This is what separates a drain that is working from one that is merely configured.
+// Without it a misconfigured destination is indistinguishable from an app that logged
+// nothing, and the first sign of trouble is an empty dashboard during an incident.
+// collectorStats reads the collector's own counters, and says whether it managed to.
+//
+// The second return is the whole point. Every failure here used to come back as a nil map,
+// which updateStatus could not tell apart from "read fine, this drain delivered nothing" --
+// so it set Ready and moved on. A drain answering 401 on every flush reported healthy, and
+// the first sign of trouble was an empty dashboard.
+func (r *VestaLogDrainReconciler) collectorStats(ctx context.Context) (map[string]outputStats, bool) {
+	url := r.MetricsURL
+	if url == "" {
+		url = fmt.Sprintf("http://%s.%s.svc:2020/api/v1/metrics", collectorName, drainHomeNamespace)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, false
+	}
+	// Short: this runs inside a reconcile, and a hung collector must not stall it.
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, false
+	}
+
+	var parsed struct {
+		Output map[string]outputStats `json:"output"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, false
+	}
+	return parsed.Output, true
+}
+
+func (r *VestaLogDrainReconciler) updateStatus(
+	ctx context.Context,
+	drain *vestav1alpha1.VestaLogDrain,
+	targets []DrainTarget,
+	renderErrors map[string]string,
+	stats map[string]outputStats,
+	collectorMissing bool,
+	statsRead bool,
+) error {
+	status := vestav1alpha1.VestaLogDrainStatus{
+		ObservedGeneration: drain.Generation,
+		Scope:              describeScope(drain.Spec),
+	}
+
+	switch {
+	case !boolOr(drain.Spec.Enabled, true):
+		status.Reason = "disabled"
+	case renderErrors[drain.Name] != "":
+		status.Reason = renderErrors[drain.Name]
+	case collectorMissing:
+		// Rendering succeeded, so this drain is in targets and would otherwise report Ready
+		// while not a single line is being shipped. A drain that claims to work and does
+		// not is worse than one that says it cannot: the first sign of trouble would be an
+		// empty dashboard during an incident.
+		status.Reason = "no log collector is running — set logging.enabled=true in the chart"
+
+	default:
+		for _, t := range targets {
+			if t.Drain.Name != drain.Name {
+				continue
+			}
+			status.Ready = true
+
+			// Confirmed delivery is the only thing that earns a clean Ready. Without the
+			// collector's counters there is no evidence either way, and claiming health on
+			// no evidence is how a drain answering 401 on every flush reported itself fine.
+			if !statsRead {
+				status.Reason = "delivery unconfirmed: the collector's metrics could not be read"
+			}
+
+			if s, ok := stats[drain.Name]; ok {
+				status.RecordsDelivered = s.ProcRecords
+				status.Errors = s.Errors
+				status.RetriesFailed = s.RetriesFailed
+				if s.Errors > 0 || s.RetriesFailed > 0 {
+					status.Ready = false
+					status.Reason = fmt.Sprintf("%d delivery errors, %d batches given up on",
+						s.Errors, s.RetriesFailed)
+				}
+				if s.ProcRecords > 0 {
+					status.LastDeliveryAt = time.Now().UTC().Format(time.RFC3339)
+				}
+			}
+			break
+		}
+	}
+
+	if drain.Status == status {
+		return nil
+	}
+	drain.Status = status
+	return r.Status().Update(ctx, drain)
+}
+
+const defaultParsers = `[PARSER]
+    Name   json
+    Format json
+    Time_Key time
+    Time_Format %d/%b/%Y:%H:%M:%S %z
+
+[PARSER]
+    Name        docker
+    Format      json
+    Time_Key    time
+    Time_Format %Y-%m-%dT%H:%M:%S.%L
+    Time_Keep   On
+`
+
+func (r *VestaLogDrainReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&vestav1alpha1.VestaLogDrain{}).
+		// An app appearing or disappearing changes which namespaces a project-scoped drain
+		// covers, and which apps an opt-out has to enumerate around.
+		Watches(
+			&vestav1alpha1.VestaApp{},
+			handler.EnqueueRequestsFromMapFunc(func(context.Context, client.Object) []ctrl.Request {
+				return []ctrl.Request{{NamespacedName: types.NamespacedName{
+					Name: "resync", Namespace: drainHomeNamespace,
+				}}}
+			}),
+		).
+		// Credential Secrets, because editing only a password reconciles nothing otherwise.
+		// The API rewrites the drain on every edit, but a credential lives in the Secret and
+		// the spec holds just a name and a key -- so the object it writes back is identical,
+		// the resourceVersion does not move, and no watch event is produced. Without this the
+		// collector keeps presenting the old credential until something unrelated happens to
+		// touch the drain.
+		Watches(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []ctrl.Request {
+				if obj.GetNamespace() != drainHomeNamespace {
+					return nil
+				}
+				if obj.GetLabels()["kubernetes.getvesta.sh/log-drain"] == "" {
+					return nil
+				}
+				return []ctrl.Request{{NamespacedName: types.NamespacedName{
+					Name: "resync", Namespace: drainHomeNamespace,
+				}}}
+			}),
+		).
+		Complete(r)
+}

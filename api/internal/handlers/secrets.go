@@ -8,7 +8,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"kubernetes.getvesta.sh/api/internal/k8s"
+	"kubernetes.getvesta.sh/api/internal/middleware"
 	"kubernetes.getvesta.sh/api/internal/models"
+	"kubernetes.getvesta.sh/api/internal/rbac"
+	"kubernetes.getvesta.sh/api/internal/registry"
 )
 
 // restartDeployment patches a deployment to trigger a rolling restart after config changes.
@@ -399,19 +402,90 @@ func (h *Handler) CreateRegistrySecret(c *gin.Context) {
 		Registry string `json:"registry" binding:"required"`
 		Username string `json:"username" binding:"required"`
 		Password string `json:"password" binding:"required"`
+		Flavor   string `json:"flavor"`
+		// Scope and Project decide who may use this credential afterwards. Empty Scope
+		// takes the platform default, which is global unless the instance changed it.
+		Scope   string `json:"scope"`
+		Project string `json:"project"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
 		return
 	}
 
+	// Normalised before it is stored, because the operator uses this value verbatim as the
+	// key of the docker config "auths" map and kubelet looks that key up by the host of the
+	// image being pulled. Stored as typed, "https://harbor.example.com:443" never matches
+	// an image at "harbor.example.com/lib/app", and the only symptom is ImagePullBackOff --
+	// which points at the image rather than at the credential.
+	//
+	// Credentials stored before this are left alone: rewriting one could break an install
+	// that happens to work. The test endpoint reports the mismatch instead.
+	authsKey, _ := registry.NormalizeRegistry(req.Registry)
+
+	// The password goes into a Kubernetes Secret and the credential only references it.
+	// Written first: a failure here means no credential is created at all, which is better
+	// than one that exists and cannot authenticate.
+	passwordRef, err := h.writeRegistryPassword(c.Request.Context(), req.Name, req.Password)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Code: 500, Message: err.Error()})
+		return
+	}
+
+	dockerConfig := map[string]interface{}{
+		"registry":          authsKey,
+		"username":          req.Username,
+		"passwordSecretRef": passwordRef,
+	}
+	if req.Flavor != "" {
+		dockerConfig["flavor"] = req.Flavor
+	}
+
+	scope := ResolveSecretScope(req.Scope, h.defaultSecretScope(c))
+
+	if scope == SecretScopeGlobal && c.GetString("role") != rbac.RoleAdmin {
+		// A global credential is usable by everyone who can reach this page, so creating one
+		// is an instance-wide act. Letting any developer make one would mean scoping could
+		// always be sidestepped by choosing the weaker option.
+		//
+		// The message names the way forward, because on an instance whose default is global
+		// this is the path a developer lands on without having chosen anything.
+		c.JSON(http.StatusForbidden, models.ErrorResponse{
+			Code: 403,
+			Message: "only an administrator can create an instance-wide registry credential; " +
+				"scope it to a project instead, or ask an administrator",
+		})
+		return
+	}
+
 	spec := map[string]interface{}{
-		"type": "kubernetes.io/dockerconfigjson",
-		"dockerConfig": map[string]interface{}{
-			"registry": req.Registry,
-			"username": req.Username,
-			"password": req.Password,
-		},
+		"type":         "kubernetes.io/dockerconfigjson",
+		"dockerConfig": dockerConfig,
+		"scope":        scope,
+	}
+
+	if scope == SecretScopeProject {
+		// A project-scoped credential naming no project can never be accessed by anyone --
+		// there is no membership to check against, so the access check fails closed. That
+		// is the correct behaviour at read time and a useless object to have created, so
+		// it is refused here instead.
+		if req.Project == "" {
+			c.JSON(http.StatusBadRequest, models.ErrorResponse{
+				Code:    400,
+				Message: "a project-scoped credential must name a project",
+			})
+			return
+		}
+		// And the caller has to be able to put a credential in that project, or scoping
+		// would be a way to hand secrets to a project you have no part in.
+		if !rbac.Can(middleware.EffectiveRoleFor(c, h.DB, req.Project, ""), rbac.ActionSecrets) {
+			c.JSON(http.StatusForbidden, models.ErrorResponse{
+				Code:    403,
+				Message: "you do not have permission to add secrets to that project",
+			})
+			return
+		}
+		spec["project"] = req.Project
 	}
 
 	obj := map[string]interface{}{
@@ -434,9 +508,11 @@ func (h *Handler) CreateRegistrySecret(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":        result.GetName(),
-		"name":      result.GetName(),
-		"registry":  req.Registry,
+		"id":   result.GetName(),
+		"name": result.GetName(),
+		// The normalised form, so the UI shows what was actually stored rather than what
+		// was typed.
+		"registry":  authsKey,
 		"username":  req.Username,
 		"type":      "kubernetes.io/dockerconfigjson",
 		"createdAt": result.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
@@ -454,12 +530,23 @@ func (h *Handler) ListRegistrySecrets(c *gin.Context) {
 	items := make([]map[string]interface{}, 0, len(list.Items))
 	for _, item := range list.Items {
 		spec, _, _ := unstructuredNestedMap(item.Object, "spec")
+
+		// A project-scoped credential belongs to its project's members. Filtered out rather
+		// than redacted: the name and registry host are themselves worth not leaking, and a
+		// redacted row invites a support ticket about a credential the caller cannot use.
+		if !h.mayAccessSecret(c, spec, rbac.ActionRead) {
+			continue
+		}
+
+		scope, project := h.secretScopeOf(c, spec)
 		dc, _, _ := unstructuredNestedMap(spec, "dockerConfig")
 		items = append(items, map[string]interface{}{
 			"id":        item.GetName(),
 			"name":      item.GetName(),
 			"registry":  getNestedString(dc, "registry"),
 			"username":  getNestedString(dc, "username"),
+			"scope":     scope,
+			"project":   project,
 			"createdAt": item.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
 		})
 	}
@@ -469,10 +556,29 @@ func (h *Handler) ListRegistrySecrets(c *gin.Context) {
 
 func (h *Handler) DeleteRegistrySecret(c *gin.Context) {
 	name := c.Param("name")
+
+	// Read before deleting. Removing a credential an app pulls with breaks that app's next
+	// deploy, so a caller who may not even see the credential must not be able to delete it
+	// by guessing its name.
+	obj, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaSecretGVR, vestaSystemNS, name)
+	if err != nil {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "registry secret not found"})
+		return
+	}
+	spec, _, _ := unstructuredNestedMap(obj.Object, "spec")
+	if !h.mayAccessSecret(c, spec, rbac.ActionSecrets) {
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "registry secret not found"})
+		return
+	}
+
 	if err := h.K8s.DeleteResource(c.Request.Context(), k8s.VestaSecretGVR, vestaSystemNS, name); err != nil {
 		c.JSON(http.StatusNotFound, models.ErrorResponse{Code: 404, Message: "registry secret not found"})
 		return
 	}
+
+	// And the stored password, or a deleted credential leaves a live secret behind.
+	h.deleteRegistryPassword(c.Request.Context(), name)
+
 	c.Status(http.StatusNoContent)
 }
 

@@ -51,15 +51,8 @@ func (h *Handler) GetAppDependencies(c *gin.Context) {
 		})
 
 		spec, _, _ := unstructuredNestedMap(app.Object, "spec")
-		runtime, _, _ := unstructuredNestedMap(spec, "runtime")
-		envVars, _, _ := unstructuredNestedMap(runtime, "envVars")
 
-		for key, val := range envVars {
-			valStr, ok := val.(string)
-			if !ok {
-				continue
-			}
-
+		for key, valStr := range appEnvPairs(spec) {
 			// Check if env var value references another app's service DNS
 			for otherApp := range appNames {
 				if otherApp == appName {
@@ -129,4 +122,37 @@ func extractHostFromURL(s string) string {
 		s = s[:colonIdx]
 	}
 	return s
+}
+
+// appEnvPairs reads an app's literal environment variables.
+//
+// The field is spec.runtime.env, and it is a LIST of {name, value} -- the Kubernetes EnvVar
+// shape -- not a map. This read used to ask for spec.runtime.envVars as a map, which does
+// not exist on VestaApp at all, so it always came back empty and the dependency graph drew
+// every app as an island. Nothing failed: the endpoint returned 200 with nodes and no edges,
+// which is exactly what a project with no dependencies looks like.
+func appEnvPairs(spec map[string]interface{}) map[string]string {
+	runtime, _, _ := unstructuredNestedMap(spec, "runtime")
+	list, _, _ := unstructuredNestedSlice(runtime, "env")
+
+	out := make(map[string]string, len(list))
+	for _, item := range list {
+		entry, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name := getNestedString(entry, "name")
+		if name == "" {
+			continue
+		}
+		// A var sourced from a Secret or ConfigMap carries valueFrom and no literal value.
+		// Skipping it is right on both counts: there is nothing to match against, and
+		// resolving it would mean reading secret material to draw a diagram.
+		value := getNestedString(entry, "value")
+		if value == "" {
+			continue
+		}
+		out[name] = value
+	}
+	return out
 }

@@ -23,6 +23,25 @@ import (
 type VestaSecretReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+
+	// APIReader reads straight from the API server, bypassing the informer cache.
+	//
+	// Required for the password migration, which creates a Secret and then reads it back to
+	// confirm the value is durably stored before clearing the original. The cached client
+	// cannot do that: the informer has not observed the write yet, so the read returns
+	// NotFound, the verification fails, and the migration errors on every reconcile forever
+	// without ever completing.
+	//
+	// Nil falls back to the cached client, which keeps the zero value usable in tests.
+	APIReader client.Reader
+}
+
+// reader returns the uncached reader when one is configured.
+func (r *VestaSecretReconciler) reader() client.Reader {
+	if r.APIReader != nil {
+		return r.APIReader
+	}
+	return r.Client
 }
 
 // +kubebuilder:rbac:groups=kubernetes.getvesta.sh,resources=vestasecrets,verbs=get;list;watch;create;update;patch;delete
@@ -38,6 +57,21 @@ func (r *VestaSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Move any plaintext password into a Secret before anything reads it. Ordered so that
+	// the value is durably written and verified before the original is cleared -- a
+	// credential lost here cannot be recovered from anywhere.
+	if migrated, err := r.MigrateRegistryPassword(ctx, &vs); err != nil {
+		logger.Error(err, "could not migrate registry password out of the CRD; "+
+			"the plaintext is left in place and this will be retried", "secret", vs.Name)
+	} else if migrated {
+		logger.Info("moved registry password into a Secret", "secret", vs.Name,
+			"passwordSecret", registryPasswordSecretName(vs.Name))
+		// MigrateRegistryPassword updated vs in place from the object it patched, so there
+		// is nothing to re-read. Re-reading through the cache is what produced
+		// "the object has been modified" on the status update below: the cache still held
+		// the pre-patch resourceVersion.
 	}
 
 	logger.Info("reconciling VestaSecret", "name", vs.Name, "namespace", vs.Namespace)
@@ -79,7 +113,11 @@ func (r *VestaSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 		case "kubernetes.io/dockerconfigjson":
 			if vs.Spec.DockerConfig != nil {
-				dockerJSON, err := buildDockerConfigJSON(vs.Spec.DockerConfig)
+				password, err := r.ResolveRegistryPassword(ctx, vs.Namespace, vs.Spec.DockerConfig)
+				if err != nil {
+					return fmt.Errorf("resolve registry password: %w", err)
+				}
+				dockerJSON, err := buildDockerConfigJSON(vs.Spec.DockerConfig, password)
 				if err != nil {
 					return fmt.Errorf("build docker config: %w", err)
 				}
@@ -125,13 +163,17 @@ func (r *VestaSecretReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	return ctrl.Result{}, nil
 }
 
-func buildDockerConfigJSON(dc *vestav1alpha1.DockerSecretConfig) ([]byte, error) {
-	auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", dc.Username, dc.Password)))
+// buildDockerConfigJSON renders the docker config the kubelet reads.
+//
+// The password arrives as an argument rather than being read off the spec, so this stays a
+// pure function while the credential itself lives in a Secret.
+func buildDockerConfigJSON(dc *vestav1alpha1.DockerSecretConfig, password string) ([]byte, error) {
+	auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", dc.Username, password)))
 	config := map[string]interface{}{
 		"auths": map[string]interface{}{
 			dc.Registry: map[string]string{
 				"username": dc.Username,
-				"password": dc.Password,
+				"password": password,
 				"auth":     auth,
 			},
 		},

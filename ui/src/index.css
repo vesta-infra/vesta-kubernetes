@@ -144,6 +144,13 @@
 }
 
 @layer utilities {
+  /* Horizontal tab bars scroll on narrow screens; the bar itself needn't show. */
+  .scrollbar-none {
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
   .noise-bg {
     position: relative;
   }

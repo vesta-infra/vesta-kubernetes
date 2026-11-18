@@ -99,11 +99,13 @@ docker-build: ## Build all Docker images
 	docker build -t $(REGISTRY)/$(IMAGE_PREFIX)operator:$(VERSION) --build-arg APP_VERSION=$(VERSION) operator/
 	docker build -t $(REGISTRY)/$(IMAGE_PREFIX)api:$(VERSION) --build-arg APP_VERSION=$(VERSION) api/
 	docker build -t $(REGISTRY)/$(IMAGE_PREFIX)ui:$(VERSION) --build-arg APP_VERSION=$(VERSION) ui/
+	docker build -t $(REGISTRY)/$(IMAGE_PREFIX)activator:$(VERSION) -f operator/Dockerfile.activator --build-arg APP_VERSION=$(VERSION) operator/
 
 docker-push: docker-build ## Push all Docker images
 	docker push $(REGISTRY)/$(IMAGE_PREFIX)operator:$(VERSION)
 	docker push $(REGISTRY)/$(IMAGE_PREFIX)api:$(VERSION)
 	docker push $(REGISTRY)/$(IMAGE_PREFIX)ui:$(VERSION)
+	docker push $(REGISTRY)/$(IMAGE_PREFIX)activator:$(VERSION)
 
 # ── Helm ─────────────────────────────────────────────────────────────────
 
@@ -136,9 +138,19 @@ fmt: ## Format Go code
 	cd api && go fmt ./...
 	cd cli && go fmt ./...
 
-generate: ## Generate CRD manifests from Go types, then sync them into the chart
+generate: ## Generate CRD manifests and deepcopy methods from Go types
+	@# allowDangerousTypes is for the cost rate card, which is genuinely fractional: a rate
+	@# of 0.01712 per vCPU-hour has no sensible integer spelling, and the alternative --
+	@# a string the operator parses by hand -- moves a validation the API server already
+	@# does into our own code. Without this flag controller-gen refuses outright and every
+	@# CRD, not just that one, stops regenerating.
 	cd operator && GOFLAGS=-mod=mod go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) \
-		crd paths="./api/..." output:crd:dir=config/crd/bases
+		crd:allowDangerousTypes=true paths="./api/..." output:crd:dir=config/crd/bases
+	@# Deepcopy too. This used to be a separate invocation nobody ran, so adding a kind
+	@# failed to build with "does not implement runtime.Object" and the fix was a
+	@# controller-gen command line you had to already know.
+	cd operator && GOFLAGS=-mod=mod go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) \
+		object paths="./api/..."
 	@echo ""
 	@echo "Generated into operator/config/crd/bases only."
 	@echo "The chart's CRDs are deliberately more permissive: many Go fields lack"
@@ -156,19 +168,48 @@ sync-crds: ## Add newly generated properties to the chart's CRDs (then run check
 	python3 hack/merge-crd-properties.py operator/config/crd/bases deploy/helm/vesta/crds
 
 check-crds: ## Fail if the chart's CRDs would reject data an earlier release accepted
-	./hack/check-crd-compat.sh $(CHART_BASELINE)
+	@for v in $(CHART_BASELINES); do ./hack/check-crd-compat.sh $$v || exit 1; done
+	@# Compatibility is not the only way a CRD can be wrong. A property with no type makes
+	@# the API server reject the whole file, and nothing else here notices: helm lint does
+	@# not validate CRD schemas and helm template renders it happily.
+	./hack/check-crd-structural.sh deploy/helm/vesta/crds
+	./hack/check-crd-structural.sh operator/config/crd/bases
+	@# And that no enum in the chart is narrower than the Go types. sync-crds cannot fix
+	@# this class: it copies absent properties and never edits one that exists, so a value
+	@# added to an existing enum never arrives. That shipped openobserve as a drain whose
+	@# config block validated and whose type value did not.
+	./hack/check-crd-enums.sh
 
 helm-lint: ## Lint and render the chart the way CI does
 	helm lint deploy/helm/vesta
 	helm template vesta deploy/helm/vesta -n vesta-system >/dev/null
 	helm template vesta deploy/helm/vesta -n vesta-system --set postgres.enabled=true >/dev/null
 
-# CHART_BASELINE is the last release whose rendered resources this chart must still
-# cover. Bump it only when you have confirmed the upgrade path from that version.
-CHART_BASELINE ?= 0.6.3
+# CHART_BASELINES are the releases whose rendered resources this chart must still cover.
+#
+# More than one, because they catch different things. 0.6.3 is the oldest upgrade path
+# still supported, and 0.9.1 is the last release -- checking only the old one meant the
+# guard rendered 11 resources while the chart had grown to 21, so everything added since
+# 0.6.3 could have been dropped without the check noticing.
+#
+# Add a version only once you have confirmed the upgrade path from it.
+CHART_BASELINES ?= 0.6.3 0.9.1
 
 helm-upgrade-safety: ## Fail if this chart drops a resource an earlier release rendered
-	./hack/check-no-dropped-resources.sh $(CHART_BASELINE)
+	@for v in $(CHART_BASELINES); do ./hack/check-no-dropped-resources.sh $$v || exit 1; done
+
+# Checked against the last release only, deliberately.
+#
+# It catches what it needs to catch: any key introduced in a NEW chart version, read without
+# a guard, which is the regression this exists to prevent. 0.10.0 shipped exactly that.
+#
+# Older baselines still fail, and that is pre-existing rather than new -- upgrading from
+# 0.6.3 with --reuse-values has been broken since api.jwt and api.encryption were added.
+# Fixing those needs a decision per key rather than mechanical guarding: defaulting
+# api.jwt.secret would rotate the signing key and log everybody out. Run the script with an
+# older version to see that list.
+check-reuse-values: ## Fail if `helm upgrade --reuse-values` would not render this chart
+	./hack/check-reuse-values.sh 0.9.1
 
 check-upgrader-rbac: ## Fail if self-update cannot apply everything the chart renders
 	./hack/check-upgrader-rbac.sh

@@ -388,6 +388,291 @@ default chart and the dev proxy rewrites `Host`. Set `VESTA_ALLOWED_ORIGINS` to 
 browser origins may complete a ceremony; left unset, any syntactically valid domain is
 accepted.
 
+### Log drains
+
+Pod logs are read on demand and not retained — when a pod is replaced, its logs are gone. A
+log drain ships them somewhere that keeps them. Enable the collector, then define drains:
+
+```bash
+helm upgrade vesta oci://ghcr.io/vesta-infra/charts/vesta \
+  -n vesta-system --reuse-values --set logging.enabled=true
+
+vesta drains create -f central.yaml
+vesta drains list
+```
+
+```yaml
+name: central-logging
+type: loki
+config:
+  host: loki.monitoring.svc
+  port: 3100
+```
+
+Eight destinations: `http`, `loki`, `syslog`, `elasticsearch`, `datadog`, `s3`,
+`openobserve` and `forward`.
+
+`forward` sends to a Fluent Bit or Fluentd aggregator you already run, which keeps owning
+where logs finally go. Records arrive already tagged and enriched — `vesta_project`,
+`vesta_namespace` and `vesta_app` are set before any output runs — so the aggregator's own
+routing can match on those instead of re-deriving them from Kubernetes metadata.
+
+```yaml
+name: central-aggregator
+type: forward
+config:
+  host: fluentd.logging.svc
+  port: 24224
+credentials:
+  SHARED_KEY: "..."
+```
+
+OpenObserve has its own type, which fills in the ingest path and timestamp field:
+
+```yaml
+name: openobserve
+type: openobserve
+config:
+  endpoint: https://openobserve.example.com   # base URL only, no path
+  organization: default
+  stream: vesta
+credentials:
+  USER: you@example.com
+  PASSWORD: "..."
+```
+
+Anything else accepting JSON over HTTP works through the `http` type. There, set `dateKey`
+to whatever field the destination reads event time from. Leave it unset and records carry
+`timestamp`, which most services accept — but a destination expecting its own field will
+silently stamp every record with its ingestion time instead, and that only becomes visible
+when a backlog drains and an hour of logs shares one timestamp. OpenObserve reads
+`_timestamp`, which is half of why it gets a type of its own.
+
+**Scope is the attachment.** A drain with no `project` covers every app; add `project`,
+`environment` or `app` to narrow it. An app ships to *every* drain whose scope covers it, so
+a project drain adds to the platform one rather than replacing it — which is what makes
+"everything to S3, plus this project to Datadog" a two-line configuration.
+
+To exempt individual apps, list them under `excludeApps`:
+
+```yaml
+name: central-logging
+type: s3
+excludeApps:
+  - payments            # excluded wherever it runs
+  - shop-staging/api    # only this project's copy
+config:
+  bucket: credpal-logs
+```
+
+A bare name exempts the app in every namespace the drain covers; qualifying it with the
+namespace narrows that to one, which matters when two projects run an app of the same name.
+`enabled: false` turns the whole drain off instead, keeping its configuration and
+credentials for when it comes back.
+
+**Credentials never reach the drain.** Put them under a separate `credentials:` key and Vesta
+writes them to a Secret, storing only a reference:
+
+```yaml
+name: datadog
+type: datadog
+config:
+  site: datadoghq.eu
+credentials:
+  API_KEY: "..."
+```
+
+Each entry under `credentials:` is one value, named by the key it is stored under —
+`USER` and `PASSWORD` for basic auth, `API_KEY`, `AUTH`, `SHARED_KEY`,
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Those names are also the environment
+variables the collector reads, so what you see here is what the running config references.
+
+A CRD is readable by anyone with `get` on the type, so an API key there would be a leak
+however it arrived. The generated collector configuration references the Secret through the
+environment and never contains the value either.
+
+**Delivery is reported, not assumed.** Each drain's status carries records delivered and
+errors, read from the collector's own metrics. Without that, a misconfigured destination is
+indistinguishable from an app that logged nothing, and the first sign of trouble is an empty
+dashboard during an incident.
+
+Only pods carrying Vesta's app label are shipped. The cluster's own components — including
+Vesta's API, whose logs contain request detail — are deliberately not routed to app drains.
+
+### Ingress middlewares
+
+Rate limits, basic auth, IP allow lists, CORS headers and the rest are defined once as
+middlewares and attached to as many app environments as you like. A middleware lives in
+`vesta-system`; the operator projects it into each namespace that uses it and withdraws it
+when the last app detaches.
+
+```bash
+vesta middlewares list
+vesta middlewares create -f office-only.json
+vesta middlewares attach office-only --app shop --env production
+vesta middlewares detach office-only --app shop --env production
+```
+
+```json
+{
+  "name": "office-only",
+  "type": "ipAllowList",
+  "description": "Office and VPN ranges",
+  "config": { "sourceRange": ["10.0.0.0/8", "203.0.113.7"] }
+}
+```
+
+The `raw` type takes YAML or JSON, and accepts a whole `Middleware` manifest — paste one
+straight from Traefik's docs or from `kubectl get middleware -o yaml` and Vesta takes its
+`spec`:
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: coraza-forward-auth
+spec:
+  forwardAuth:
+    address: http://coraza-waf.my-namespace.svc.cluster.local:9080
+    trustForwardHeader: true
+```
+
+Ten types have validated forms in the UI — `rateLimit`, `basicAuth`, `ipAllowList`,
+`headers`, `stripPrefix`, `compress`, `retry`, `circuitBreaker`, `buffering` — plus `raw`,
+which passes a Traefik middleware spec through untouched for plugins and anything without
+a form.
+
+**Order matters.** Traefik runs middlewares in the order listed, and the order changes
+behaviour: an allow list above a basic-auth check rejects unknown addresses without
+prompting them for a password, while the reverse prompts first. The attachment list is
+ordered for that reason, and Vesta puts its own HTTPS/domain redirects ahead of yours so a
+request about to be 301'd spends no rate-limit budget.
+
+Per environment, the list either inherits the app-level one or replaces it. An empty list
+is a replacement, not an absence — it is how one environment opts out of a middleware the
+app otherwise applies everywhere.
+
+`basicAuth` takes usernames and passwords directly:
+
+```json
+{
+  "name": "staging-gate",
+  "type": "basicAuth",
+  "config": { "users": [{ "username": "alice", "password": "…" }] }
+}
+```
+
+Passwords are bcrypt-hashed before anything is written and stored in a Secret Vesta owns in
+`vesta-system`, which the operator copies into each namespace the middleware is projected
+into. The middleware itself only ever holds a secret name and the list of usernames — a CRD
+is readable by anyone with `get` on the type, so a password there would be a leak however
+it arrived. They are never readable afterwards, so editing shows each account with a blank
+password meaning "leave this one alone"; type a new one to rotate it, or remove the row to
+revoke access.
+
+If you would rather manage the htpasswd data yourself, set `secretName` instead and Vesta
+leaves that Secret alone. Setting both is refused rather than silently preferring one.
+
+Middleware is a Traefik feature. On another ingress class the middleware reports itself
+inactive with the reason, rather than accepting configuration that would never take effect.
+
+### HTTPS redirects
+
+By default Vesta stamps a Traefik `redirectScheme` Middleware on each TLS-enabled app. Many
+Traefik installations already redirect at the entrypoint:
+
+```
+--entryPoints.web.http.redirections.entryPoint.to=:443
+--entryPoints.web.http.redirections.entryPoint.scheme=https
+```
+
+That runs before any router or middleware is consulted, so the per-app middleware adds
+nothing. And it is not free: Traefik drops an **entire router** when it cannot resolve a
+referenced middleware, so a redundant one is an extra way for the route to 404. Turn it off
+platform-wide:
+
+```yaml
+apiVersion: kubernetes.getvesta.sh/v1alpha1
+kind: VestaConfig
+spec:
+  httpsRedirect: none      # or "middleware" (default)
+```
+
+or per app under `spec.ingress.httpsRedirect`, which overrides the platform setting in
+either direction. Switching to `none` deletes the middlewares Vesta created and withdraws
+the annotations referencing them.
+
+### Troubleshooting: "middleware ... does not exist"
+
+If Traefik logs this on every router for an app:
+
+```
+ERR error="middleware \"<ns>-<app>-https-redirect@kubernetescrd\" does not exist"
+```
+
+check whether Traefik is running with `safeNaming` enabled:
+
+```bash
+kubectl get deploy -n traefik traefik \
+  -o 'jsonpath={.spec.template.spec.containers[0].args}' | tr ',' '\n' | grep -i safe
+```
+
+`--providers.kubernetescrd.safeNaming=true` changes the internal name Traefik registers a
+CRD-sourced middleware under, so the conventional `<namespace>-<name>@kubernetescrd`
+reference that Vesta — and Traefik's own documentation — writes into the
+`traefik.ingress.kubernetes.io/router.middlewares` annotation no longer matches. The
+`Middleware` object is present and readable; Traefik just has it filed elsewhere.
+
+This is worth knowing because the failure is severe and misleading. Traefik drops the
+**entire router** when it cannot resolve a referenced middleware, so the symptom is a 404 on
+every request rather than a missing redirect — and `kubectl get middleware` shows the object
+sitting right there, which sends you looking at the wrong thing.
+
+Turn it off where it is actually defined. If it came from `additionalArguments` in your
+Traefik values, `--set providers.kubernetesCRD.safeNaming=false` will **not** override it —
+it adds an unrelated key while the original argument survives. Edit the values file:
+
+```yaml
+additionalArguments:
+  - "--providers.kubernetescrd.safeNaming=true"   # remove this line
+```
+
+Then confirm the argument is gone from the running Deployment before concluding anything
+about whether it helped.
+
+If you would rather keep `safeNaming`, Vesta's own HTTPS redirect middleware can be turned
+off entirely — see [HTTPS redirects](#https-redirects). That removes Vesta's dependency on
+the annotation, though any middleware you attach yourself is still subject to the same
+mismatch.
+
+### Pod sizes
+
+Apps pick a resource preset rather than setting requests and limits by hand. Two families
+are built in:
+
+| | CPU | Memory | CPU limit | Memory limit |
+|---|---|---|---|---|
+| `xxsmall` | 50m | 64Mi | 100m | 128Mi |
+| `xsmall` | 100m | 128Mi | 250m | 256Mi |
+| `small` | 250m | 256Mi | 500m | 512Mi |
+| `medium` | 500m | 512Mi | 1 | 1Gi |
+| `large` | 1 | 1Gi | 2 | 2Gi |
+| `xlarge` | 2 | 2Gi | 4 | 4Gi |
+| `mem-xsmall` | 62m | 256Mi | 125m | 512Mi |
+| `mem-small` | 125m | 512Mi | 250m | 1Gi |
+| `mem-medium` | 250m | 1Gi | 500m | 2Gi |
+| `mem-large` | 500m | 2Gi | 1 | 4Gi |
+| `mem-xlarge` | 1 | 4Gi | 2 | 8Gi |
+
+The balanced sizes run roughly one core per gigabyte, which suits most request-handling
+services. The `mem-` sizes run about one core per four gigabytes, for workloads that hold
+far more in memory than they compute over — JVM services, in-process caches, anything that
+loads a large dataset at startup. Putting those on a balanced size means either paying for
+CPU that idles, or being throttled long before the memory is used.
+
+Replace them entirely with `config.podSizeList` in values.yaml; the names are yours to
+choose, and apps reference them by name.
+
 ### Copying env vars and secrets
 
 Every env var and revealed-secret panel has a **Copy as .env** button that puts the whole

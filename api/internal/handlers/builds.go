@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"kubernetes.getvesta.sh/api/internal/db"
+	"kubernetes.getvesta.sh/api/internal/git"
 	"kubernetes.getvesta.sh/api/internal/k8s"
 	"kubernetes.getvesta.sh/api/internal/models"
 	"kubernetes.getvesta.sh/api/internal/services"
@@ -72,6 +73,26 @@ func (h *Handler) TriggerBuild(c *gin.Context) {
 	}
 
 	repository, _ := gitSpec["repository"].(string)
+	gitProvider, _ := gitSpec["provider"].(string)
+	if gitProvider == "" {
+		gitProvider = git.ProviderGitHub
+	}
+	gitHost, _ := gitSpec["host"].(string)
+
+	// Normalise before the build, so a repository entered as a URL or with a trailing .git
+	// produces a clone URL that works rather than one that 404s halfway through a job.
+	repoRef, err := git.ParseRepoRef(gitProvider, gitHost, repository)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
+			Code: 400, Message: "app has an unusable git repository: " + err.Error()})
+		return
+	}
+
+	// The app's own token secret, which the builder mounts to clone with. This only began
+	// working when spec.git.tokenSecret was added to the CRD -- until then the API server
+	// pruned it, so the field the UI collected never reached a build.
+	appTokenSecret, _ := gitSpec["tokenSecret"].(string)
+
 	branch, _ := gitSpec["branch"].(string)
 	if req.Branch != "" {
 		branch = req.Branch
@@ -116,6 +137,24 @@ func (h *Handler) TriggerBuild(c *gin.Context) {
 		}
 	}
 
+	// Fall back to the project's pull secrets.
+	//
+	// This used to stop at the app and its environment, so a project-scoped credential
+	// produced a build job with no push authentication at all -- the build ran, the push
+	// failed, and the error came from inside a build pod. It matters more now that the UI
+	// offers registry credentials in a picker, which makes project-level ones easier to
+	// choose.
+	if registrySecret == "" {
+		if proj, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaProjectGVR, vestaSystemNS, project); err == nil {
+			projSpec, _, _ := unstructuredNestedMap(proj.Object, "spec")
+			if ps, ok := projSpec["imagePullSecrets"].([]interface{}); ok && len(ps) > 0 {
+				if first, ok := ps[0].(map[string]interface{}); ok {
+					registrySecret, _ = first["name"].(string)
+				}
+			}
+		}
+	}
+
 	triggeredBy := "api-token"
 	if uid := c.GetString("userId"); uid != "" {
 		triggeredBy = fmt.Sprintf("user:%s", uid)
@@ -126,7 +165,10 @@ func (h *Handler) TriggerBuild(c *gin.Context) {
 		ProjectID:      project,
 		Environment:    req.Environment,
 		Strategy:       strategy,
-		Repository:     repository,
+		Repository:     repoRef.Path,
+		Provider:       repoRef.Provider,
+		GitSecretName:  appTokenSecret,
+		Host:           repoRef.Host,
 		Branch:         branch,
 		CommitSHA:      commitSHA,
 		Dockerfile:     dockerfile,

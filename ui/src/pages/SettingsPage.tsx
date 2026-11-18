@@ -1,19 +1,24 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
+import RevealableInput from '../components/RevealableInput'
 import { useUserRole, useCurrentUsername } from '../lib/useRole'
 import MFAEnrollment from '../components/MFAEnrollment'
 import ReauthPrompt from '../components/ReauthPrompt'
 import UIDomainSettings from '../components/UIDomainSettings'
 import { BackupCodes } from '../components/MFAChallenge'
 import SSLProvidersSection from '../components/SSLProviders'
+import SecuritySection from '../components/SecuritySection'
+import CostSettings from '../components/CostSettings'
 
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'general' | 'teams' | 'users' | 'roles' | 'audit' | 'webhooks' | 'integrations' | 'ssl' | 'system'>(() => {
+  const [activeTab, setActiveTab] = useState<'general' | 'teams' | 'users' | 'roles' | 'audit' | 'webhooks' | 'integrations' | 'ssl' | 'security' | 'cost' | 'system'>(() => {
     const params = new URLSearchParams(window.location.search)
     const tab = params.get('tab')
     if (tab === 'integrations') return 'integrations'
     if (tab === 'ssl') return 'ssl'
+    // The cost pages link here when pricing is still the built-in estimate.
+    if (tab === 'cost') return 'cost'
     // The update banner links straight here.
     if (tab === 'system') return 'system'
     return 'general'
@@ -28,6 +33,8 @@ export default function SettingsPage() {
     { key: 'roles' as const, label: 'Roles' },
     ...(isAdmin ? [
       { key: 'ssl' as const, label: 'SSL Certificates' },
+      { key: 'security' as const, label: 'Security' },
+      { key: 'cost' as const, label: 'Cost' },
       { key: 'system' as const, label: 'System' },
       { key: 'integrations' as const, label: 'Integrations' },
       { key: 'audit' as const, label: 'Audit Log' },
@@ -39,12 +46,12 @@ export default function SettingsPage() {
     <div className="space-y-6">
       <p className="text-sm text-text-secondary">Manage your profile, teams, access, and integrations.</p>
 
-      <div className="flex border-b border-border">
+      <div className="flex border-b border-border overflow-x-auto scrollbar-none">
         {tabs.map((tab) => (
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
-            className={`px-5 py-3 text-xs font-mono tracking-wider uppercase transition-colors ${
+            className={`shrink-0 whitespace-nowrap px-3 md:px-5 py-3 text-xs font-mono tracking-wider uppercase transition-colors ${
               activeTab === tab.key
                 ? 'text-accent border-b-2 border-accent'
                 : 'text-text-tertiary hover:text-text-secondary'
@@ -108,6 +115,18 @@ export default function SettingsPage() {
         </div>
       )}
 
+      {activeTab === 'security' && isAdmin && (
+        <div className="space-y-8">
+          <SecuritySection />
+        </div>
+      )}
+
+      {activeTab === 'cost' && isAdmin && (
+        <div className="space-y-8">
+          <CostSettings />
+        </div>
+      )}
+
       {activeTab === 'system' && isAdmin && (
         <div className="space-y-8">
           <SystemVersionSection />
@@ -116,6 +135,7 @@ export default function SettingsPage() {
 
       {activeTab === 'integrations' && isAdmin && (
         <div className="space-y-8">
+          <GitConnectionsSection />
           <GitHubAppSection />
         </div>
       )}
@@ -266,7 +286,7 @@ function ChangePasswordSection() {
             required
           />
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="label">New Password</label>
             <input
@@ -405,7 +425,7 @@ function CreateTeamForm({ onClose }: { onClose: () => void }) {
       onSubmit={(e) => { e.preventDefault(); mutation.mutate() }}
       className="bg-surface-1 border border-border rounded-lg p-4 space-y-4 animate-slide-up mb-4"
     >
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Name</label>
           <input value={name} onChange={(e) => setName(e.target.value)} className="input-field" required placeholder="engineering" />
@@ -704,7 +724,7 @@ function SystemVersionSection() {
       </div>
 
       <div className="pt-4 border-t border-border space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-sm text-text-primary">
               {running ? `Upgrading to ${progress?.current?.toVersion}...`
@@ -716,7 +736,7 @@ function SystemVersionSection() {
               {!status?.isRelease && ' · development build, updates are not offered'}
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <button onClick={() => check.mutate()} disabled={check.isPending || !status?.checkEnabled}
                     className="text-xs text-accent hover:text-accent-glow font-mono disabled:opacity-40">
               {check.isPending ? 'Checking...' : 'Check now'}
@@ -1265,7 +1285,7 @@ function RegisterUserForm({ onClose }: { onClose: () => void }) {
       onSubmit={(e) => { e.preventDefault(); mutation.mutate() }}
       className="bg-surface-1 border border-border rounded-lg p-4 space-y-4 animate-slide-up mb-4"
     >
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Username</label>
           <input value={username} onChange={(e) => setUsername(e.target.value)} className="input-field" required placeholder="jdoe" />
@@ -1275,7 +1295,7 @@ function RegisterUserForm({ onClose }: { onClose: () => void }) {
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="input-field" required placeholder="jdoe@example.com" />
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Password</label>
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="input-field" required minLength={8} />
@@ -1303,83 +1323,174 @@ function RegisterUserForm({ onClose }: { onClose: () => void }) {
 }
 
 function RolesSection() {
-  const roles = [
+  const queryClient = useQueryClient()
+  const [confirming, setConfirming] = useState(false)
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['rbac-settings'],
+    queryFn: () => api.getRBACSettings(),
+  })
+
+  const setEnforcement = useMutation({
+    mutationFn: (enforced: boolean) => api.setRBACEnforcement(enforced),
+    onSuccess: () => {
+      setConfirming(false)
+      queryClient.invalidateQueries({ queryKey: ['rbac-settings'] })
+      queryClient.invalidateQueries({ queryKey: ['my-permissions'] })
+    },
+  })
+
+  const enforced = data?.enforced ?? false
+  const wouldLose = data?.wouldLoseAllAccess ?? []
+
+  // The matrix, stated once and matching api/internal/rbac exactly. Secrets sit above
+  // deploy because exec and pod file access grant the same thing by another route.
+  const matrix: { role: string; scope: string; can: string[]; cannot: string[] }[] = [
     {
-      name: 'Admin',
-      description: 'Full access to all resources, user management, and system configuration',
-      permissions: ['Manage users & teams', 'Create/delete projects & apps', 'Deploy to all environments', 'Manage secrets', 'Create API keys', 'System configuration'],
-      scope: 'Global',
+      role: 'Admin', scope: 'Global',
+      can: ['Everything, in every project'],
+      cannot: [],
     },
     {
-      name: 'Developer',
-      description: 'Can create and manage apps, deploy, and view resources',
-      permissions: ['Create/edit apps', 'Deploy to assigned environments', 'View projects & apps', 'Manage own secrets', 'Create API keys (deploy, read, write)'],
-      scope: 'Global',
+      role: 'Owner', scope: 'Project or environment',
+      can: ['Add and remove members', 'Change configuration', 'Read and write secrets', 'Deploy', 'View'],
+      cannot: ['Change instance settings'],
     },
     {
-      name: 'Viewer',
-      description: 'Read-only access to projects, apps, and logs',
-      permissions: ['View projects & apps', 'View logs & metrics', 'View deployment history'],
-      scope: 'Global',
+      role: 'Maintainer', scope: 'Project or environment',
+      can: ['Change configuration', 'Read and write secrets', 'Shell into pods', 'Deploy', 'View'],
+      cannot: ['Add or remove members'],
     },
     {
-      name: 'Team Owner',
-      description: 'Full control over team membership and settings',
-      permissions: ['Add/remove members', 'Change member roles', 'Delete team', 'All team admin permissions'],
-      scope: 'Team',
+      role: 'Deployer', scope: 'Project or environment',
+      can: ['Deploy, roll back, restart, scale', 'Trigger builds', 'View'],
+      cannot: ['Read secrets', 'Shell into pods', 'Change configuration'],
     },
     {
-      name: 'Team Admin',
-      description: 'Can manage team members and resources',
-      permissions: ['Add/remove members', 'Change member roles', 'Manage team resources'],
-      scope: 'Team',
-    },
-    {
-      name: 'Team Member',
-      description: 'Standard team membership with access to team resources',
-      permissions: ['View team resources', 'Deploy team apps', 'View team secrets'],
-      scope: 'Team',
-    },
-    {
-      name: 'Project Owner',
-      description: 'Can reveal and manage secrets for apps within assigned projects',
-      permissions: ['Reveal project app secrets', 'Reveal project shared secrets', 'View project resources'],
-      scope: 'Project',
+      role: 'Viewer', scope: 'Project or environment',
+      can: ['View apps, logs and metrics'],
+      cannot: ['Deploy', 'Read secrets', 'Change anything'],
     },
   ]
 
   return (
-    <section className="card p-6">
-      <h3 className="section-title mb-5">Roles & Permissions</h3>
-      <div className="space-y-4">
-        {roles.map((role) => {
-          let scopeClass = 'bg-status-running/10 text-status-running'
-          if (role.scope === 'Global') scopeClass = 'bg-accent/10 text-accent'
-          else if (role.scope === 'Project') scopeClass = 'bg-yellow-500/10 text-yellow-400'
-          return (
-          <div key={role.name} className="bg-surface-1 border border-border rounded-lg p-5">
-            <div className="flex items-center gap-3 mb-2">
-              <h4 className="text-sm font-medium text-text-primary">{role.name}</h4>
-              <span className={`text-[10px] font-mono px-2 py-0.5 rounded ${scopeClass}`}>
-                {role.scope}
-              </span>
+    <div className="space-y-8">
+      <section className="card p-6">
+        <h3 className="section-title mb-1">Project Access</h3>
+        <p className="text-xs text-text-tertiary mb-5">
+          Roles are granted per project, and optionally narrowed per environment — so somebody
+          can deploy to staging without being able to touch production.
+        </p>
+
+        <div className="rounded-lg border border-border bg-surface-1 p-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-sm text-text-primary">
+                {enforced ? 'Memberships are enforced' : 'Memberships are recorded but not enforced'}
+              </p>
+              <p className="text-xs text-text-tertiary mt-1 max-w-2xl">
+                {enforced
+                  ? 'Access to a project requires membership of it. A global role alone grants nothing outside the projects it has been added to.'
+                  : 'Access still follows the old global roles, so a developer can reach every project. Memberships you set now take effect when you switch this on.'}
+              </p>
             </div>
-            <p className="text-xs text-text-tertiary mb-3">{role.description}</p>
-            <div className="flex flex-wrap gap-1.5">
-              {role.permissions.map((perm) => (
-                <span key={perm} className="text-[11px] font-mono bg-surface-3 text-text-secondary px-2 py-1 rounded">
-                  {perm}
-                </span>
-              ))}
-            </div>
+
+            {!isLoading && (
+              enforced ? (
+                <button
+                  onClick={() => setEnforcement.mutate(false)}
+                  disabled={setEnforcement.isPending}
+                  className="btn-ghost text-xs whitespace-nowrap"
+                >
+                  Stop enforcing
+                </button>
+              ) : (
+                <button
+                  onClick={() => setConfirming(true)}
+                  disabled={setEnforcement.isPending || confirming}
+                  className="btn-primary text-xs whitespace-nowrap"
+                >
+                  Enforce memberships
+                </button>
+              )
+            )}
           </div>
-          )
-        })}
-      </div>
-    </section>
+
+          {confirming && (
+            <div className="mt-4 pt-4 border-t border-border space-y-3">
+              {wouldLose.length > 0 ? (
+                <>
+                  <p className="text-xs text-status-degraded">
+                    {wouldLose.length} {wouldLose.length === 1 ? 'user holds' : 'users hold'} no
+                    project membership. Once enforced they will not be able to reach any project.
+                  </p>
+                  <ul className="text-[11px] text-text-tertiary font-mono space-y-0.5 max-h-40 overflow-y-auto">
+                    {wouldLose.map(u => (
+                      <li key={u.userId}>{u.username} ({u.globalRole})</li>
+                    ))}
+                  </ul>
+                  <p className="text-[11px] text-text-tertiary">
+                    Add them to the projects they work on first, then come back. You can switch
+                    this off again at any time.
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-text-tertiary">
+                  Every non-admin user already holds at least one membership, so nobody loses access.
+                </p>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setEnforcement.mutate(true)}
+                  disabled={setEnforcement.isPending}
+                  className="btn-primary text-xs"
+                >
+                  {setEnforcement.isPending ? 'Applying…' : 'Enforce anyway'}
+                </button>
+                <button onClick={() => setConfirming(false)} className="btn-ghost text-xs">Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {setEnforcement.isError && (
+            <p className="text-xs text-status-failed mt-3">{(setEnforcement.error as Error).message}</p>
+          )}
+        </div>
+      </section>
+
+      <section className="card p-6">
+        <h3 className="section-title mb-1">What each role can do</h3>
+        <p className="text-xs text-text-tertiary mb-5">
+          Each role includes everything below it.
+        </p>
+
+        <div className="space-y-3">
+          {matrix.map(r => (
+            <div key={r.role} className="rounded-lg border border-border bg-surface-1 p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-sm font-medium text-text-primary">{r.role}</span>
+                <span className="chip">{r.scope}</span>
+              </div>
+              <div className="grid md:grid-cols-2 gap-x-6 gap-y-1">
+                <ul className="space-y-0.5">
+                  {r.can.map(p => (
+                    <li key={p} className="text-[11px] text-text-secondary">+ {p}</li>
+                  ))}
+                </ul>
+                <ul className="space-y-0.5">
+                  {r.cannot.map(p => (
+                    <li key={p} className="text-[11px] text-text-quaternary">− {p}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
   )
 }
-
 function Spinner() {
   return (
     <div className="flex items-center justify-center py-12">
@@ -1453,7 +1564,7 @@ function AuditLogSection() {
       {entries.length === 0 ? (
         <p className="text-sm text-text-tertiary">No audit log entries found</p>
       ) : (
-        <div className="border border-border rounded-lg overflow-hidden">
+        <div className="border border-border rounded-lg overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
               <tr className="bg-surface-1 border-b border-border">
@@ -1610,6 +1721,282 @@ function WebhookDeliveriesSection() {
   )
 }
 
+function GitConnectionsSection() {
+  const queryClient = useQueryClient()
+  const [confirmId, setConfirmId] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['git-connections'],
+    queryFn: () => api.listGitConnections(),
+  })
+
+  const remove = useMutation({
+    mutationFn: (id: string) => api.deleteGitConnection(id),
+    onSuccess: () => {
+      setConfirmId(null)
+      queryClient.invalidateQueries({ queryKey: ['git-connections'] })
+      queryClient.invalidateQueries({ queryKey: ['github-app-status'] })
+    },
+  })
+
+  const connections = data?.items ?? []
+
+  return (
+    <section className="card p-6">
+      <div className="flex items-baseline justify-between mb-1">
+        <h3 className="section-title">Git Connections</h3>
+        <div className="flex items-center gap-3">
+          <span className="text-[11px] text-text-tertiary font-mono">{connections.length}</span>
+          <button onClick={() => setAdding(v => !v)} className="text-xs text-accent hover:text-accent-glow">
+            {adding ? 'Cancel' : '+ Add GitLab or Bitbucket'}
+          </button>
+        </div>
+      </div>
+      <p className="text-xs text-text-tertiary mb-5">
+        Every git server Vesta can reach. More than one may be connected at a time, including
+        two accounts on the same host.
+      </p>
+
+      {adding && <AddTokenConnectionForm onDone={() => {
+        setAdding(false)
+        queryClient.invalidateQueries({ queryKey: ['git-connections'] })
+      }} />}
+
+      {isLoading && <p className="text-xs text-text-tertiary">Loading…</p>}
+
+      {error && (
+        <p className="text-xs text-status-failed">
+          Could not load connections: {(error as Error).message}
+        </p>
+      )}
+
+      {!isLoading && !error && connections.length === 0 && (
+        <p className="text-xs text-text-tertiary">
+          No connections yet. Set one up below and it will appear here.
+        </p>
+      )}
+
+      <div className="space-y-3">
+        {connections.map(conn => (
+          <div key={conn.id} className="rounded-lg border border-border bg-surface-1 p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-mono text-xs text-text-primary">{conn.displayName}</span>
+                  <span className="chip">{conn.provider}</span>
+                  {conn.account && <span className="chip">{conn.account}</span>}
+                  {conn.isLegacy && (
+                    <span
+                      className="chip"
+                      title="Connected before Vesta supported more than one. Webhooks created back then still point at the old URL and keep working."
+                    >
+                      original
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-text-tertiary mt-1 font-mono truncate">{conn.host}</p>
+                <p className="text-[11px] text-text-quaternary mt-2 font-mono break-all">
+                  webhook: {conn.webhookPath}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3 shrink-0">
+                {conn.installUrl && (
+                  <a
+                    href={conn.installUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-accent hover:text-accent-glow whitespace-nowrap"
+                  >
+                    Add repositories →
+                  </a>
+                )}
+                {confirmId === conn.id ? (
+                  <>
+                    <button
+                      onClick={() => remove.mutate(conn.id)}
+                      disabled={remove.isPending}
+                      className="text-xs text-status-failed hover:underline"
+                    >
+                      {remove.isPending ? 'Removing…' : 'Confirm'}
+                    </button>
+                    <button
+                      onClick={() => setConfirmId(null)}
+                      className="text-xs text-text-tertiary hover:text-text-secondary"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => setConfirmId(conn.id)}
+                    className="text-xs text-text-tertiary hover:text-status-failed"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {confirmId === conn.id && (
+              <p className="text-[11px] text-text-tertiary mt-3">
+                Apps using this connection keep their repository settings but stop deploying on
+                push until another connection can reach the same host.
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {remove.isError && (
+        <p className="text-xs text-status-failed mt-3">{(remove.error as Error).message}</p>
+      )}
+    </section>
+  )
+}
+
+// AddTokenConnectionForm connects GitLab or Bitbucket.
+//
+// Neither has an equivalent of GitHub's App-manifest handshake -- access follows a token's
+// scope -- so connecting is storing a token and saying where it points. GitHub keeps its own
+// wizard below, because an App is created rather than pasted.
+function AddTokenConnectionForm({ onDone }: { onDone: () => void }) {
+  const [provider, setProvider] = useState<'gitlab' | 'bitbucket'>('gitlab')
+  const [displayName, setDisplayName] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [account, setAccount] = useState('')
+  const [token, setToken] = useState('')
+  const [webhookSecret, setWebhookSecret] = useState('')
+  const [created, setCreated] = useState<{ webhookPath: string } | null>(null)
+
+  const create = useMutation({
+    mutationFn: () => api.createGitConnection({
+      provider,
+      displayName: displayName || undefined,
+      baseUrl: baseUrl || undefined,
+      account: account || undefined,
+      token,
+      webhookSecret: webhookSecret || undefined,
+    }),
+    onSuccess: setCreated,
+  })
+
+  // Shown after creating, because a hook pointed at the wrong URL silently never fires and
+  // there is no error anywhere to notice.
+  if (created) {
+    return (
+      <div className="rounded-lg border border-border bg-surface-1 p-4 mb-4 space-y-2">
+        <p className="text-xs text-text-primary">Connection added. Point its webhook here:</p>
+        <p className="font-mono text-xs text-accent break-all">{created.webhookPath}</p>
+        <p className="text-[11px] text-text-tertiary">
+          {provider === 'bitbucket'
+            ? 'Bitbucket Cloud cannot sign webhooks, so this URL is the only thing identifying the sender — treat it as a secret.'
+            : 'Set the same webhook token on the hook that you entered above.'}
+        </p>
+        <button onClick={onDone} className="btn-ghost text-xs">Done</button>
+      </div>
+    )
+  }
+
+  return (
+    <form
+      onSubmit={e => { e.preventDefault(); create.mutate() }}
+      className="rounded-lg border border-border bg-surface-1 p-4 mb-4 space-y-3"
+    >
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs text-text-tertiary mb-1 block">Provider</label>
+          <select
+            value={provider}
+            onChange={e => setProvider(e.target.value as 'gitlab' | 'bitbucket')}
+            className="input-field text-xs w-full"
+          >
+            <option value="gitlab">GitLab</option>
+            <option value="bitbucket">Bitbucket</option>
+          </select>
+        </div>
+        <div>
+          <label className="text-xs text-text-tertiary mb-1 block">Name</label>
+          <input
+            value={displayName}
+            onChange={e => setDisplayName(e.target.value)}
+            className="input-field text-xs w-full"
+            placeholder={provider === 'gitlab' ? 'GitLab' : 'Bitbucket'}
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs text-text-tertiary mb-1 block">Server URL</label>
+          <input
+            value={baseUrl}
+            onChange={e => setBaseUrl(e.target.value)}
+            className="input-field font-mono text-xs w-full"
+            placeholder={provider === 'gitlab' ? 'https://gitlab.com' : 'https://bitbucket.org'}
+          />
+          <p className="text-[11px] text-text-tertiary mt-1">
+            Leave blank for the hosted service. Set it for self-managed
+            {provider === 'gitlab' ? ' GitLab.' : ' Bitbucket Data Center.'}
+          </p>
+        </div>
+        <div>
+          <label className="text-xs text-text-tertiary mb-1 block">
+            {provider === 'gitlab' ? 'Group (optional)' : 'Workspace'}
+          </label>
+          <input
+            value={account}
+            onChange={e => setAccount(e.target.value)}
+            className="input-field font-mono text-xs w-full"
+            placeholder={provider === 'gitlab' ? 'my-group' : 'my-workspace'}
+          />
+          {provider === 'bitbucket' && (
+            <p className="text-[11px] text-text-tertiary mt-1">
+              Required on Bitbucket Cloud — repositories are listed per workspace.
+            </p>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className="text-xs text-text-tertiary mb-1 block">Access token</label>
+          <RevealableInput
+            type="password"
+            value={token}
+            onChange={e => setToken(e.target.value)}
+            className="input-field text-xs w-full"
+            placeholder="••••••••"
+            required
+          />
+        </div>
+        <div>
+          <label className="text-xs text-text-tertiary mb-1 block">Webhook secret</label>
+          <RevealableInput
+            type="password"
+            value={webhookSecret}
+            onChange={e => setWebhookSecret(e.target.value)}
+            className="input-field text-xs w-full"
+            placeholder={provider === 'bitbucket' ? 'Data Center only' : 'recommended'}
+          />
+        </div>
+      </div>
+
+      <div className="flex gap-3 pt-1">
+        <button type="submit" disabled={create.isPending || !token} className="btn-primary text-xs">
+          {create.isPending ? 'Connecting…' : 'Connect'}
+        </button>
+        <button type="button" onClick={onDone} className="btn-ghost text-xs">Cancel</button>
+      </div>
+
+      {create.isError && (
+        <p className="text-xs text-status-failed">{(create.error as Error).message}</p>
+      )}
+    </form>
+  )
+}
+
 function GitHubAppSection() {
   const queryClient = useQueryClient()
   const [apiBaseUrl, setApiBaseUrl] = useState('')
@@ -1672,7 +2059,7 @@ function GitHubAppSection() {
 
   return (
     <section className="bg-surface border border-border rounded-lg p-6 space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium text-text-primary">GitHub App</h3>
           <p className="text-xs text-text-tertiary mt-1">Connect a GitHub App for automatic webhook delivery, private repo access, and commit status reporting.</p>
@@ -1690,7 +2077,7 @@ function GitHubAppSection() {
 
       {status?.configured ? (
         <div className="space-y-4">
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <span className="text-[11px] text-text-tertiary uppercase tracking-wider">App Name</span>
               <p className="text-sm text-text-primary mt-1 font-mono">{status.appName || '—'}</p>

@@ -14,6 +14,16 @@ import (
 )
 
 // Default pod size presets used when no VestaConfig is found
+// defaultPodSizes is used when no VestaConfig declares any. It must stay in step with
+// config.podSizeList in the chart's values.yaml, or what an operator sees depends on
+// whether a VestaConfig happens to exist. TestDefaultPodSizesMatchChartValues enforces it.
+//
+// Two families. The balanced sizes run roughly one core per gigabyte, which suits most
+// request-handling services. The mem- sizes run a quarter of that -- about one core per
+// four gigabytes -- for workloads that hold far more in memory than they compute over:
+// JVM services, in-process caches, anything loading a large dataset at startup. Giving
+// those a balanced size means either paying for CPU that idles, or being throttled long
+// before the memory is used.
 var defaultPodSizes = []map[string]interface{}{
 	{"name": "xxsmall", "cpu": "50m", "memory": "64Mi", "cpuLimit": "100m", "memoryLimit": "128Mi"},
 	{"name": "xsmall", "cpu": "100m", "memory": "128Mi", "cpuLimit": "250m", "memoryLimit": "256Mi"},
@@ -21,6 +31,13 @@ var defaultPodSizes = []map[string]interface{}{
 	{"name": "medium", "cpu": "500m", "memory": "512Mi", "cpuLimit": "1", "memoryLimit": "1Gi"},
 	{"name": "large", "cpu": "1", "memory": "1Gi", "cpuLimit": "2", "memoryLimit": "2Gi"},
 	{"name": "xlarge", "cpu": "2", "memory": "2Gi", "cpuLimit": "4", "memoryLimit": "4Gi"},
+
+	// Memory-optimised: the memory of the next balanced size up, at a quarter of its CPU.
+	{"name": "mem-xsmall", "cpu": "62m", "memory": "256Mi", "cpuLimit": "125m", "memoryLimit": "512Mi"},
+	{"name": "mem-small", "cpu": "125m", "memory": "512Mi", "cpuLimit": "250m", "memoryLimit": "1Gi"},
+	{"name": "mem-medium", "cpu": "250m", "memory": "1Gi", "cpuLimit": "500m", "memoryLimit": "2Gi"},
+	{"name": "mem-large", "cpu": "500m", "memory": "2Gi", "cpuLimit": "1", "memoryLimit": "4Gi"},
+	{"name": "mem-xlarge", "cpu": "1", "memory": "4Gi", "cpuLimit": "2", "memoryLimit": "8Gi"},
 }
 
 func (h *Handler) ListPodSizes(c *gin.Context) {
@@ -314,6 +331,12 @@ func (h *Handler) GetApp(c *gin.Context) {
 func (h *Handler) UpdateApp(c *gin.Context) {
 	appID := c.Param("appId")
 
+	// Drop the cached project for this app. A stale entry would have a gate judging the
+	// request against a project the app no longer belongs to.
+	if h.Scope != nil {
+		h.Scope.Invalidate(appID)
+	}
+
 	var patch map[string]interface{}
 	if err := c.ShouldBindJSON(&patch); err != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Code: 400, Message: err.Error()})
@@ -360,7 +383,7 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 
 		// Same reasoning as the image overrides: the certificate selection lives inside
 		// spec.ingress, which the shallow merge below replaces wholesale.
-		existingCertFields := collectIngressCertFields(spec)
+		existingCertFields := collectPreservedIngressFields(spec)
 
 		for k, v := range patch {
 			if v == nil {
@@ -389,8 +412,9 @@ func (h *Handler) UpdateApp(c *gin.Context) {
 			spec["environments"] = restoreEnvImages(patchEnvs, existingEnvImages)
 		}
 
-		// Restore the certificate selection the patch left out, app level and per env.
-		restoreIngressCertFields(spec, existingCertFields)
+		// Restore what the patch left out -- certificate selection and middleware
+		// attachments -- at app level and per environment.
+		restorePreservedIngressFields(spec, existingCertFields)
 
 		// Same for the app-level tag: a config update that only sets the repository
 		// keeps the deployed tag rather than resetting the app to "latest".
@@ -441,6 +465,12 @@ func (e errInvalidIngress) Unwrap() error { return e.err }
 func (h *Handler) DeleteApp(c *gin.Context) {
 	appID := c.Param("appId")
 
+	// Drop the cached project for this app. A stale entry would have a gate judging the
+	// request against a project the app no longer belongs to.
+	if h.Scope != nil {
+		h.Scope.Invalidate(appID)
+	}
+
 	// Resolve project for notification before deleting
 	var projectID string
 	if existing, err := h.K8s.GetResource(c.Request.Context(), k8s.VestaAppGVR, vestaSystemNS, appID); err == nil {
@@ -470,6 +500,12 @@ func (h *Handler) DeleteApp(c *gin.Context) {
 
 func (h *Handler) CloneApp(c *gin.Context) {
 	appID := c.Param("appId")
+
+	// Drop the cached project for this app. A stale entry would have a gate judging the
+	// request against a project the app no longer belongs to.
+	if h.Scope != nil {
+		h.Scope.Invalidate(appID)
+	}
 
 	var req struct {
 		Name    string `json:"name" binding:"required"`
@@ -519,31 +555,40 @@ func (h *Handler) CloneApp(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"id":        result.GetName(),
-		"name":      result.GetName(),
-		"project":   project,
+		"id":         result.GetName(),
+		"name":       result.GetName(),
+		"project":    project,
 		"clonedFrom": appID,
-		"createdAt": result.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
+		"createdAt":  result.GetCreationTimestamp().Format("2006-01-02T15:04:05Z"),
 	})
 
 	h.auditLog(c, "clone_app", "app", result.GetName(), result.GetName(), project, "",
 		map[string]interface{}{"clonedFrom": appID})
 }
 
-// certFields are the ingress keys that select a certificate. They are preserved across a
+// preservedIngressFields are the ingress keys that select a certificate. They are preserved across a
 // patch that omits them because the update path replaces spec.ingress wholesale: a client
 // that PUTs {"ingress":{"domain":..,"tls":true}} — the CLI, an API token, any integration
 // that does not first read the app back — would otherwise silently drop the app's SSL
 // provider and quietly re-issue its certificate from the instance default.
-var certFields = []string{"clusterIssuer", "tlsSecretName", "tlsMode"}
+// preservedIngressFields survive a patch that does not mention them.
+//
+// The app edit form rebuilds spec.ingress and each environment's ingress from the fields it
+// shows, so anything it does not render would be dropped on every save. Certificate
+// selection was the first casualty; middlewares were the second -- attaching one and then
+// editing anything else about the app silently detached it, because the attachment lives at
+// spec.environments[].ingress.middlewares and the form never sends that key.
+//
+// A patch that names a field wins, including an explicit null, which clears it.
+var preservedIngressFields = []string{"clusterIssuer", "tlsSecretName", "tlsMode", "middlewares"}
 
-// collectIngressCertFields snapshots the certificate selection at app level and for each
-// environment, keyed by environment name ("" for the app level).
-func collectIngressCertFields(spec map[string]interface{}) map[string]map[string]interface{} {
+// collectPreservedIngressFields snapshots the fields worth carrying across a patch, at app
+// level and for each environment, keyed by environment name ("" for the app level).
+func collectPreservedIngressFields(spec map[string]interface{}) map[string]map[string]interface{} {
 	out := map[string]map[string]interface{}{}
 
 	if ing, _, _ := unstructuredNestedMap(spec, "ingress"); ing != nil {
-		out[""] = pickCertFields(ing)
+		out[""] = pickPreservedFields(ing)
 	}
 
 	envs, _, _ := unstructuredNestedSlice(spec, "environments")
@@ -553,15 +598,15 @@ func collectIngressCertFields(spec map[string]interface{}) map[string]map[string
 			continue
 		}
 		if ing, ok := envMap["ingress"].(map[string]interface{}); ok {
-			out[getNestedString(envMap, "name")] = pickCertFields(ing)
+			out[getNestedString(envMap, "name")] = pickPreservedFields(ing)
 		}
 	}
 	return out
 }
 
-func pickCertFields(ingress map[string]interface{}) map[string]interface{} {
+func pickPreservedFields(ingress map[string]interface{}) map[string]interface{} {
 	kept := map[string]interface{}{}
-	for _, f := range certFields {
+	for _, f := range preservedIngressFields {
 		if v, ok := ingress[f]; ok && v != nil && v != "" {
 			kept[f] = v
 		}
@@ -569,11 +614,11 @@ func pickCertFields(ingress map[string]interface{}) map[string]interface{} {
 	return kept
 }
 
-// restoreIngressCertFields carries the previous certificate selection onto an incoming
-// patch. A patch that names a field — including an explicit null, which clears it — wins.
-func restoreIngressCertFields(spec map[string]interface{}, existing map[string]map[string]interface{}) {
+// restorePreservedIngressFields carries the previous values onto an incoming patch. A patch
+// that names a field — including an explicit null, which clears it — wins.
+func restorePreservedIngressFields(spec map[string]interface{}, existing map[string]map[string]interface{}) {
 	if ing, _, _ := unstructuredNestedMap(spec, "ingress"); ing != nil {
-		mergeCertFields(ing, existing[""])
+		mergePreservedFields(ing, existing[""])
 		spec["ingress"] = ing
 	}
 
@@ -587,12 +632,12 @@ func restoreIngressCertFields(spec map[string]interface{}, existing map[string]m
 		if !ok {
 			continue
 		}
-		mergeCertFields(ing, existing[getNestedString(envMap, "name")])
+		mergePreservedFields(ing, existing[getNestedString(envMap, "name")])
 	}
 }
 
-func mergeCertFields(ingress map[string]interface{}, previous map[string]interface{}) {
-	for _, f := range certFields {
+func mergePreservedFields(ingress map[string]interface{}, previous map[string]interface{}) {
+	for _, f := range preservedIngressFields {
 		if v, ok := ingress[f]; ok {
 			// An explicit null is a deliberate clear, not an omission.
 			if v == nil {

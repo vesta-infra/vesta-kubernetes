@@ -29,6 +29,20 @@ jobs:
           - component: ui
             image: kubernetes-ui
             context: ui
+          # Built from the operator's context because it shares its module, but shipped
+          # separately: it runs in application namespaces with a much narrower
+          # ServiceAccount than the operator's.
+          - component: activator
+            image: kubernetes-activator
+            context: operator
+            dockerfile: operator/Dockerfile.activator
+          # The nixpacks CLI, for the build strategy that generates a Dockerfile. No
+          # official image carries it -- ghcr.io/railwayapp/nixpacks is the nix base that
+          # built applications run on, with no binary in it -- so this one is ours.
+          - component: nixpacks
+            image: kubernetes-nixpacks
+            context: build
+            dockerfile: build/Dockerfile.nixpacks
 
     steps:
       - name: Checkout
@@ -63,6 +77,8 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
+          # Defaults to <context>/Dockerfile when a matrix entry does not name one.
+          file: ${{ matrix.dockerfile || format('{0}/Dockerfile', matrix.context) }}
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -119,18 +135,46 @@ jobs:
       # Publishing a chart that stops rendering a resource an earlier release rendered
       # makes `helm upgrade` delete it. That is how 0.7.0 deleted the vesta-system
       # namespace, and every secret and volume inside it, on upgrade from 0.6.x.
+      # Both baselines: 0.6.3 is the oldest supported upgrade path, 0.9.1 the last
+      # release. Checking only 0.6.3 rendered 11 resources against a chart that now has
+      # 21, so anything added since could have been dropped unnoticed.
       - name: Check the chart drops no resource an earlier release owned
-        run: ./hack/check-no-dropped-resources.sh 0.6.3
+        run: |
+          ./hack/check-no-dropped-resources.sh 0.6.3
+          ./hack/check-no-dropped-resources.sh 0.9.1
 
       # Tightening a CRD is a data migration. 0.7.0 regenerated the CRDs from types.go
       # and made 26 groups of fields newly required, which made existing VestaApps
       # unappliable -- an app in Sleeping state has spec.sleep with no `enabled`.
       - name: Check the CRDs still accept data an earlier release stored
-        run: ./hack/check-crd-compat.sh 0.6.3
+        run: |
+          ./hack/check-crd-compat.sh 0.6.3
+          ./hack/check-crd-compat.sh 0.9.1
+
+      # A property with no type makes the API server reject the entire CRD, so every kind in
+      # that file fails to apply. helm lint does not validate CRD schemas, so nothing else
+      # in this job would notice. 0.10.0 shipped that for the cost rate card.
+      - name: Check the CRD schemas are structurally valid
+        run: |
+          ./hack/check-crd-structural.sh deploy/helm/vesta/crds
+          ./hack/check-crd-structural.sh operator/config/crd/bases
+
+      # A value added to an existing enum never reaches the chart: merge-crd-properties.py
+      # only copies properties that are absent. The feature's config block validates and the
+      # type that selects it does not, which is how openobserve shipped unusable.
+      - name: Check no shipped CRD enum is narrower than the Go types
+        run: ./hack/check-crd-enums.sh
 
       # The upgrade Job runs helm as vesta-upgrader, so that account needs every verb the
       # chart's own resources require. 0.7.3 shipped without delete on RBAC resources and
       # the pre-upgrade hook failed with a forbidden error.
+      # --reuse-values uses the PREVIOUS release's values alone and does not layer the new
+      # chart's defaults over them, so a key added in this version is absent during such an
+      # upgrade and a direct read fails it. 0.10.0 shipped that for the new activator key:
+      # it rendered on a fresh install, passed helm lint, and broke every upgrade.
+      - name: Check --reuse-values upgrades still render
+        run: ./hack/check-reuse-values.sh 0.9.1
+
       - name: Check self-update can apply everything the chart renders
         run: ./hack/check-upgrader-rbac.sh
 

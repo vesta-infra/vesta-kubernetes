@@ -40,6 +40,13 @@ spec:
     {{- toYaml .Values.config.autoscaleDefaults | nindent 4 }}
   {{- end }}
 
+  {{- /* Rendered only when set, so a rate card saved from Settings -> Cost is not wiped by
+       a helm upgrade that leaves this empty. */}}
+  {{- if .Values.config.cost }}
+  cost:
+    {{- toYaml .Values.config.cost | nindent 4 }}
+  {{- end }}
+
   {{- if .Values.config.auth }}
   auth:
     {{- toYaml .Values.config.auth | nindent 4 }}
