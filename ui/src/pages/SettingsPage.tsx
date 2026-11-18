@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import RevealableInput from '../components/RevealableInput'
@@ -11,18 +12,19 @@ import SSLProvidersSection from '../components/SSLProviders'
 import SecuritySection from '../components/SecuritySection'
 import CostSettings from '../components/CostSettings'
 
+const SETTINGS_TABS = ['general', 'teams', 'users', 'roles', 'audit', 'webhooks', 'integrations', 'ssl', 'security', 'cost', 'system'] as const
+type SettingsTab = typeof SETTINGS_TABS[number]
+
 export default function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<'general' | 'teams' | 'users' | 'roles' | 'audit' | 'webhooks' | 'integrations' | 'ssl' | 'security' | 'cost' | 'system'>(() => {
-    const params = new URLSearchParams(window.location.search)
-    const tab = params.get('tab')
-    if (tab === 'integrations') return 'integrations'
-    if (tab === 'ssl') return 'ssl'
-    // The cost pages link here when pricing is still the built-in estimate.
-    if (tab === 'cost') return 'cost'
-    // The update banner links straight here.
-    if (tab === 'system') return 'system'
-    return 'general'
-  })
+  // The tab lives in the URL, so a refresh, a shared link or the back button lands on the
+  // same tab. It used to be component state that read ?tab= once, for four tabs only, and
+  // never wrote it back -- so every refresh returned to General.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tabParam = searchParams.get('tab') as SettingsTab | null
+  const activeTab: SettingsTab = tabParam && SETTINGS_TABS.includes(tabParam) ? tabParam : 'general'
+  const setActiveTab = useCallback((tab: SettingsTab) => {
+    setSearchParams(prev => { prev.set('tab', tab); return prev }, { replace: true })
+  }, [setSearchParams])
   const role = useUserRole()
   const isAdmin = role === 'admin'
 
