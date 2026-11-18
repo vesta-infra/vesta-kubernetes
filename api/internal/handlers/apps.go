@@ -579,8 +579,12 @@ func (h *Handler) CloneApp(c *gin.Context) {
 // editing anything else about the app silently detached it, because the attachment lives at
 // spec.environments[].ingress.middlewares and the form never sends that key.
 //
+// domainPorts is the same case: it routes a domain to a non-default Service port, and a
+// client that does not know about it -- the CLI, an older dashboard -- would otherwise
+// send that domain back to the default port on its next save.
+//
 // A patch that names a field wins, including an explicit null, which clears it.
-var preservedIngressFields = []string{"clusterIssuer", "tlsSecretName", "tlsMode", "middlewares"}
+var preservedIngressFields = []string{"clusterIssuer", "tlsSecretName", "tlsMode", "middlewares", "domainPorts"}
 
 // collectPreservedIngressFields snapshots the fields worth carrying across a patch, at app
 // level and for each environment, keyed by environment name ("" for the app level).

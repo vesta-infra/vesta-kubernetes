@@ -18,6 +18,22 @@ import { PodLogs, PodTerminal, type PodSource } from '../components/PodViewers'
 // annotation map would be silently ignored rather than honoured.
 const CLUSTER_ISSUER_ANNOTATION = 'cert-manager.io/cluster-issuer'
 
+// The domain → port-name map in force for an environment: its own, else the app-level one.
+// The operator never merges the two -- an environment map replaces the app's -- so neither
+// does this.
+function effectiveDomainPorts(envIngress: any, appIngress: any): Record<string, string> {
+  return envIngress?.domainPorts ?? appIngress?.domainPorts ?? {}
+}
+
+// Case-insensitive lookup, matching how the operator compares hosts.
+function domainPortFor(map: Record<string, string>, domain: string): string {
+  const d = domain.trim().toLowerCase()
+  for (const [k, v] of Object.entries(map)) {
+    if (k.trim().toLowerCase() === d) return v
+  }
+  return ''
+}
+
 // What the Configuration card shows under "Certificate". A lock icon that says only
 // "Enabled" hides the thing an operator actually needs when a certificate fails to issue:
 // which issuer was asked for.
@@ -427,6 +443,11 @@ export default function AppDetailPage() {
                                 className="inline-flex items-center gap-1 px-2.5 py-1 bg-surface-2 border border-border rounded-md text-xs font-mono text-text-primary hover:border-accent hover:text-accent transition-colors"
                               >
                                 {d}
+                                {domainPortFor(effectiveDomainPorts(env.ingress, app.spec?.ingress), d) && (
+                                  <span className="text-[10px] text-text-tertiary" title="Routed to this service port instead of the default">
+                                    → {domainPortFor(effectiveDomainPorts(env.ingress, app.spec?.ingress), d)}
+                                  </span>
+                                )}
                                 <svg className="w-3 h-3 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
                               </a>
                             ))}
@@ -1198,7 +1219,7 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
 
   // Per-environment config
   const rawEnvs = app.environments || app.spec?.environments || []
-  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string; domains: string[]; tls: boolean; clusterIssuer: string; redirectDomains: string[]; redirectTarget: string }>>(() => {
+  const [envConfigs, setEnvConfigs] = useState<Record<string, { replicas: number; podSize: string; autoscaleEnabled: boolean; minReplicas: number; maxReplicas: number; targetCPU: number; imageRepo: string; imageTag: string; cpuRequest: string; cpuLimit: string; memoryRequest: string; memoryLimit: string; domains: string[]; tls: boolean; clusterIssuer: string; redirectDomains: string[]; redirectTarget: string; domainPorts: Record<string, string>; domainPortsTouched: boolean }>>(() => {
     const configs: Record<string, any> = {}
     for (const e of rawEnvs) {
       const env = typeof e === 'string' ? { name: e } : e
@@ -1227,10 +1248,49 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           || env.ingress?.annotations?.[CLUSTER_ISSUER_ANNOTATION] || '',
         redirectDomains: env.ingress?.redirectDomains || [],
         redirectTarget: env.ingress?.redirectTarget || '',
+        // Seeded with what is in force, inherited or not, so each dropdown shows where its
+        // domain actually goes. Sent back only once edited: an untouched environment that
+        // inherits the app-level map keeps inheriting it.
+        domainPorts: Object.fromEntries(envDomains
+          .map((d: string) => [d, domainPortFor(effectiveDomainPorts(env.ingress, app.spec?.ingress), d)])
+          .filter(([, v]: string[]) => v)),
+        domainPortsTouched: false,
       }
     }
     return configs
   })
+
+  // The ports each environment's Service is built from: its own override, else the ports
+  // in this form. Ports without a name cannot be chosen, since domainPorts refers by name.
+  const envServicePorts = useMemo(() => {
+    const out: Record<string, { name: string; port: string }[]> = {}
+    for (const e of rawEnvs) {
+      const env = typeof e === 'string' ? { name: e } : e
+      const override = env.service?.ports
+      out[env.name] = (override?.length
+        ? override.map((p: any) => ({ name: p.name || '', port: String(p.port || '') }))
+        : servicePorts.map(p => ({ name: p.name.trim(), port: p.port }))
+      ).filter((p: { name: string }) => p.name)
+    }
+    return out
+  }, [rawEnvs, servicePorts])
+
+  // A domain pointed at a port that no longer exists (renamed or removed above) would fail
+  // the operator's reconcile, so it is caught here instead.
+  const domainPortErrors = useMemo(() => {
+    const errs: Record<string, string> = {}
+    for (const [envName, cfg] of Object.entries(envConfigs)) {
+      const names = new Set((envServicePorts[envName] || []).map(p => p.name))
+      for (const d of cfg.domains) {
+        const want = cfg.domainPorts[d]
+        if (d.trim() && want && !names.has(want)) {
+          errs[`${envName}/${d}`] = `Port "${want}" no longer exists`
+        }
+      }
+    }
+    return errs
+  }, [envConfigs, envServicePorts])
+  const hasDomainPortErrors = Object.keys(domainPortErrors).length > 0
 
   const { data: podSizes } = useQuery({
     queryKey: ['podSizes'],
@@ -1459,6 +1519,14 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
           ...(Object.keys(envAnns).length > 0 && { annotations: envAnns }),
           ...(filteredRedirectDomains.length > 0 && { redirectDomains: filteredRedirectDomains }),
           ...(cfg.redirectTarget.trim() && { redirectTarget: cfg.redirectTarget.trim() }),
+        }
+        if (cfg.domainPortsTouched) {
+          // Only the listed domains, so a removed or renamed domain does not leave a stale
+          // entry behind. Null clears the map, so every domain is back on the default port.
+          const dp = Object.fromEntries(filteredDomains
+            .map(d => [d.trim(), cfg.domainPorts[d] || ''])
+            .filter(([, v]) => v))
+          env.ingress.domainPorts = Object.keys(dp).length > 0 ? dp : null
         }
       } else if (env.ingress?.middlewares?.length) {
         // No domains, so nothing to route -- but keep the middleware attachment rather than
@@ -1868,28 +1936,61 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
                         : 'No domain configured — this environment gets no ingress unless a domain template is set.'}
                     </p>
                   )}
-                  {cfg.domains.map((d, di) => (
-                    <div key={di} className="flex gap-2 items-center mb-1.5">
+                  {cfg.domains.map((d, di) => {
+                    const ports = envServicePorts[envName] || []
+                    const defaultPort = ports.find(p => p.name === 'http') || ports[0]
+                    const chosen = cfg.domainPorts[d] || ''
+                    const portError = domainPortErrors[`${envName}/${d}`]
+                    return (
+                    <div key={di} className="mb-1.5">
+                    <div className="flex gap-2 items-center">
                       <input
                         value={d}
                         onChange={e => {
                           const updated = [...cfg.domains]
                           updated[di] = e.target.value
-                          setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], domains: updated } }))
+                          // The port choice is keyed by domain, so it moves with the rename.
+                          const dp = { ...cfg.domainPorts }
+                          if (dp[d] !== undefined) { dp[e.target.value] = dp[d]; delete dp[d] }
+                          setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], domains: updated, domainPorts: dp } }))
                         }}
                         className="input-field flex-1 font-mono text-xs"
                         placeholder={`${envName}.example.com`}
                       />
+                      {ports.length > 1 && (
+                        <select
+                          value={chosen}
+                          onChange={e => setEnvConfigs(prev => ({ ...prev, [envName]: {
+                            ...prev[envName],
+                            domainPorts: { ...prev[envName].domainPorts, [d]: e.target.value },
+                            domainPortsTouched: true,
+                          } }))}
+                          className={`input-field !py-1 !text-[10px] w-40 ${portError ? '!border-status-failed' : ''}`}
+                          title="Service port this domain is routed to"
+                          aria-label={`Service port for ${d || 'this domain'}`}
+                        >
+                          <option value="">Default{defaultPort ? ` (${defaultPort.name}${defaultPort.port ? ` · ${defaultPort.port}` : ''})` : ''}</option>
+                          {ports.map(p => (
+                            <option key={p.name} value={p.name}>{p.name}{p.port ? ` · ${p.port}` : ''}</option>
+                          ))}
+                          {chosen && !ports.some(p => p.name === chosen) && (
+                            <option value={chosen}>{chosen} (missing)</option>
+                          )}
+                        </select>
+                      )}
                       <button
                         type="button"
                         onClick={() => {
                           const updated = cfg.domains.filter((_, j) => j !== di)
-                          setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], domains: updated } }))
+                          setEnvConfigs(prev => ({ ...prev, [envName]: { ...prev[envName], domains: updated, domainPortsTouched: prev[envName].domainPortsTouched || !!prev[envName].domainPorts[d] } }))
                         }}
                         className="text-text-tertiary hover:text-status-failed text-xs px-1"
                       >&times;</button>
                     </div>
-                  ))}
+                    {portError && <p className="text-[10px] text-status-failed mt-0.5">{portError}</p>}
+                    </div>
+                    )
+                  })}
                 </div>
                 <div className="mt-2 mb-2 p-2.5 rounded-md border border-border bg-surface-2">
                   <div className="flex items-center justify-between mb-1">
@@ -2388,12 +2489,15 @@ function EditAppForm({ appId, app, onClose }: { appId: string; app: any; onClose
       </div>
 
       <div className="flex items-center gap-3 pt-1">
-        <button type="submit" disabled={mutation.isPending || hasServicePortErrors} className="btn-primary">
+        <button type="submit" disabled={mutation.isPending || hasServicePortErrors || hasDomainPortErrors} className="btn-primary">
           {mutation.isPending ? 'Saving...' : 'Save Changes'}
         </button>
         <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
         {hasServicePortErrors && (
           <span className="text-xs text-status-failed">Fix the service port errors above to save.</span>
+        )}
+        {!hasServicePortErrors && hasDomainPortErrors && (
+          <span className="text-xs text-status-failed">A domain points at a service port that no longer exists.</span>
         )}
       </div>
       {mutation.isError && (
